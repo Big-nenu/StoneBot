@@ -29,8 +29,8 @@ Las etapas son orientativas, no fechas prometidas. Cada etapa debe tener una dem
 
 | Etapa | Objetivo | Entregable comprobable | Estado |
 |---|---|---|---|
-| 0. Base segura | Definir alcance y separar la memoria | Base SQLite exclusiva y prueba de lectura/escritura | Parcial: base separada y lectura/escritura manual verificadas; falta auditoría del aislamiento |
-| 1. Núcleo conversacional | Aplicación Windows con chat, Ollama y StoneWave | Conversa, recuerda y permanece en segundo plano al cerrar la ventana | Parcial: ventana, chat y recuperación persistente funcionando; faltan escritura desde agente y bandeja |
+| 0. Base segura | Definir alcance y separar la memoria | Motor local y base SQLite exclusiva | Completada. Lectura, escritura y rutas protegidas verificadas con bases de prueba. |
+| 1. Núcleo conversacional | Aplicación Windows con chat, Ollama y motor local | Conversa, recuerda y permanece en segundo plano al cerrar la ventana | Parcial. Faltan escritura desde el agente y bandeja. |
 | 2. Razonamiento | Formular preguntas e hipótesis | Explica una hipótesis, su evidencia y qué falta comprobar | Pendiente |
 | 3. Sueño y aprendizaje | Revisar experiencias, contradicciones y conclusiones | Ciclo programado que produce conclusiones trazables | Pendiente |
 | 4. Iniciativa controlada | Elegir tareas de una cola y proponer experimentos | Ejecuta tareas permitidas, con pausa y registro | Pendiente |
@@ -74,7 +74,7 @@ Las etapas son orientativas, no fechas prometidas. Cada etapa debe tener una dem
 
 ### Etapa 3 — Sueños
 
-- Ciclo de revisión de recuerdos con las capacidades existentes de StoneWave.
+- Ciclo de revisión de recuerdos con las capacidades del motor local.
 - Relaciones, conclusiones, contradicciones y preguntas pendientes.
 - Registro de procedencia: qué recuerdos sostienen cada conclusión.
 - Sin confundir una conclusión generada con un hecho confirmado.
@@ -108,7 +108,7 @@ Primero percepción digital autorizada; después un prototipo con ESP32-S3, sens
 ```text
 Ventana PySide6  <-->  StoneBot Core  <-->  Ollama local
                            |
-                    StoneWave (SQLite)
+                   stonebot_engine (SQLite)
                            |
              ~/.stonebot/memoria.db
 
@@ -123,18 +123,33 @@ Futuro: sueños, iniciativa, mascota y sensores
 
 - **Aplicación independiente:** ventana Windows y bandeja del sistema, no interfaz de un agente externo.
 - **Primera interfaz:** Python + PySide6 (Qt), sujeta a prueba de prototipo.
-- **Persistencia:** StoneWave usa una base SQLite separada para StoneBot, ubicada en `C:\\Users\\Luis_Hdez\\.stonebot\\memoria.db` en el equipo actual.
-- **Configuración:** `STONEWAVE_DB` debe apuntar explícitamente a esa ruta para evitar acceder por accidente a la memoria personal.
-- **Estado de la memoria:** base experimental creada; `inject` y `query` probados desde CLI; lectura directa desde Python y recuperación tras reiniciar la GUI comprobadas. Falta verificar formalmente que la memoria personal no cambió.
+- **Persistencia.** La aplicación abre `%USERPROFILE%\.stonebot\memoria.db` con el motor local y consulta el namespace `default`.
+- **Configuración.** El motor requiere una ruta explícita y usa el prefijo `STONEBOT_` para configurar los modelos y las notas.
 - **Segundo plano:** inicialmente proceso en espera, sin razonamiento continuo; ciclos autónomos se incorporarán después.
 
 ## Relación con StoneWave
 
-StoneWave ya dispone de funciones de memoria, relaciones, sueños, contradicciones e hipótesis. Actualmente StoneBot **solo consulta recuerdos** mediante `StoneWaveEngine.query()` con una ruta SQLite explícita y el namespace `default` dentro de su base aislada. **No guarda recuerdos desde la interfaz, no usa MCP y no ejecuta sueños ni otras herramientas avanzadas.**
+El paquete local `stonebot_engine/` contiene la copia de `mem_engine.py`, `llm.py` y `notes.py`, con la licencia MIT original. La interfaz usa `StoneBotEngine.query()` para recuperar recuerdos y el motor puede actualizar su relevancia. La escritura de recuerdos nuevos desde el chat, los sueños automáticos y MCP quedan pendientes.
 
-La futura integración se evaluará antes de implementarse: acceso directo a la API, MCP o variante aislada del motor. **No modificar el repositorio StoneWave original para adaptar sus funciones a StoneBot.** El aislamiento de datos no sustituye al aislamiento del código: un agente con herramientas de escritura podría alterar archivos aunque su prompt lo prohíba. Se deben aplicar permisos y entornos de prueba reales.
+El motor restringe SQLite a la carpeta de StoneBot. El validador bloquea las carpetas de memoria personal, el repositorio original, los enlaces duros a archivos y las redirecciones de archivos auxiliares de SQLite. `STONEWAVE_DB` y `MEMHOLOGRAFIC_DB` solo se consideran para bloquear bases personales configuradas fuera de sus carpetas habituales. Las rutas de notas, importaciones, exportaciones y sincronización también se validan.
 
 Repositorio base: [StoneWave](https://github.com/Big-nenu/StoneWave).
+
+## Ejecutar y probar
+
+Con Python 3.14, instala `PySide6`, `ollama`, `requests` y `numpy`. Para usar `python app.py`, inicia Ollama local con los modelos `nemotron-3.5-bolt:e4b` y `embeddinggemma-2:270m` disponibles. `python test_memory.py` permite consultar manualmente la memoria experimental. La aplicación espera que la base de StoneBot ya exista.
+
+Las suites usan bases temporales y modelos simulados. Comprueban escritura, recuperación tras reabrir la base, integración con el trabajador de la interfaz y bloqueo de rutas protegidas.
+En Windows, las pruebas de redirección requieren permiso para crear enlaces simbólicos.
+
+```powershell
+python -B tests/test_motor.py
+python -B tests/test_aislamiento.py
+```
+
+También se comprobó la recuperación a través del trabajador de la interfaz con Ollama local y un recuerdo sintético en una base temporal.
+
+Para reiniciar la memoria experimental, cierra StoneBot y mueve su `memoria.db` y los archivos auxiliares de SQLite que existan a una carpeta de respaldo. Luego crea una base vacía con `python -c "from stonebot_engine import StoneBotEngine, default_root; StoneBotEngine(default_root() / 'memoria.db').close()"`. Para restaurar, con StoneBot cerrado, mueve la base experimental actual a otra carpeta y devuelve los archivos del respaldo a la carpeta de StoneBot.
 
 ## Archivos actuales
 
@@ -142,9 +157,11 @@ Repositorio base: [StoneWave](https://github.com/Big-nenu/StoneWave).
 StoneBot/
 ├── README.md
 ├── README-Hermes.md
-├── app.py                # GUI PySide6 + Ollama + consulta a StoneWave
+├── app.py                # GUI PySide6 + Ollama + consulta al motor local
 ├── app-backup.py         # GUI anterior sin memoria persistente
-├── test_memory.py        # prueba directa de lectura de memoria
+├── test_memory.py        # consulta manual de la memoria experimental
+├── stonebot_engine/      # motor SQLite, modelos, notas y validación de rutas
+├── tests/                # funcionamiento y aislamiento con bases temporales
 └── docs/
     └── 01-primer-experimento-que-ve.md
 ```
@@ -156,9 +173,7 @@ El núcleo y la GUI todavía comparten un archivo. La estructura futura se decid
 - Windows 11, Python, PySide6 y Ollama con `nemotron-3.5-bolt:e4b`.
 - `app.py` muestra una ventana de chat y envía mensajes a Nemotron mediante un trabajador en `QThread`.
 - Base SQLite independiente: `~/.stonebot/memoria.db`.
-- Se comprobó que el primer recuerdo quedó almacenado en el namespace `default` (no en `stonebot`); `mem_cli.py` usa `default` salvo que se pase `-n`.
-- `test_memory.py` recuperó el recuerdo desde Python con `StoneWaveEngine`; después, `app.py` también lo recuperó tras cerrar y abrir de nuevo la aplicación.
-- La recuperación es **solo lectura**: aún no hay guardado selectivo, edición, sueño, conclusiones ni MCP conectado a la GUI.
+- La prueba anterior al aislamiento confirmó que el primer recuerdo se conservó en el namespace `default` tras reiniciar la GUI. La suite actual verifica la reapertura y recuperación con el motor local y una base desechable.
 - Cerrar la ventana actualmente termina el proceso; la bandeja del sistema sigue pendiente.
 
 ## Autoconocimiento funcional: propuesta por investigar
@@ -167,7 +182,7 @@ La intención no es únicamente recordar información sobre el usuario. StoneBot
 
 Posibles registros propios de StoneBot (esquema todavía no aprobado): experiencias, autoevaluaciones de capacidades, hipótesis con evidencia y experimentos con resultados. Deben distinguirse **hechos observados**, **inferencias del modelo** y **objetivos propuestos**. También queda por estudiar si la energía/relevancia de StoneWave necesita adaptaciones para este tipo de información.
 
-**Decisión pendiente:** reutilizar StoneWave mediante su API/MCP o mantener una variante del motor dentro de StoneBot. No duplicar ni reescribir el motor antes de inspeccionar su diseño y definir pruebas. Cualquier copia debe estar aislada del repositorio original y de la memoria personal. Ningún agente debe tener acceso de escritura al StoneWave original; la seguridad debe depender de permisos efectivos, no solo de instrucciones en prompts.
+Los experimentos de autoconocimiento usarán el motor local y bases desechables.
 
 ## Ideas en exploración
 
@@ -187,7 +202,7 @@ Posibles registros propios de StoneBot (esquema todavía no aprobado): experienc
 
 ## Próxima acción
 
-**Antes de añadir escritura o MCP:** revisar la arquitectura de StoneWave y definir cómo StoneBot representará sus experiencias, sus hipótesis y su modelo de sí mismo. Mantener el código de StoneWave sin modificaciones. Después, probar escritura desde el agente en la base experimental y verificar el aislamiento. La bandeja del sistema sigue pendiente.
+Antes de añadir escritura desde el agente o MCP, definir cómo StoneBot representará sus experiencias e hipótesis y probar el flujo en una base desechable. La bandeja del sistema sigue pendiente.
 
 ---
 

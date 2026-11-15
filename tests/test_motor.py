@@ -1,0 +1,989 @@
+"""Pruebas del motor SIN Ollama: usa embeddings falsos (bolsa de palabras) y LLM falsos.
+Ejecutar:  python tests/test_motor.py
+"""
+import os
+import re
+import sys
+import json
+import time
+import sqlite3
+import tempfile
+import zlib
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from stonebot_engine import mem_engine
+from stonebot_engine.mem_engine import StoneBotEngine
+
+mem_engine.CENTER_PRIOR = 10 ** 9  # sin centrado: los embeddings falsos no lo necesitan
+# Umbrales para similitud coseno cruda (los embeddings falsos no estan centrados)
+mem_engine.WEAK_MATCH, mem_engine.MIN_SIM, mem_engine.WAVE_MIN_SIM = 0.65, 0.5, 0.45
+mem_engine.DUPLICATE_SIM, mem_engine.CONFLICT_SIM, mem_engine.RELATED_SIM = 0.95, 0.8, 0.6
+mem_engine.BRIDGE_MIN_SIM = 0.25
+
+
+def fake_embedding(text):
+    v = [0.0] * 256
+    for w in re.findall(r"\w+", text.lower()):
+        if len(w) > 2:
+            v[zlib.crc32(w.encode()) % 256] += 1.0
+    return v
+
+
+def make_engine(db=None, verdict="COMPLEMENTARIO"):
+    db = db or os.path.join(tempfile.mkdtemp(), "t.db")
+    e = StoneBotEngine(allowed_root=tempfile.gettempdir(), db_path=db)
+    e.get_embedding = fake_embedding
+    e.get_embeddings = lambda texts: [fake_embedding(t) for t in texts]
+    e.classify_topics = lambda t: ["otro"]
+    e._ask_llm_conflict = lambda a, b: verdict
+    e._ask_llm_conclusion = lambda f: ""
+    e._ask_llm_derivation = lambda f: ""
+    e._ask_llm_support = lambda f, c: "NEUTRO"
+    return e
+
+
+def rows(db, sql):
+    with sqlite3.connect(db) as c:
+        return c.execute(sql).fetchall()
+
+
+def age(db, days, where="1=1"):
+    with sqlite3.connect(db) as c:
+        c.execute(f"UPDATE facts SET last_used=? WHERE {where}", (time.time() - days * 86400,))
+        c.commit()
+
+
+def test_inject_nuevo_y_refuerzo():
+    e = make_engine()
+    t = "Luis estudió ingeniería en computación en la universidad Lamar"
+    assert "NUEVA" in e.inject(t)
+    assert "REFUERZO" in e.inject(t)
+    r = rows(e.db_path, "SELECT energy FROM facts")
+    assert len(r) == 1 and abs(r[0][0] - 0.7) < 1e-6, r
+
+
+def test_fijo_no_decae():
+    e = make_engine()
+    e.inject("Me llamo Luis Eduardo y vivo en Guadalajara", pinned=True)
+    e.inject("El helado de vainilla es muy rico en verano", energy=0.5)
+    age(e.db_path, 200)
+    assert e.decay() == 1
+    assert e.get_all_facts() == ["Me llamo Luis Eduardo y vivo en Guadalajara"]
+    assert len(rows(e.db_path, "SELECT * FROM archived_facts")) == 1
+
+
+def test_sotano_resucita():
+    e = make_engine()
+    e.inject("El helado de vainilla es muy rico en verano")
+    e.inject("Luis trabaja en Neodata en Guadalajara")
+    age(e.db_path, 200, "content LIKE '%helado%'")
+    e.decay()
+    assert len(rows(e.db_path, "SELECT * FROM archived_facts")) == 1
+    res = e.query("helado de vainilla en verano")
+    assert isinstance(res, list) and "helado" in res[0][3], res
+    assert len(rows(e.db_path, "SELECT * FROM archived_facts")) == 0
+    assert len(rows(e.db_path, "SELECT * FROM facts")) == 2
+
+
+def test_sueno_contradiccion_archiva_el_viejo():
+    e = make_engine(verdict="CONTRADICTORIO")
+    e.inject("mi perro pequeño juega en el jardín todas las tardes")
+    e.inject("mi perro pequeño juega en el jardín todas las mañanas")
+    e.dream()
+    activos = [r[0] for r in rows(e.db_path, "SELECT content FROM facts")]
+    sotano = [r[0] for r in rows(e.db_path, "SELECT content FROM archived_facts")]
+    assert activos == ["mi perro pequeño juega en el jardín todas las mañanas"], activos
+    assert sotano == ["mi perro pequeño juega en el jardín todas las tardes"], sotano
+
+
+def test_sueno_similares_no_se_fusionan():
+    e = make_engine(verdict="COMPLEMENTARIO")
+    a = "mi perro pequeño juega en el jardín todas las tardes"
+    b = "mi perro pequeño juega en el jardín todas las mañanas"
+    e.inject(a)
+    e.inject(b)
+    e.dream()
+    assert sorted(e.get_all_facts()) == sorted([a, b])  # nada se reescribe ni se pierde
+    assert [r[0] for r in rows(e.db_path, "SELECT kind FROM links")] == ["similar"]
+
+
+def test_ondas_encuentran_el_recuerdo():
+    e = make_engine()
+    A = "Luis estudió ingeniería en computación en la universidad Lamar"
+    e.inject(A)
+    e.inject("Luis trabaja en Neodata en Guadalajara")
+    e.inject("Los gatos duermen mucho durante el día")
+    res = e.query("qué estudió Luis en la universidad")
+    assert isinstance(res, list) and res[0][3] == A, res
+    assert e.query("astronomía de agujeros negros") == "No related memories found."
+
+
+def test_cascada_por_enlaces():
+    e = make_engine()
+    A = "Luis estudió ingeniería en computación en la universidad Lamar"
+    A2 = "Luis estudió ingeniería computación y se graduó en 2013"
+    e.inject(A)
+    e.inject(A2)
+    e.inject("Los gatos duermen mucho durante el día")
+    e.dream()
+    assert [r[0] for r in rows(e.db_path, "SELECT kind FROM links")] == ["relacionado"]
+    res = e.query("estudió luis universidad lamar")
+    textos = [r[3] for r in res]
+    assert textos[0] == A and A2 in textos, textos
+
+
+def test_cache_se_actualiza():
+    db = os.path.join(tempfile.mkdtemp(), "t.db")
+    e1, e2 = make_engine(db), make_engine(db)
+    e1.inject("Luis trabaja en Neodata en Guadalajara")
+    assert e1.query("trabaja Neodata Guadalajara Luis")[0][3].startswith("Luis trabaja")
+    e1.inject("Los gatos duermen mucho durante el día")           # misma instancia
+    assert "gatos" in e1.query("gatos duermen mucho durante día")[0][3]
+    e2.inject("El telescopio de mi vecino tiene una montura ecuatorial")   # otro proceso
+    assert "telescopio" in e1.query("telescopio vecino montura ecuatorial")[0][3]
+
+
+def test_sueno_automatico_toca_cuando_pasan_las_horas():
+    e = make_engine()
+    assert e.dream_due() is False               # sin recuerdos no hay nada que ordenar
+    e.inject("Luis trabaja en Neodata en Guadalajara")
+    assert e.dream_due() is True                # nunca ha soñado
+    e.dream()
+    assert e.dream_due() is False and e.hours_since_dream() < 0.01
+    with sqlite3.connect(e.db_path) as c:
+        c.execute("UPDATE meta SET value=? WHERE key='last_dream:default'", (str(time.time() - 13 * 3600),))
+        c.commit()
+    assert e.dream_due() is True                # pasaron 13 h (el limite son 12)
+    assert e.dream_due(hours=24) is False
+
+
+def _ids(e, namespace="default"):
+    return {c: i for i, c, _en, _p in e.list_facts(namespace)}
+
+
+def test_forget_por_id_y_por_texto():
+    e = make_engine()
+    A, B = "Luis trabaja en Neodata en Guadalajara", "Los gatos duermen mucho durante el día"
+    e.inject(A)
+    e.inject(B)
+    r = e.forget(_ids(e)[B])
+    assert r["status"] == "deleted" and r["content"] == B, r
+    assert e.get_all_facts() == [A]
+    r = e.forget("  LUIS trabaja   en neodata en Guadalajara ")  # igual sin importar mayusculas ni espacios
+    assert r["status"] == "deleted", r
+    assert e.get_all_facts() == []
+    assert e.forget(999)["status"] == "not_found"
+    assert e.forget("")["status"] == "error"
+    assert e.forget(None)["status"] == "error"
+
+
+def test_forget_limpia_temas_y_enlaces():
+    e = make_engine()
+    e.inject("Luis estudió ingeniería en computación en la universidad Lamar")
+    e.inject("Luis estudió ingeniería computación y se graduó en 2013")
+    e.dream()
+    assert rows(e.db_path, "SELECT * FROM links") and rows(e.db_path, "SELECT * FROM fact_topics")
+    fid = list(_ids(e).values())[0]
+    assert e.forget(str(fid))["status"] == "deleted"  # un numero como texto se toma como ID
+    assert rows(e.db_path, "SELECT * FROM links") == []
+    assert len(rows(e.db_path, "SELECT * FROM fact_topics")) == 1
+
+
+def test_forget_por_similitud_y_sugerencias():
+    e = make_engine()
+    A = "mi perro pequeño juega en el jardín todas las tardes cuando llega mamá a casa del trabajo hoy"
+    e.inject(A)
+    e.inject("Luis trabaja en Neodata en Guadalajara")
+    r = e.forget("mi perro pequeño juega en el jardín todas las tardes cuando llega mamá a casa del trabajo")  # casi igual
+    assert r["status"] == "deleted" and r["content"] == A, r
+    e.inject("Luis trabaja en Neodata en Guadalajara ciudad")
+    r = e.forget("trabaja Luis Neodata")  # parecido pero no casi igual: no borra, sugiere
+    assert r["status"] == "not_found" and r["suggestions"], r
+    assert len(e.get_all_facts()) == 2  # nada se borro
+
+
+def test_forget_ambiguo_pide_id():
+    e = make_engine()
+    A = "Luis trabaja en Neodata en Guadalajara"
+    e.inject(A)
+    with sqlite3.connect(e.db_path) as c:  # un duplicado exacto "heredado" (inject normal lo habria reforzado)
+        c.execute("INSERT INTO facts (namespace, content, energy, embedding, last_used, pinned) "
+                  "SELECT namespace, content, energy, embedding, last_used, pinned FROM facts")
+        c.commit()
+    r = e.forget(A)
+    assert r["status"] == "ambiguous" and len(r["candidates"]) == 2, r
+    assert len(rows(e.db_path, "SELECT * FROM facts")) == 2  # no se borro nada
+    assert e.forget(r["candidates"][0][0])["status"] == "deleted"
+    assert len(rows(e.db_path, "SELECT * FROM facts")) == 1
+
+
+def test_forget_tambien_borra_del_sotano():
+    e = make_engine()
+    H = "El helado de vainilla es muy rico en verano"
+    e.inject(H)
+    e.inject("Luis trabaja en Neodata en Guadalajara")
+    age(e.db_path, 200, "content LIKE '%helado%'")
+    e.decay()
+    assert len(rows(e.db_path, "SELECT * FROM archived_facts")) == 1
+    r = e.forget(H)  # solo existe en el sotano
+    assert r["status"] == "deleted" and r["where"] == "sotano", r
+    assert e.query("helado de vainilla en verano") == "No related memories found."  # ya no resucita
+    # si esta activo y tambien hay copia en el sotano, ambas se van
+    e.inject(H)
+    with sqlite3.connect(e.db_path) as c:
+        c.execute("INSERT INTO archived_facts (namespace, content, energy, embedding, reason) SELECT namespace, content, energy, embedding, 'desuso' FROM facts WHERE content=?", (H,))
+        c.commit()
+    r = e.forget(_ids(e)[H])
+    assert r["status"] == "deleted" and r["archived_removed"] == 1, r
+    assert rows(e.db_path, "SELECT * FROM archived_facts") == []
+
+
+def test_forget_respeta_el_namespace():
+    e = make_engine()
+    e.inject("El telescopio de mi vecino tiene montura ecuatorial", namespace="astro")
+    fid = _ids(e, "astro")["El telescopio de mi vecino tiene montura ecuatorial"]
+    assert e.forget(fid)["status"] == "not_found"  # el ID existe, pero en otro namespace
+    assert e.forget(fid, namespace="astro")["status"] == "deleted"
+
+
+def test_update_memory_corrige_y_conserva_energia_y_fijo():
+    e = make_engine()
+    old = "Vivo en Guadalajara con mis papás"
+    new = "Vivo en Monterrey con mi pareja"
+    e.inject(old, pinned=True, energy=0.8)
+    e.inject("Los gatos duermen mucho durante el día")
+    fid = _ids(e)[old]
+    r = e.update_memory(fid, "  " + new + "  ")
+    assert r["status"] == "updated" and r["old"] == old and r["new"] == new, r
+    assert new in e.get_all_facts() and old not in e.get_all_facts()
+    assert rows(e.db_path, f"SELECT pinned, energy FROM facts WHERE id={fid}") == [(1, 0.8)]
+    res = e.query("vivo monterrey pareja")  # el vector cambio: la consulta encuentra el texto nuevo
+    assert isinstance(res, list) and res[0][1] == fid and res[0][3] == new, res
+    assert e.update_memory(999, "x")["status"] == "not_found"
+    assert e.update_memory(fid, "   ")["status"] == "error"
+    assert e.update_memory("abc", "x")["status"] == "error"
+    assert e.update_memory(fid, new, namespace="otro")["status"] == "not_found"
+
+
+def test_update_memory_avisa_si_queda_casi_igual_a_otro():
+    e = make_engine()
+    A = "mi perro pequeño juega en el jardín todas las tardes cuando llega mamá a casa del trabajo hoy"
+    e.inject(A)
+    e.inject("Luis trabaja en Neodata en Guadalajara")
+    id_a = _ids(e)[A]
+    fid = _ids(e)["Luis trabaja en Neodata en Guadalajara"]
+    r = e.update_memory(fid, A + " ")
+    assert r["status"] == "updated" and r["similar_to"] == id_a, r
+
+
+def test_export_e_import_jsonl_ida_y_vuelta():
+    src = make_engine()
+    src.inject("Me llamo Luis Eduardo y vivo en Guadalajara", pinned=True, energy=0.9)
+    src.inject("El telescopio de mi vecino tiene montura ecuatorial", namespace="astro")
+    path = os.path.join(tempfile.mkdtemp(), "backup.jsonl")
+    assert src.export_memories(path) == 2
+    with open(path, encoding="utf-8") as f:
+        lines = [json.loads(l) for l in f]
+    assert all(set(l) == {"content", "namespace", "fijo", "energy", "created_at", "source"} for l in lines), lines
+    by_ns = {l["namespace"]: l for l in lines}
+    assert by_ns["default"]["fijo"] is True and abs(by_ns["default"]["energy"] - 0.9) < 1e-6
+    assert by_ns["astro"]["created_at"].endswith("Z")
+    assert src.export_memories(path + ".astro", namespace="astro") == 1
+
+    dst = make_engine()
+    s = dst.import_memories(path)
+    assert s["new"] == 2 and s["reinforced"] == 0 and not s["invalid"] and not s["aborted"], s
+    assert dst.get_all_facts("default") == ["Me llamo Luis Eduardo y vivo en Guadalajara"]
+    assert dst.get_all_facts("astro") == ["El telescopio de mi vecino tiene montura ecuatorial"]
+    assert rows(dst.db_path, "SELECT pinned FROM facts WHERE namespace='default'") == [(1,)]
+    assert len(s["dream"]) == 2 and len(rows(dst.db_path, "SELECT key FROM meta WHERE key LIKE 'last_dream:%'")) == 2
+
+    s2 = dst.import_memories(path)  # importar dos veces no duplica: refuerza
+    assert s2["new"] == 0 and s2["reinforced"] == 2 and s2["dream"] == [], s2
+    assert len(rows(dst.db_path, "SELECT * FROM facts")) == 2
+    s3 = make_engine().import_memories(path, run_dream=False)
+    assert s3["new"] == 2 and s3["dream"] == []
+
+
+def test_import_valida_lineas_y_respeta_campos():
+    path = os.path.join(tempfile.mkdtemp(), "mix.jsonl")
+    with open(path, "w", encoding="utf-8-sig") as f:  # con BOM, como lo deja el Bloc de notas
+        f.write(json.dumps({"content": "Luis trabaja en Neodata", "created_at": "2026-01-01T00:00:00Z", "source": "claude", "fijo": True}) + "\n")
+        f.write("esto no es json\n")
+        f.write(json.dumps({"namespace": "x"}) + "\n")
+        f.write("[1, 2]\n")
+        f.write(json.dumps({"content": "Dato con energia mala", "energy": "mucha"}) + "\n\n")
+        f.write(json.dumps({"content": "Los gatos duermen mucho durante el día", "energy": 7}) + "\n")
+    e = make_engine()
+    s = e.import_memories(path, namespace="otro")  # el namespace dado manda sobre el del archivo
+    assert s["new"] == 2 and [l for l, _ in s["invalid"]] == [2, 3, 4, 5], s
+    assert sorted(e.get_all_facts("otro")) == sorted(["Luis trabaja en Neodata", "Los gatos duermen mucho durante el día"])
+    assert rows(e.db_path, "SELECT created_at, source, pinned FROM facts WHERE content LIKE 'Luis%'") == [(1767225600.0, "claude", 1)]
+    assert rows(e.db_path, "SELECT energy, source FROM facts WHERE content LIKE 'Los gatos%'") == [(1.0, "import")]
+
+
+def test_import_se_detiene_si_ollama_no_responde():
+    e = make_engine()
+    e.get_embedding = lambda t: None
+    s = e.import_records([{"content": f"recuerdo {i}"} for i in range(6)])
+    assert s["aborted"] and s["errors"] == 3 and s["new"] == 0 and s["dream"] == [], s
+
+
+def test_bd_vieja_sin_created_at_se_migra():
+    db = os.path.join(tempfile.mkdtemp(), "vieja.db")
+    with sqlite3.connect(db) as c:
+        c.execute("CREATE TABLE facts (id INTEGER PRIMARY KEY AUTOINCREMENT, namespace TEXT DEFAULT 'default', content TEXT, energy REAL, embedding TEXT, last_used REAL, pinned INTEGER DEFAULT 0)")
+        c.execute("INSERT INTO facts (namespace, content, energy, embedding, last_used, pinned) VALUES ('default', 'dato viejo', 0.5, ?, 1767225600.0, 0)", (json.dumps(fake_embedding("dato viejo")),))
+        c.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")  # esquema ya al dia: que no intente recalcular con Ollama
+        c.execute("INSERT INTO meta VALUES ('embed_scheme', ?)", (f"{mem_engine.EMBEDDING_MODEL}|{mem_engine.QUERY_PREFIX}|{mem_engine.DOC_PREFIX}",))
+        c.commit()
+    e = make_engine(db)
+    path = os.path.join(tempfile.mkdtemp(), "v.jsonl")
+    assert e.export_memories(path) == 1
+    with open(path, encoding="utf-8") as f:
+        rec = json.loads(f.readline())
+    assert rec["created_at"] == "2026-01-01T00:00:00Z" and rec["source"] == "stonebot", rec
+
+
+
+
+
+
+
+
+def test_papelera_guarda_lo_olvidado_y_lo_encuentra():
+    e = make_engine()
+    C = "Mi color favorito es el azul marino"
+    e.inject(C)
+    e.inject("Luis trabaja en Neodata en Guadalajara")
+    assert e.forget(_ids(e)[C])["status"] == "deleted"
+    assert e.query("color favorito azul marino") == "No related memories found."  # ya no esta vigente
+    hits = e.query_trash("mi color favorito")
+    assert hits and hits[0]["content"] == C and hits[0]["reason"] == "olvidado" and hits[0]["current"] is None, hits
+    assert e.query_trash("mi color favorito", namespace="otro") == []
+
+
+def test_papelera_reemplazado_apunta_al_valor_actual():
+    e = make_engine()
+    old, new = "Vivo en Guadalajara con mis papás", "Vivo en Monterrey con mi pareja"
+    e.inject(old)
+    fid = _ids(e)[old]
+    assert e.update_memory(fid, new)["status"] == "updated"
+    hits = e.query_trash("vivo guadalajara papás")
+    assert hits and hits[0]["reason"] == "reemplazado" and hits[0]["current"] == new, hits
+    e.update_memory(fid, "  " + new.upper() + " ")  # mismo texto escrito distinto: no ensucia la papelera
+    assert len(e.list_trash()) == 1
+
+
+def test_papelera_sotano_y_borrado_definitivo():
+    e = make_engine()
+    H = "El helado de vainilla es muy rico en verano"
+    G = "Los gatos duermen mucho durante el día"
+    e.inject(H)
+    e.inject("Luis trabaja en Neodata en Guadalajara")
+    age(e.db_path, 200, "content LIKE '%helado%'")
+    e.decay()
+    assert e.forget(H)["where"] == "sotano"  # solo estaba en el sotano: tambien va a la papelera
+    assert [t[1] for t in e.list_trash()] == [H]
+    e.inject(G)
+    assert e.forget(_ids(e)[G])["status"] == "deleted"
+    assert len(e.list_trash()) == 2
+    assert e.purge_trash(trash_id=e.list_trash()[0][0]) == 1
+    assert len(e.list_trash()) == 1
+    assert e.purge_trash() == 1 and e.list_trash() == []
+    e.inject(H)
+    e.forget(_ids(e)[H])
+    assert len(e.list_trash()) == 1
+    e.clear_db()  # borrar todo tambien vacia la papelera
+    assert e.list_trash() == []
+
+
+def test_restaurar_desde_la_papelera():
+    e = make_engine()
+    C = "Mi color favorito es el azul marino"
+    e.inject(C)
+    e.forget(_ids(e)[C])
+    hits = e.query_trash("mi color favorito")
+    assert hits and hits[0]["deleted_ts"], hits
+    tid = e.list_trash()[0][0]
+    r = e.restore_from_trash(tid)
+    assert r["status"] == "restored" and r["content"] == C and r["current"] is None, r
+    assert e.get_all_facts() == [C] and e.list_trash() == []
+    res = e.query("color favorito azul marino")
+    assert isinstance(res, list) and res[0][3] == C, res
+    assert e.restore_from_trash(tid)["status"] == "not_found"
+    assert e.restore_from_trash("x")["status"] == "error"
+    old, new = "Vivo en Guadalajara con mis papás", "Vivo en Monterrey con mi pareja"
+    e.inject(old)
+    e.update_memory(_ids(e)[old], new)
+    r = e.restore_from_trash(e.list_trash()[0][0])  # avisa que sigue activo el valor nuevo
+    assert r["status"] == "restored" and r["current"] == new, r
+
+
+def test_contradiccion_gana_el_mas_nuevo_por_created_at_no_por_id():
+    e = make_engine(verdict="CONTRADICTORIO")
+    viejo_id_alto = "mi perro pequeño juega en el jardín todas las tardes"
+    nuevo_id_bajo = "mi perro pequeño juega en el jardín todas las mañanas"
+    e.inject(nuevo_id_bajo)   # ID 1
+    e.inject(viejo_id_alto)   # ID 2
+    ids = _ids(e)
+    now = time.time()
+    with sqlite3.connect(e.db_path) as c:  # el de ID 1 es MAS NUEVO por fecha; el de ID 2 es mas viejo
+        c.execute("UPDATE facts SET created_at=? WHERE id=?", (now, ids[nuevo_id_bajo]))
+        c.execute("UPDATE facts SET created_at=? WHERE id=?", (now - 10 * 86400, ids[viejo_id_alto]))
+        c.commit()
+    e.dream()
+    assert [r[0] for r in rows(e.db_path, "SELECT content FROM facts")] == [nuevo_id_bajo]
+    assert [r[0] for r in rows(e.db_path, "SELECT content FROM archived_facts")] == [viejo_id_alto]
+    # empate de fecha: gana el de ID mayor (el que se guardo despues)
+    e2 = make_engine(verdict="CONTRADICTORIO")
+    e2.inject(nuevo_id_bajo)
+    e2.inject(viejo_id_alto)
+    with sqlite3.connect(e2.db_path) as c:
+        c.execute("UPDATE facts SET created_at=1000")
+        c.commit()
+    e2.dream()
+    assert [r[0] for r in rows(e2.db_path, "SELECT content FROM facts")] == [viejo_id_alto]
+
+
+def test_respaldo_diario_rotativo_de_7_dias():
+    from datetime import date, timedelta
+    e = make_engine()
+    e.inject("Luis trabaja en Neodata en Guadalajara")
+    folder = os.path.join(os.path.dirname(e.db_path), "backups")
+    ajeno = os.path.join(folder, "otra-2020-01-01.db")  # de otra BD: no se debe tocar
+    os.makedirs(folder, exist_ok=True)
+    for name in (ajeno, os.path.join(folder, "notas.txt")):
+        open(name, "w").close()
+    start = date(2026, 10, 20)
+    for n in range(14):  # 14 dias seguidos: Oct 20 .. Nov 2
+        msg = e.backup(today=start + timedelta(days=n))
+        assert msg and msg.startswith("Respaldo creado"), msg
+    mine = sorted(f for f in os.listdir(folder) if f.startswith("t-"))
+    assert mine == [f"t-2026-10-{d}.db" for d in (27, 28, 29, 30, 31)] + ["t-2026-11-01.db", "t-2026-11-02.db"], mine
+    assert os.path.exists(ajeno) and os.path.exists(os.path.join(folder, "notas.txt"))
+    assert not [f for f in os.listdir(folder) if f.endswith(".tmp")]
+    assert e.backup(today=date(2026, 11, 2)) is None  # ya hay uno de hoy: no repite
+    assert e.backup(keep_days=0) is None  # apagado
+    with sqlite3.connect(os.path.join(folder, "t-2026-11-02.db")) as c:  # la copia es una BD valida con los recuerdos
+        assert c.execute("SELECT COUNT(*) FROM facts").fetchone()[0] == 1
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def _bridge_engine():
+    e = make_engine()
+    e.inject("El café tiene mucha cafeína por la mañana")
+    e.inject("La cafeína actúa en el cerebro y bloquea receptores")
+    e.inject("Las neuronas del cerebro transmiten señales eléctricas")
+    e.inject("Los gatos duermen mucho durante el día")
+    return e
+
+
+def test_puente_encuentra_el_recuerdo_que_une_dos_temas():
+    e = _bridge_engine()
+    before = rows(e.db_path, "SELECT id, energy, last_used FROM facts ORDER BY id")
+    r = e.bridge("café cafeína", "cerebro neuronas")
+    assert r["status"] == "found", r
+    assert [b["content"] for b in r["bridges"]] == ["La cafeína actúa en el cerebro y bloquea receptores"], r
+    b = r["bridges"][0]
+    assert b["sim_a"] > 0.25 and b["sim_b"] > 0.25 and abs(b["score"] - min(b["sim_a"], b["sim_b"])) < 1e-9, b
+    assert r["a"]["content"].startswith("El café") and r["b"]["content"].startswith("Las neuronas"), r
+    assert rows(e.db_path, "SELECT id, energy, last_used FROM facts ORDER BY id") == before  # solo lee: no cambia nada
+
+
+def test_puente_sin_conexion_y_errores():
+    e = make_engine()
+    assert e.bridge("café cafeína", "cerebro neuronas")["status"] == "none"  # memoria vacia
+    e.inject("El café tiene mucha cafeína por la mañana")
+    e.inject("Las neuronas del cerebro transmiten señales eléctricas")
+    r = e.bridge("café cafeína", "cerebro neuronas")  # cada recuerdo encaja con un solo tema: no hay puente
+    assert r["status"] == "none" and r["bridges"] == [] and r["a"] and r["b"], r
+    assert e.bridge("café cafeína", "cerebro neuronas", namespace="otro")["status"] == "none"
+    assert e.bridge("", "x")["status"] == "error" and e.bridge("x", None)["status"] == "error"
+    e.get_embeddings = lambda texts: [None for _ in texts]
+    assert e.bridge("café cafeína", "cerebro neuronas")["status"] == "error"
+
+
+
+
+def test_pregunta_del_pasado_mira_el_sotano_aunque_haya_un_recuerdo_actual_parecido():
+    saved = (mem_engine.WEAK_MATCH, mem_engine.MIN_SIM, mem_engine.WAVE_MIN_SIM)
+    mem_engine.WEAK_MATCH = mem_engine.MIN_SIM = mem_engine.WAVE_MIN_SIM = 0.2  # fuerza que la biblioteca "gane" con el actual
+    try:
+        e = make_engine()
+        e.inject("Mi antigua jefa se llamaba Verónica Soto")
+        e.inject("Mi jefa actual se llama Gisela")
+        e.inject("El reporte se entrega los viernes")
+        age(e.db_path, 250, "content LIKE '%antigua%'")
+        assert e.decay() == 1
+        res = e.query("¿Cómo se llama mi jefa?")  # sin pista de pasado: responde el actual y no baja al sotano
+        assert "Gisela" in res[0][3], res
+        assert len(rows(e.db_path, "SELECT * FROM archived_facts")) == 1
+        res = e.query("¿Cómo se llamaba mi antigua jefa?")
+        assert isinstance(res, list) and "Verónica" in res[0][3], res
+    finally:
+        mem_engine.WEAK_MATCH, mem_engine.MIN_SIM, mem_engine.WAVE_MIN_SIM = saved
+
+
+def test_sync_entre_dos_compus_une_sin_duplicar_ni_inflar_energia():
+    folder = tempfile.mkdtemp()
+    a, b = make_engine(), make_engine()
+    A1, B1 = "Luis trabaja en Neodata en Guadalajara", "El telescopio de mi vecino tiene montura ecuatorial"
+    a.inject(A1)
+    r = a.sync_file(folder)
+    assert r["status"] == "ok" and r["total"] == 1 and os.path.basename(r["path"]) == mem_engine.SYNC_FILENAME, r
+    b.inject(B1)
+    r = b.sync_file(folder)
+    assert r["status"] == "ok" and r["new"] == 1 and r["total"] == 2, r
+    assert sorted(b.get_all_facts()) == sorted([A1, B1])
+    for _ in range(3):
+        r = a.sync_file(folder)
+        b.sync_file(folder)
+    assert sorted(a.get_all_facts()) == sorted([A1, B1])
+    assert rows(a.db_path, "SELECT energy FROM facts WHERE content LIKE 'Luis%'") == [(0.5,)]  # sync repetido no sube la energia
+    with open(r["path"], "rb") as f:
+        first = f.read()
+    a.sync_file(folder)
+    with open(r["path"], "rb") as f:
+        assert f.read() == first  # sin cambios nuevos, el archivo queda identico (git no ve diferencias)
+
+
+def test_sync_se_niega_si_el_archivo_trae_lineas_invalidas():
+    folder = tempfile.mkdtemp()
+    path = os.path.join(folder, mem_engine.SYNC_FILENAME)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write('{"content": "Dato bueno del otro equipo"}\n<<<<<<< HEAD\n')
+    e = make_engine()
+    e.inject("Luis trabaja en Neodata en Guadalajara")
+    with open(path, encoding="utf-8") as f:
+        before = f.read()
+    r = e.sync_file(path)
+    assert r["status"] == "blocked" and "conflicto" in r["message"], r
+    with open(path, encoding="utf-8") as f:
+        assert f.read() == before  # no se sobrescribio: no se pierde lo del otro equipo
+
+
+CONC = "Luis aprende mejor haciendo ejercicios prácticos"
+F1 = "Luis aprende mejor haciendo ejercicios prácticos de programación"
+F2 = "Luis aprende mejor haciendo ejercicios prácticos de matemáticas"
+F3 = "Luis aprende mejor haciendo ejercicios prácticos de física"
+F4 = "Luis aprende mejor haciendo ejercicios prácticos de química"
+
+
+def _con_conclusion(verdict="RESPALDA", text=CONC):
+    e = make_engine()
+    e._ask_llm_conclusion = lambda f: text
+    e._ask_llm_support = lambda f, c: verdict
+    return e
+
+
+def _una_sola_conclusion(e, text=CONC):
+    """El modelo propone la conclusion solo la primera vez (despues dice que no hay otra)."""
+    calls = []
+    e._ask_llm_conclusion = lambda f: (calls.append(1), text if len(calls) == 1 else "")[1]
+
+
+def _pendientes(e):
+    return rows(e.db_path, "SELECT COUNT(*) FROM facts WHERE reasoned=0")[0][0]
+
+
+def _envejecer_conclusiones(e, secs=5):
+    with sqlite3.connect(e.db_path) as c:
+        c.execute("UPDATE conclusions SET last_checked = last_checked - ?", (secs,))
+        c.commit()
+
+
+def test_razonar_inject_deja_pendiente_y_el_sueno_lo_marca():
+    e = make_engine()
+    e.inject(F1)
+    assert rows(e.db_path, "SELECT reasoned FROM facts") == [(0,)]  # guardar sigue siendo rapido: solo queda pendiente
+    out = e.dream()
+    assert "Conclusiones: 0 nuevas" in out, out
+    assert rows(e.db_path, "SELECT reasoned FROM facts") == [(1,)]
+
+
+def test_razonar_conclusion_nueva_nace_como_hipotesis():
+    e = _con_conclusion()
+    e.inject(F1)
+    e.inject(F2)
+    e.inject("Los gatos duermen mucho durante el día")
+    out = e.dream()
+    assert "1 nuevas" in out, out
+    c = e.list_conclusions()
+    assert len(c) == 1 and c[0]["content"] == CONC and c[0]["status"] == "hipotesis", c
+    assert abs(c[0]["energy"] - 0.3) < 1e-6 and len(c[0]["sources"]) == 2, c
+    assert _pendientes(e) == 0
+
+
+def test_razonar_conclusion_sin_respaldo_se_descarta():
+    e = _con_conclusion(verdict="NEUTRO")
+    e.inject(F1)
+    e.inject(F2)
+    out = e.dream()
+    assert "0 nuevas" in out and "1 descartadas" in out, out
+    assert e.list_conclusions() == []
+    assert _pendientes(e) == 0
+
+
+def test_razonar_modelo_caido_deja_los_recuerdos_pendientes():
+    e = _con_conclusion()
+    e._ask_llm_conclusion = lambda f: None  # el modelo no responde
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    assert _pendientes(e) == 2 and e.list_conclusions() == []
+    e._ask_llm_conclusion = lambda f: CONC  # ya responde: se reintenta solo
+    e.dream()
+    assert _pendientes(e) == 0 and len(e.list_conclusions()) == 1
+
+
+def test_razonar_hipotesis_se_confirma_con_recuerdos_nuevos():
+    e = _con_conclusion()
+    _una_sola_conclusion(e)
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    _envejecer_conclusiones(e)
+    e.inject(F3)
+    e.inject(F4)
+    out = e.dream()
+    assert "1 confirmadas" in out, out
+    c = e.list_conclusions()[0]
+    assert c["status"] == "confirmada" and c["support"] == 2 and c["energy"] >= 0.59, c
+    assert len(c["sources"]) == 4, c
+
+
+def test_razonar_hipotesis_contradicha_se_descarta():
+    e = _con_conclusion()
+    _una_sola_conclusion(e)
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    _envejecer_conclusiones(e)
+    e._ask_llm_support = lambda f, c: "CONTRADICE"
+    e.inject(F3)
+    e.inject(F4)
+    out = e.dream()
+    assert e.list_conclusions() == [] and "1 descartadas" in out, out
+
+
+def test_razonar_misma_conclusion_se_refuerza_no_se_duplica():
+    e = _con_conclusion()
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    with sqlite3.connect(e.db_path) as c:
+        c.execute("UPDATE facts SET reasoned=0")
+        c.commit()
+    out = e.dream()
+    assert "0 nuevas, 1 reforzadas" in out, out
+    c = e.list_conclusions()
+    assert len(c) == 1 and abs(c[0]["energy"] - 0.4) < 1e-6, c
+
+
+def test_razonar_conclusion_sin_recuerdos_de_origen_se_descarta():
+    e = _con_conclusion()
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    for fid in list(_ids(e).values()):
+        assert e.forget(fid)["status"] == "deleted"
+    e.dream()
+    assert e.list_conclusions() == []
+    assert rows(e.db_path, "SELECT * FROM conclusion_sources") == []
+
+
+def test_update_memory_vuelve_a_dejar_el_recuerdo_pendiente():
+    e = make_engine()
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    fid = _ids(e)[F1]
+    assert e.update_memory(fid, F1 + " y estadística")["status"] == "updated"
+    assert rows(e.db_path, f"SELECT reasoned FROM facts WHERE id={fid}") == [(0,)]
+
+
+def test_razonar_se_puede_apagar():
+    old = mem_engine.CONCLUSIONS_ON
+    mem_engine.CONCLUSIONS_ON = False
+    try:
+        e = _con_conclusion()
+        e.inject(F1)
+        e.inject(F2)
+        out = e.dream()
+        assert "Conclusiones" not in out and e.list_conclusions() == [] and _pendientes(e) == 2, out
+    finally:
+        mem_engine.CONCLUSIONS_ON = old
+
+
+def test_forget_conclusion_y_clear_db():
+    e = _con_conclusion()
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    cid = e.list_conclusions()[0]["id"]
+    assert e.forget_conclusion(999)["status"] == "not_found"
+    assert e.forget_conclusion("x")["status"] == "error"
+    assert e.forget_conclusion(cid)["status"] == "deleted"
+    assert e.list_conclusions() == [] and len(e.list_facts()) == 2  # los recuerdos no se tocan
+    with sqlite3.connect(e.db_path) as c:
+        c.execute("UPDATE facts SET reasoned=0")
+        c.commit()
+    e.dream()
+    assert len(e.list_conclusions()) == 1
+    e.clear_db(namespace="default")
+    assert e.list_conclusions() == [] and rows(e.db_path, "SELECT * FROM conclusion_sources") == []
+
+
+def test_get_context_respeta_el_presupuesto_y_marca_hipotesis():
+    e = make_engine()
+    assert e.get_context() == "La memoria está vacía todavía."
+    e.inject("Me llamo Luis Eduardo y vivo en Guadalajara", pinned=True)
+    for i in range(40):
+        e.inject(f"Recuerdo suelto numero {i} sobre cosas distintas {i * 7919} zeta{i}")
+    with sqlite3.connect(e.db_path) as c:
+        c.execute("INSERT INTO conclusions (namespace, content, energy, embedding, status, created_at, last_checked) "
+                  "VALUES ('default', 'Le gusta aprender haciendo', 0.3, '[]', 'hipotesis', 0, 0)")
+        c.commit()
+    txt = e.get_context(token_budget=200)
+    assert "Me llamo Luis Eduardo" in txt and "(hipótesis)" in txt and "sin mostrar" in txt, txt
+    assert len(txt) <= 200 * 4 + 120, len(txt)
+    assert txt.index("Identidad") < txt.index("Conclusiones") < txt.index("Recuerdos con más energía")
+    big = e.get_context(token_budget=8000)
+    assert "sin mostrar" not in big and big.count("[ID ") == len(e.list_facts()), big
+
+
+def test_query_conclusions_encuentra_la_parecida_y_no_toca_nada():
+    e = _con_conclusion()
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    antes = rows(e.db_path, "SELECT energy, last_checked FROM conclusions")
+    hits = e.query_conclusions("cómo aprende Luis mejor haciendo ejercicios")
+    assert len(hits) == 1 and hits[0]["content"] == CONC and hits[0]["status"] == "hipotesis", hits
+    assert e.query_conclusions("astronomía de agujeros negros") == []
+    assert e.query_conclusions("cómo aprende Luis", namespace="otro") == []
+    assert rows(e.db_path, "SELECT energy, last_checked FROM conclusions") == antes  # solo informa
+    e.forget_conclusion(hits[0]["id"])
+    assert e.query_conclusions("aprende mejor haciendo ejercicios") == []
+
+
+class _FakeEmbedder:
+    scheme = "fake"
+
+    def doc(self, text, retries=3):
+        return fake_embedding(text)
+
+    def queries(self, texts):
+        return [fake_embedding(t) for t in texts]
+
+    def docs(self, texts):
+        return [fake_embedding(t) for t in texts]
+
+
+class _FakeGenerator:
+    def __init__(self, text=CONC):
+        self.text, self.calls = text, []
+
+    def generate(self, prompt, timeout=30, model=None):
+        self.calls.append(model)
+        return self.text
+
+
+class _FakeDecider:
+    def ask(self, state, name, question, timeout=30):
+        return {"choice": "otro"} if name == "temas" else {}
+
+    def choose(self, state, instructions, criteria, name="relacion", timeout=30):
+        return "respalda" if "respalda" in criteria else "complementario"
+
+
+def test_llm_el_motor_usa_las_piezas_inyectadas_y_no_hace_http():
+    from stonebot_engine import llm
+    def sin_red(*a, **k):
+        raise AssertionError("el motor no debe hablar con Ollama por su cuenta")
+    old = llm.requests.post
+    llm.requests.post = sin_red
+    try:
+        gen = _FakeGenerator()
+        e = StoneBotEngine(allowed_root=tempfile.gettempdir(), db_path=os.path.join(tempfile.mkdtemp(), "t.db"),
+                                embedder=_FakeEmbedder(), generator=gen, decider=_FakeDecider())
+        e.inject(F1)
+        e.inject(F2)
+        out = e.dream()
+        assert "1 nuevas" in out, out
+        assert gen.calls == [mem_engine.CONCLUSION_MODEL], gen.calls  # las conclusiones usan su propio modelo
+        res = e.query("aprende mejor haciendo ejercicios")
+        assert isinstance(res, list) and res[0][3] in (F1, F2), res
+        assert len(rows(e.db_path, "SELECT * FROM fact_topics")) == 2  # el decisor clasifico los temas
+        assert [r[0] for r in rows(e.db_path, "SELECT kind FROM links")] == ["similar"]  # y decidio que no se contradicen
+    finally:
+        llm.requests.post = old
+
+
+def test_llm_las_piezas_nunca_lanzan_y_validan_lo_que_responde():
+    from stonebot_engine import llm
+
+    class R:
+        def __init__(self, status=200, data=None):
+            self.status_code, self._d = status, data or {}
+
+        def json(self):
+            return self._d
+
+    old_post, old_sleep = llm.requests.post, llm.time.sleep
+    llm.time.sleep = lambda s: None
+    try:
+        d, crit = llm.Decider(model="x"), {"respalda": "a", "contradice": "b"}
+        llm.requests.post = lambda url, **kw: R(200, {"answers": {"relacion": {"choice": "respalda"}}})
+        assert d.choose("s", "i", crit) == "respalda"
+        llm.requests.post = lambda url, **kw: R(200, {"answers": {"relacion": {"choice": "inventada"}}})
+        assert d.choose("s", "i", crit) == ""  # una opcion que no existe no vale
+
+        def apagado(url, **kw):
+            raise ConnectionError("Ollama apagado")
+        llm.requests.post = apagado
+        assert d.ask("s", "relacion", {}) is None and d.choose("s", "i", crit) == ""
+        assert llm.Generator().generate("hola") is None
+        emb = llm.Embedder(model="m", query_prefix="q:", doc_prefix="d:")
+        assert emb.scheme == "m|q:|d:" and emb.docs(["a", "b"]) == [None, None] and emb.doc("a") is None
+
+        vistos = []
+
+        def solo_uno_por_uno(url, **kw):
+            vistos.append(kw["json"])
+            if url == llm.OLLAMA_URL:
+                return R(200, {"embedding": [1.0, 2.0]})
+            return R(500)  # el lote falla
+        llm.requests.post = solo_uno_por_uno
+        assert emb.queries(["a", "b"]) == [[1.0, 2.0], [1.0, 2.0]]  # si el lote falla, pide uno por uno
+        assert [v["prompt"] for v in vistos if "prompt" in v] == ["q:a", "q:b"]  # con el prefijo de pregunta
+    finally:
+        llm.requests.post, llm.time.sleep = old_post, old_sleep
+
+
+def test_llm_el_esquema_por_defecto_coincide_con_las_constantes():
+    from stonebot_engine import llm
+    assert llm.Embedder().scheme == f"{mem_engine.EMBEDDING_MODEL}|{mem_engine.QUERY_PREFIX}|{mem_engine.DOC_PREFIX}"
+
+
+def _atrasar_desgaste(e, days):
+    with sqlite3.connect(e.db_path) as c:
+        c.execute("UPDATE conclusions SET last_decay = ?", (time.time() - days * 86400,))
+        c.commit()
+
+
+def test_caducar_la_hipotesis_pierde_energia_con_los_dias():
+    e = _con_conclusion()
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    _atrasar_desgaste(e, 10)
+    out = e.dream()
+    c = e.list_conclusions()
+    assert len(c) == 1 and abs(c[0]["energy"] - 0.3 * 0.97 ** 10) < 0.01, c
+    assert "0 caducadas" in out, out
+
+
+def test_caducar_la_hipotesis_sin_respaldo_se_borra_y_los_recuerdos_quedan():
+    e = _con_conclusion()
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    _atrasar_desgaste(e, 60)  # 0.3 * 0.97^60 = 0.048 < 0.1
+    out = e.dream()
+    assert e.list_conclusions() == [] and "1 caducadas" in out, out
+    assert len(e.list_facts()) == 2 and rows(e.db_path, "SELECT * FROM conclusion_sources") == []
+
+
+def test_caducar_una_confirmada_se_desgasta_despacio_y_vuelve_a_hipotesis():
+    e = _con_conclusion()
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    with sqlite3.connect(e.db_path) as c:
+        c.execute("UPDATE conclusions SET status='confirmada', energy=0.9")
+        c.commit()
+    _atrasar_desgaste(e, 100)  # 0.9 * 0.995^100 = 0.55: sigue confirmada
+    e.dream()
+    c = e.list_conclusions()[0]
+    assert c["status"] == "confirmada" and abs(c["energy"] - 0.9 * 0.995 ** 100) < 0.01, c
+    _atrasar_desgaste(e, 200)  # 0.55 * 0.995^200 = 0.20: ya no merece estar confirmada, pero no caduca
+    e.dream()
+    c = e.list_conclusions()[0]
+    assert c["status"] == "hipotesis" and c["energy"] > mem_engine.CONCLUSION_FLOOR, c
+
+
+def test_caducar_hay_un_tope_de_hipotesis_y_se_van_las_de_menos_energia():
+    e = make_engine()
+    old = mem_engine.CONCLUSION_MAX
+    mem_engine.CONCLUSION_MAX = 2
+    try:
+        with sqlite3.connect(e.db_path) as c:
+            for n, (status, energy) in enumerate([("hipotesis", 0.2), ("hipotesis", 0.5), ("hipotesis", 0.3), ("hipotesis", 0.4), ("confirmada", 0.1)]):
+                c.execute("INSERT INTO conclusions (namespace, content, energy, embedding, status, created_at, last_checked, last_decay) "
+                          "VALUES ('default', ?, ?, '[]', ?, ?, ?, ?)", (f"conclusion {n}", energy, status, time.time(), time.time(), time.time()))
+            c.commit()
+        assert e._decay_conclusions("default") == 2
+        left = sorted((c["status"], round(c["energy"], 2)) for c in e.list_conclusions())
+        assert left == [("confirmada", 0.1), ("hipotesis", 0.4), ("hipotesis", 0.5)], left  # la confirmada no cuenta para el tope
+    finally:
+        mem_engine.CONCLUSION_MAX = old
+
+
+def test_caducar_bd_vieja_sin_last_decay_se_migra():
+    db = os.path.join(tempfile.mkdtemp(), "vieja.db")
+    with sqlite3.connect(db) as c:
+        c.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+        c.execute("INSERT INTO meta VALUES ('embed_scheme', ?)", (f"{mem_engine.EMBEDDING_MODEL}|{mem_engine.QUERY_PREFIX}|{mem_engine.DOC_PREFIX}",))
+        c.execute("CREATE TABLE conclusions (id INTEGER PRIMARY KEY AUTOINCREMENT, namespace TEXT DEFAULT 'default', content TEXT, energy REAL, "
+                  "embedding TEXT, status TEXT DEFAULT 'hipotesis', support INTEGER DEFAULT 0, against INTEGER DEFAULT 0, created_at REAL, last_checked REAL)")
+        c.execute("INSERT INTO conclusions (namespace, content, energy, embedding, created_at, last_checked) VALUES ('default', 'vieja', 0.3, '[]', 1767225600.0, 1767225600.0)")
+        c.commit()
+    e = make_engine(db)
+    assert rows(db, "SELECT last_decay FROM conclusions") == [(1767225600.0,)]
+    e.close()
+
+
+def test_conclusion_se_lee_lo_que_contesta_el_modelo_generativo():
+    e = make_engine()
+
+    def concl(text):
+        e.generator = _FakeGenerator(text)
+        return StoneBotEngine._ask_llm_conclusion(e, ["uno", "dos"])  # el metodo real (make_engine lo reemplaza en la instancia)
+    assert concl("Prefiere aprender practicando con proyectos.") == "Prefiere aprender practicando con proyectos."
+    assert concl("NUEVA CONCLUSIÓN: El usuario prefiere procesar sus datos en su propia computadora") == "El usuario prefiere procesar sus datos en su propia computadora"
+    assert concl("Conclusión: Le gusta cocinar los domingos en casa") == "Le gusta cocinar los domingos en casa"
+    for nada in ("NINGUNA", "Ninguna", "Ningún recuerdo muestra un patrón coherente entre sí", "Ninguno de estos recuerdos indica un hábito claro",
+                 "No existe ninguna conclusión clara que se desprenda de estos recuerdos", "No hay una conclusión clara", "", "corta"):
+        assert concl(nada) == "", nada
+    assert len(concl("Algo muy largo " * 40)) == 240
+    assert concl(None) is None  # el modelo no responde: distinto de "no hay conclusion"
+
+
+if __name__ == "__main__":
+    fallos = 0
+    for name, fn in list(globals().items()):
+        if name.startswith("test_"):
+            try:
+                fn()
+                print(f"PASS  {name}")
+            except Exception as ex:
+                fallos += 1
+                print(f"FAIL  {name}: {type(ex).__name__}: {ex}")
+    print("\nTODO OK" if not fallos else f"\n{fallos} prueba(s) fallaron")
+    sys.exit(1 if fallos else 0)
