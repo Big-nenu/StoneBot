@@ -225,6 +225,7 @@ def test_worker_guarda_consulta_y_conecta_recuerdos_tras_reabrir():
 
         with (patch.object(safety, "default_root", return_value=root),
               patch.object(tm.mem_engine, "default_root", return_value=root),
+              patch.object(app, "load_servers", return_value={}),
               patch.object(app, "DB_PATH", database),
               patch.object(app, "_memory", None),
               patch.object(StoneBotEngine, "get_embedding", side_effect=tm.fake_embedding),

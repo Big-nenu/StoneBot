@@ -1,15 +1,19 @@
+import asyncio
 import json
 import sqlite3
 import sys
+from contextlib import AsyncExitStack
 from math import ceil
 from pathlib import Path
 
-from ollama import Client
+from ollama import Client, Tool
+from mcp_client import call_external, discover, load_servers, ollama_tool, session_for
+from mcp_ui import McpDialog
 from stonebot_engine import StoneBotEngine, check_db_path, default_root
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QTextOption
 from PySide6.QtWidgets import (
-    QApplication, QHBoxLayout, QLabel, QMainWindow, QPushButton, QScrollArea,
+    QApplication, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QScrollArea,
     QSizePolicy, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -77,6 +81,8 @@ MEMORY_TOOLS = {tool.__name__: tool for tool in (query_memory, inject_memory, br
 class Worker(QObject):
     finished = Signal(str)
     error = Signal(str)
+    mcp_notice = Signal(str)
+    mcp_confirmation = Signal(object)
 
     def __init__(self, messages):
         super().__init__()
@@ -85,29 +91,70 @@ class Worker(QObject):
     @Slot()
     def run(self):
         try:
-            client = Client(host="http://localhost:11434", timeout=180)
-            messages = list(self.messages)
-            for _ in range(6):
-                reply = client.chat(model=MODEL, messages=messages, tools=list(MEMORY_TOOLS.values()),
-                                    options={"num_ctx": 4096}).message
-                if not reply.tool_calls:
-                    self.finished.emit(reply.content or "(Sin respuesta)")
-                    return
-                messages.append(reply)
-                for call in reply.tool_calls:
-                    name = call.function.name
-                    tool = MEMORY_TOOLS.get(name)
-                    if tool is None:
-                        result = "Herramienta de memoria desconocida."
-                    else:
-                        try:
-                            result = tool(**call.function.arguments)
-                        except (TypeError, ValueError, OSError, RuntimeError, sqlite3.Error) as exc:
-                            result = f"Error de memoria: {exc}"
-                    messages.append({"role": "tool", "tool_name": name, "content": result})
-            raise RuntimeError("StoneBot alcanzó el límite de llamadas de memoria para este turno.")
+            self.finished.emit(asyncio.run(self.chat()))
         except Exception as exc:
             self.error.emit(str(exc))
+
+    async def chat(self):
+        client = Client(host="http://localhost:11434", timeout=180)
+        messages = list(self.messages)
+        external = {}
+        specs = list(MEMORY_TOOLS.values())
+        try:
+            servers = load_servers()
+        except (ValueError, OSError, RuntimeError):
+            servers = {}
+            self.mcp_notice.emit("No se pudo leer la configuración MCP.")
+        async with AsyncExitStack() as connections:
+            for name, server in servers.items():
+                if not server["enabled"]:
+                    continue
+                try:
+                    async with AsyncExitStack() as connection:
+                        session = await connection.enter_async_context(session_for(name, server))
+                        entries = await discover(session, name, server)
+                        for alias, entry in entries.items():
+                            try:
+                                spec = Tool.model_validate({
+                                    "type": "function", "function": {"name": alias, **ollama_tool(entry)},
+                                })
+                            except ValueError:
+                                self.mcp_notice.emit(f"MCP {name}: una herramienta tiene un esquema incompatible.")
+                                continue
+                            specs.append(spec)
+                            external[alias] = entry
+                        await connections.enter_async_context(connection.pop_all())
+                except Exception:
+                    self.mcp_notice.emit(f"No se pudo conectar o descubrir herramientas en MCP {name}.")
+
+            for _ in range(6):
+                response = await asyncio.to_thread(client.chat, model=MODEL, messages=messages,
+                                                   tools=specs, options={"num_ctx": 4096})
+                reply = response.message
+                if not reply.tool_calls:
+                    return reply.content or "(Sin respuesta)"
+                messages.append(reply)
+                for call in reply.tool_calls:
+                    name, arguments = call.function.name, call.function.arguments
+                    if name in external:
+                        try:
+                            result = await call_external(external[name], arguments, self.confirm_external)
+                        except Exception:
+                            result = "La llamada MCP falló o superó el tiempo de espera."
+                    elif name in MEMORY_TOOLS:
+                        try:
+                            result = MEMORY_TOOLS[name](**arguments)
+                        except (TypeError, ValueError, OSError, RuntimeError, sqlite3.Error) as exc:
+                            result = f"Error de memoria: {exc}"
+                    else:
+                        result = "Herramienta desconocida."
+                    messages.append({"role": "tool", "tool_name": name, "content": result})
+            raise RuntimeError("StoneBot alcanzó el límite de llamadas a herramientas para este turno.")
+
+    async def confirm_external(self, server, tool, arguments):
+        request = {"server": server, "tool": tool, "arguments": arguments, "approved": False}
+        await asyncio.to_thread(self.mcp_confirmation.emit, request)
+        return request["approved"]
 
 
 class ChatText(QTextEdit):
@@ -164,6 +211,7 @@ class StoneBot(QMainWindow):
         self.messages = [{"role": "system", "content": SYSTEM}]
         self.thread = None
         self.worker = None
+        self.mcp_dialog = None
 
         central = QWidget()
         central.setObjectName("chatWindow")
@@ -211,6 +259,10 @@ class StoneBot(QMainWindow):
         header_layout.addWidget(title)
         header_layout.addStretch()
         header_layout.addWidget(model)
+        self.mcp_button = QPushButton("MCP")
+        self.mcp_button.setAccessibleName("Administrar servidores MCP")
+        self.mcp_button.clicked.connect(self.open_mcp)
+        header_layout.addWidget(self.mcp_button)
         layout.addWidget(header)
 
         self.chat = QScrollArea()
@@ -262,6 +314,13 @@ class StoneBot(QMainWindow):
         layout.addLayout(footer)
         self.message.setFocus()
 
+    def open_mcp(self):
+        if self.mcp_dialog is None:
+            self.mcp_dialog = McpDialog(self)
+        else:
+            self.mcp_dialog.reload()
+        self.mcp_dialog.exec()
+
     def append_message(self, text, *, user=False):
         if user:
             self.follow_latest = True
@@ -299,6 +358,7 @@ class StoneBot(QMainWindow):
         self.message.clear()
         self.message.setEnabled(False)
         self.send.setEnabled(False)
+        self.mcp_button.setEnabled(False)
         self.status.setText("StoneBot está pensando…")
         self.status.show()
 
@@ -311,10 +371,37 @@ class StoneBot(QMainWindow):
         self.thread.started.connect(self.worker.run)
         self.worker.finished.connect(self.respuesta)
         self.worker.error.connect(self.error)
+        self.worker.mcp_notice.connect(self.append_message)
+        self.worker.mcp_confirmation.connect(self.confirmar_mcp, Qt.ConnectionType.BlockingQueuedConnection)
         self.worker.finished.connect(self.thread.quit)
         self.worker.error.connect(self.thread.quit)
         self.thread.finished.connect(self.limpiar)
         self.thread.start()
+
+    @Slot(object)
+    def confirmar_mcp(self, request):
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Confirmar operación MCP")
+        dialog.setIcon(QMessageBox.Icon.Question)
+        dialog.setTextFormat(Qt.TextFormat.PlainText)
+        dialog.setText(f"¿Autorizar {request['tool']} en {request['server']}?")
+        arguments = json.dumps(request["arguments"], indent=2, ensure_ascii=True)
+        if len(arguments) <= 500:
+            dialog.setInformativeText(arguments)
+        else:
+            dialog.setInformativeText("Revisa los argumentos en «Mostrar detalles» antes de autorizar.")
+            dialog.setDetailedText(arguments)
+        buttons = QMessageBox.StandardButton
+        dialog.setStandardButtons(buttons.Yes | buttons.No)
+        dialog.setDefaultButton(buttons.No)
+        dialog.setEscapeButton(buttons.No)
+        request["approved"] = dialog.exec() == buttons.Yes
+
+    def closeEvent(self, event):
+        if self.thread is not None:
+            event.ignore()
+        else:
+            super().closeEvent(event)
 
     def respuesta(self, texto):
         self.messages.append({"role": "assistant", "content": texto})
@@ -332,6 +419,7 @@ class StoneBot(QMainWindow):
         self.status.hide()
         self.message.setEnabled(True)
         self.send.setEnabled(True)
+        self.mcp_button.setEnabled(True)
         self.message.setFocus()
 
 

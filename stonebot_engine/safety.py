@@ -32,7 +32,7 @@ def protected_paths():
     return paths
 
 
-def check_path(path, root=None):
+def check_path(path, root=None, *, reject_hard_links=True):
     """Valida la ruta declarada y su destino, incluyendo enlaces a archivos externos."""
     path = os.path.abspath(os.fspath(path))
     if os.name == "nt" and ":" in os.path.splitdrive(path)[1]:
@@ -49,7 +49,7 @@ def check_path(path, root=None):
         info = os.stat(target)
     except FileNotFoundError:
         return target
-    if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+    if reject_hard_links and stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
         raise IsolationError(f"Archivo con enlaces duros: {path}")
     return target
 

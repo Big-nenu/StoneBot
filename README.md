@@ -157,6 +157,42 @@ python -B tests/test_aislamiento.py
 
 También se verificaron las tres herramientas con Nemotron y Ollama local desde la interfaz Qt. Se guardó un recuerdo sintético, se reinició la aplicación y se comprobó que el chat podía recuperarlo y encontrar su relación con dos temas.
 
+## Servidores MCP externos
+
+Instala el cliente con `python -m pip install "mcp>=1.28,<2"`. La memoria interna sigue usando llamadas directas al motor de StoneBot. El chat descubre las herramientas de los servidores activados al empezar cada turno y entrega sus resultados de texto a Nemotron.
+
+Abre **MCP** en la cabecera del chat para agregar, editar, activar, desactivar o eliminar servidores. **Probar conexión** abre una sesión temporal y muestra el resultado, las herramientas descubiertas y cuáles tienen lectura automática. El panel muestra el resultado de la última prueba durante la sesión de StoneBot.
+
+Los servidores se agregan desactivados. El nombre identifica la configuración y se mantiene al editarla. Cambiar el transporte, el ejecutable, los argumentos, la URL o la referencia al token desactiva el servidor y revoca sus lecturas automáticas. Los cambios aplican al siguiente turno. En STDIO, escribe los argumentos como una lista JSON, por ejemplo `["-B", "C:\\ruta\\servidor.py"]`. En HTTP solo se muestra y guarda el nombre de la variable del token.
+
+También puedes administrar la misma configuración desde la terminal.
+
+```powershell
+# Usa un intérprete del entorno virtual donde instalaste MCP.
+python mcp_client.py add ejemplo --command "$PWD\.venv\Scripts\python.exe" --arg "$PWD\tests\mcp_example.py"
+python mcp_client.py allow-read ejemplo echo
+python mcp_client.py enable ejemplo
+python mcp_client.py list
+python mcp_client.py disable ejemplo
+python mcp_client.py revoke-read ejemplo echo
+python mcp_client.py remove ejemplo
+```
+
+Para un servidor remoto, usa `python mcp_client.py add remoto --url https://servidor.example/mcp --token-env STONEBOT_MCP_REMOTO_TOKEN` y luego actívalo. El nombre de la variable es opcional. Carga su valor en el entorno de StoneBot desde tu gestor de secretos antes de iniciar la app. HTTP sin TLS se admite para pruebas locales sin token. [Transportes del SDK MCP](https://github.com/modelcontextprotocol/python-sdk/blob/main/docs/client/transports.md)
+
+La configuración se guarda en `%USERPROFILE%\.stonebot\mcp_servers.json`. Usa los argumentos de lanzamiento STDIO únicamente para opciones que no contengan credenciales. Cada servidor STDIO arranca en su propio directorio bajo `%USERPROFILE%\.stonebot\mcp\`, con las variables de perfil redirigidas. Activar STDIO autoriza iniciar ese programa con los permisos de la cuenta actual. Ejecuta servidores locales de terceros bajo una cuenta o un entorno aislado por el sistema si necesitas impedirles el acceso a archivos de tu cuenta.
+
+Una lectura automática requiere autorización por nombre y que el servidor la declare de solo lectura. Las demás llamadas MCP muestran el servidor, la operación y sus argumentos para confirmar cada vez. El servidor recibe los argumentos de las llamadas que se ejecutan. Habilita solo servidores y lecturas que hayas revisado.
+
+Con el ejemplo activado, pide en el chat «Usa echo del servidor ejemplo con el texto hola». Las pruebas usan configuraciones temporales.
+
+```powershell
+python -B tests/test_mcp.py
+python -B tests/test_mcp_ui.py
+```
+
+El panel se probó con servidores de ejemplo mediante STDIO y Streamable HTTP en loopback. En el mismo chat, Nemotron y Ollama ejecutaron una herramienta MCP y recuperaron un recuerdo de una base temporal.
+
 Para reiniciar la memoria experimental, cierra StoneBot y mueve su `memoria.db` y los archivos auxiliares de SQLite que existan a una carpeta de respaldo. Luego crea una base vacía con `python -c "from stonebot_engine import StoneBotEngine, default_root; StoneBotEngine(default_root() / 'memoria.db').close()"`. Para restaurar, con StoneBot cerrado, mueve la base experimental actual a otra carpeta y devuelve los archivos del respaldo a la carpeta de StoneBot.
 
 ## Archivos actuales
