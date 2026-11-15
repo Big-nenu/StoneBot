@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import mcp
+from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 from ollama import Message
 
 import app
@@ -23,6 +24,63 @@ def example_stdio():
     example = str(Path(__file__).with_name("mcp_example.py").resolve())
     code = f"import runpy,site;site.addsitedir({packages!r});runpy.run_path({example!r},run_name='__main__')"
     return ["--command", sys.executable, "--arg=-B", "--arg=-c", "--arg", code]
+
+
+def test_context7_results_are_used_to_finish_after_empty_ollama_response():
+    schema = {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
+    names = ["resolve-library-id", "query-docs"]
+    doc = ("### QVBoxLayout: usa addWidget() para añadir controles.\n" * 160)[:8000]
+    session = SimpleNamespace(
+        list_tools=AsyncMock(return_value=ListToolsResult(tools=[
+            Tool(name=name, inputSchema=schema) for name in names
+        ])),
+        call_tool=AsyncMock(side_effect=[
+            CallToolResult(content=[], structuredContent={"libraryId": "/qt/pyside6"}),
+            CallToolResult(content=[TextContent(type="text", text=doc)]),
+        ]),
+    )
+
+    @contextlib.asynccontextmanager
+    async def connected(name, server):
+        yield session
+
+    messages = [{"role": "system", "content": app.SYSTEM}, {"role": "user", "content": "Consulta PySide6."}]
+    rounds = 0
+
+    def chat(**kwargs):
+        nonlocal rounds
+        rounds += 1
+        assert kwargs["options"]["num_ctx"] == (4096 if rounds == 1 else 8192)
+        transcript = kwargs["messages"]
+        if rounds == 4:
+            assert kwargs["tools"] == [] and kwargs["think"] is False
+            assert len(transcript) == 6, transcript
+            assert transcript[3]["content"] == '{"libraryId": "/qt/pyside6"}'
+            assert transcript[5]["content"] == doc
+            return SimpleNamespace(message=Message(role="assistant", content="Usa QVBoxLayout.addWidget()."))
+        if rounds == 3:
+            assert transcript[-1]["content"] == doc
+            return SimpleNamespace(done_reason="length",
+                                   message=Message(role="assistant", content="", thinking="Revisando los ejemplos."))
+        name = names[rounds - 1]
+        tool, = [tool for tool in kwargs["tools"] if not callable(tool) and f" / {name}." in tool.function.description]
+        call = Message.ToolCall(function=Message.ToolCall.Function(name=tool.function.name, arguments={"query": "PySide6"}))
+        return SimpleNamespace(message=Message(role="assistant", tool_calls=[call]))
+
+    worker = app.Worker(messages)
+    outputs, errors = [], []
+    worker.finished.connect(outputs.append)
+    worker.error.connect(errors.append)
+    confirm = AsyncMock(return_value=True)
+    with (patch.object(app, "load_servers", return_value={"context7": {"enabled": True, "read_tools": []}}),
+          patch.object(app, "session_for", connected),
+          patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)),
+          patch.object(worker, "confirm_external", confirm)):
+        worker.run()
+    assert not errors, errors
+    assert outputs == ["Usa QVBoxLayout.addWidget()."] and rounds == 4
+    assert [call.args[1] for call in confirm.await_args_list] == names
+    assert [call.args[0] for call in session.call_tool.await_args_list] == names
 
 
 def test_stdio_chat_and_permissions():
@@ -51,6 +109,7 @@ def test_stdio_chat_and_permissions():
             personal.write_text("datos de prueba", encoding="utf-8")
             messages = [{"role": "system", "content": app.SYSTEM}, {"role": "user", "content": "Prueba MCP"}]
             rounds = 0
+            aliases = {}
 
             def chat(**kwargs):
                 nonlocal rounds
@@ -60,6 +119,7 @@ def test_stdio_chat_and_permissions():
                 assert len(tools) == 2, tools
                 echo, = [alias for alias, desc in tools.items() if " / echo." in desc]
                 mark, = [alias for alias, desc in tools.items() if " / mark." in desc]
+                aliases["mark"] = mark
                 transcript = kwargs["messages"]
                 if rounds == 1:
                     assert len([tool for tool in kwargs["tools"] if callable(tool)]) == 3
@@ -93,6 +153,29 @@ def test_stdio_chat_and_permissions():
             assert confirm.await_count == 2
             assert personal.read_text(encoding="utf-8") == "datos de prueba"
             assert marker.read_text(encoding="utf-8") == "aprobado"
+
+            servers = mcp_client.load_servers()
+            servers["example"]["disabled_tools"] = ["mark"]
+            mcp_client.save_servers(servers)
+
+            def stale_call(**kwargs):
+                exposed = [tool.function.description for tool in kwargs["tools"] if not callable(tool)]
+                assert len(exposed) == 1 and " / echo." in exposed[0]
+                if len(kwargs["messages"]) == 2:
+                    call = Message.ToolCall(function=Message.ToolCall.Function(
+                        name=aliases["mark"], arguments={"text": "no disponible"}))
+                    reply = Message(role="assistant", tool_calls=[call])
+                else:
+                    assert "desconocida" in kwargs["messages"][-1]["content"]
+                    reply = Message(role="assistant", content="Excluida")
+                return SimpleNamespace(message=reply)
+
+            with (patch.object(app, "Client", return_value=SimpleNamespace(chat=stale_call)),
+                  patch.object(worker, "confirm_external", confirm)):
+                worker.run()
+            assert not errors, errors
+            assert outputs == ["Terminado", "Excluida"]
+            assert confirm.await_count == 2 and marker.read_text(encoding="utf-8") == "aprobado"
             manage("revoke-read", "example", "echo")
             assert mcp_client.load_servers()["example"]["read_tools"] == []
             manage("remove", "example")
@@ -100,5 +183,7 @@ def test_stdio_chat_and_permissions():
 
 
 if __name__ == "__main__":
+    test_context7_results_are_used_to_finish_after_empty_ollama_response()
+    print("PASS: Context7 entrega ambos resultados y Ollama sintetiza tras una respuesta vacía.")
     test_stdio_chat_and_permissions()
     print("PASS: configuración, chat MCP STDIO, lectura autorizada, validación y confirmación de escritura.")

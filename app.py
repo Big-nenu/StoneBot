@@ -7,6 +7,7 @@ from math import ceil
 from pathlib import Path
 
 from ollama import Client, Tool
+from appearance import AppearanceDialog, load_appearance, readable_text, save_appearance
 from mcp_client import call_external, discover, load_servers, ollama_tool, session_for
 from mcp_ui import McpDialog
 from stonebot_engine import StoneBotEngine, check_db_path, default_root
@@ -100,6 +101,7 @@ class Worker(QObject):
         messages = list(self.messages)
         external = {}
         specs = list(MEMORY_TOOLS.values())
+        used_mcp = False
         try:
             servers = load_servers()
         except (ValueError, OSError, RuntimeError):
@@ -128,15 +130,26 @@ class Worker(QObject):
                     self.mcp_notice.emit(f"No se pudo conectar o descubrir herramientas en MCP {name}.")
 
             for _ in range(6):
+                # Los resultados MCP pueden llenar la ventana antes de que Nemotron redacte.
+                options = {"num_ctx": 8192 if used_mcp else 4096}
                 response = await asyncio.to_thread(client.chat, model=MODEL, messages=messages,
-                                                   tools=specs, options={"num_ctx": 4096})
+                                                   tools=specs, options=options)
                 reply = response.message
                 if not reply.tool_calls:
-                    return reply.content or "(Sin respuesta)"
+                    if not used_mcp:
+                        return reply.content or "(Sin respuesta)"
+                    if (reply.content or "").strip():
+                        return reply.content
+                    final = await asyncio.to_thread(client.chat, model=MODEL, messages=messages,
+                                                    tools=[], think=False, options=options)
+                    if not final.message.tool_calls and (final.message.content or "").strip():
+                        return final.message.content
+                    raise RuntimeError("Ollama no generó una respuesta final tras recibir los resultados MCP.")
                 messages.append(reply)
                 for call in reply.tool_calls:
                     name, arguments = call.function.name, call.function.arguments
                     if name in external:
+                        used_mcp = True
                         try:
                             result = await call_external(external[name], arguments, self.confirm_external)
                         except Exception:
@@ -188,6 +201,7 @@ class Composer(ChatText):
 
     def __init__(self):
         super().__init__()
+        self.setObjectName("messageInput")
         self.setPlaceholderText("Escribe un mensaje…")
         self.setAccessibleName("Mensaje para StoneBot")
         self.document().setDocumentMargin(12)
@@ -212,38 +226,11 @@ class StoneBot(QMainWindow):
         self.thread = None
         self.worker = None
         self.mcp_dialog = None
+        self.appearance = load_appearance()
 
         central = QWidget()
         central.setObjectName("chatWindow")
         self.setCentralWidget(central)
-        central.setStyleSheet("""
-            QWidget#chatWindow, QWidget#chatCanvas { background: #19191e; }
-            QLabel, QTextEdit, QPushButton {
-                color: #f3f0f7; font-family: "Segoe UI"; font-size: 15px;
-            }
-            QWidget#chatHeader { border-bottom: 1px solid #34343f; }
-            QLabel#chatTitle { font-weight: 700; }
-            QLabel#chatModel, QLabel#chatStatus { color: #b8b2c4; font-size: 14px; }
-            QScrollArea, QTextEdit { background: transparent; border: 0; }
-            QScrollBar:vertical { width: 10px; background: #19191e; }
-            QScrollBar::handle:vertical {
-                min-height: 28px; background: #55515f; border-radius: 5px;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
-            QTextEdit { selection-background-color: #6943a3; }
-            QTextEdit#userMessage { background: #4e2d7e; border-radius: 16px; }
-            QWidget#composerPanel {
-                background: #25252d; border: 1px solid #41404f; border-radius: 18px;
-            }
-            QPushButton {
-                background: #c8a7ff; color: #211331; border: 2px solid transparent;
-                border-radius: 12px; padding: 6px 13px; font-weight: 600;
-            }
-            QPushButton:hover { background: #dfc8ff; }
-            QPushButton:focus { border-color: #ffffff; }
-            QPushButton:disabled { background: #383541; color: #b1a8be; }
-        """)
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 14)
         layout.setSpacing(0)
@@ -263,6 +250,11 @@ class StoneBot(QMainWindow):
         self.mcp_button.setAccessibleName("Administrar servidores MCP")
         self.mcp_button.clicked.connect(self.open_mcp)
         header_layout.addWidget(self.mcp_button)
+        self.settings_button = QPushButton("⚙")
+        self.settings_button.setAccessibleName("Configuración de apariencia")
+        self.settings_button.setToolTip("Apariencia")
+        self.settings_button.clicked.connect(self.open_appearance)
+        header_layout.addWidget(self.settings_button)
         layout.addWidget(header)
 
         self.chat = QScrollArea()
@@ -312,11 +304,73 @@ class StoneBot(QMainWindow):
         self.status.hide()
         layout.addWidget(self.status)
         layout.addLayout(footer)
+        self.refresh_appearance()
+        self.setMinimumWidth(max(self.minimumWidth(), header.minimumSizeHint().width()))
         self.message.setFocus()
+
+    def open_appearance(self):
+        AppearanceDialog(self, self.appearance, self.change_appearance).exec()
+
+    def change_appearance(self, theme):
+        try:
+            save_appearance(theme)
+        except (ValueError, OSError, RuntimeError):
+            QMessageBox.warning(self, "Apariencia", "No se pudo guardar la apariencia.")
+            return False
+        self.appearance = theme
+        self.refresh_appearance()
+        return True
+
+    def refresh_appearance(self):
+        theme = self.appearance
+        background, accent = theme["background"], theme["accent"]
+        accent_text = readable_text(accent)
+        user, bot = theme["user_message"], theme["bot_message"]
+        self.centralWidget().setStyleSheet(f"""
+            QWidget#chatWindow, QWidget#chatCanvas {{ background: {background}; }}
+            QLabel, QTextEdit, QPushButton {{
+                color: {readable_text(background)}; font-family: "Segoe UI"; font-size: 15px;
+            }}
+            QWidget#chatHeader {{ border-bottom: 1px solid #55515f; }}
+            QLabel#chatTitle {{ font-weight: 700; }}
+            QLabel#chatModel, QLabel#chatStatus {{ font-size: 14px; }}
+            QScrollArea, QTextEdit {{ background: transparent; border: 0; }}
+            QScrollBar:vertical {{ width: 10px; background: {background}; }}
+            QScrollBar::handle:vertical {{
+                min-height: 28px; background: #777281; border-radius: 5px;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
+            QTextEdit {{
+                font-size: {theme['font_size']}px; selection-background-color: {accent};
+                selection-color: {accent_text};
+            }}
+            QTextEdit#userMessage {{
+                background: {user}; color: {readable_text(user)}; border-radius: 16px;
+            }}
+            QTextEdit#botMessage {{
+                background: {bot}; color: {readable_text(bot)}; border-radius: 12px;
+            }}
+            QWidget#composerPanel {{
+                background: #25252d; border: 1px solid #41404f; border-radius: 18px;
+            }}
+            QTextEdit#messageInput {{ color: #f3f0f7; placeholder-text-color: #b8b2c4; }}
+            QPushButton {{
+                background: {accent}; color: {accent_text}; border: 2px solid transparent;
+                border-radius: 12px; padding: 6px 13px; font-weight: 600;
+            }}
+            QPushButton:hover, QPushButton:focus {{ border-color: {accent_text}; }}
+            QPushButton:disabled {{ background: #383541; color: #b1a8be; }}
+        """)
+        for bubble in self.chat.findChildren(ChatText, "userMessage"):
+            self.fit_bubble(bubble)
+        if self.mcp_dialog is not None:
+            self.mcp_dialog.set_appearance(theme)
 
     def open_mcp(self):
         if self.mcp_dialog is None:
             self.mcp_dialog = McpDialog(self)
+            self.mcp_dialog.set_appearance(self.appearance)
         else:
             self.mcp_dialog.reload()
         self.mcp_dialog.exec()
@@ -328,17 +382,20 @@ class StoneBot(QMainWindow):
         self.transcript.insertLayout(self.transcript.count() - 1, row)
         body = ChatText(self.chat)
         body.setAccessibleName("Tú" if user else "StoneBot")
+        body.setObjectName("userMessage" if user else "botMessage")
         if user:
-            body.setObjectName("userMessage")
             row.addStretch(1)
         row.addWidget(body, 4)
         body.ensurePolished()
-        if user:
-            width = max(map(body.fontMetrics().horizontalAdvance, text.split("\n")))
-            body.setMaximumWidth(width + 26)
-        body.document().setDocumentMargin(12 if user else 4)
+        body.document().setDocumentMargin(12 if user else 8)
         body.setPlainText(text)
+        if user:
+            self.fit_bubble(body)
         self.scroll_to_latest()
+
+    def fit_bubble(self, body):
+        width = max(map(body.fontMetrics().horizontalAdvance, body.toPlainText().split("\n")))
+        body.setMaximumWidth(width + 26)
 
     def scroll_to_latest(self):
         if self.follow_latest:

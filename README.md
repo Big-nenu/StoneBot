@@ -210,7 +210,9 @@ También se verificaron las tres herramientas con Nemotron y Ollama local desde 
 
 Instala el cliente con `python -m pip install "mcp>=1.28,<2"`. La memoria interna sigue usando llamadas directas al motor de StoneBot. El chat descubre las herramientas de los servidores activados al empezar cada turno y entrega sus resultados de texto a Nemotron.
 
-Abre **MCP** en la cabecera del chat para agregar, editar, activar, desactivar o eliminar servidores. **Probar conexión** abre una sesión temporal y muestra el resultado, las herramientas descubiertas y cuáles tienen lectura automática. El panel muestra el resultado de la última prueba durante la sesión de StoneBot.
+Abre **MCP** en la cabecera del chat para agregar, editar o eliminar servidores y cambiar su activación con el interruptor de cada fila. **Probar conexión** abre una sesión temporal. El indicador es verde si conecta, rojo si falla y gris antes de probar.
+
+Cada herramienta descubierta tiene su propio interruptor. Los servidores y herramientas deshabilitados quedan fuera de las herramientas que recibe Nemotron. Estas preferencias se conservan al reiniciar. Vuelve a probar la conexión para cargar el catálogo en la nueva sesión. Al habilitar una herramienta se vuelven a aplicar sus permisos de lectura o confirmación.
 
 Los servidores se agregan desactivados. El nombre identifica la configuración y se mantiene al editarla. Cambiar el transporte, el ejecutable, los argumentos, la URL o la referencia al token desactiva el servidor y revoca sus lecturas automáticas. Los cambios aplican al siguiente turno. En STDIO, escribe los argumentos como una lista JSON, por ejemplo `["-B", "C:\\ruta\\servidor.py"]`. En HTTP solo se muestra y guarda el nombre de la variable del token.
 
@@ -241,6 +243,12 @@ python -B tests/test_mcp_ui.py
 ```
 
 El panel se probó con servidores de ejemplo mediante STDIO y Streamable HTTP en loopback. En el mismo chat, Nemotron y Ollama ejecutaron una herramienta MCP y recuperaron un recuerdo de una base temporal.
+
+## Apariencia
+
+Abre **⚙ → Apariencia** para elegir el acento, el fondo de la ventana y los fondos de los mensajes de cada participante. El tamaño de letra del chat se puede ajustar entre 12 y 28 px. Los cambios se aplican al instante y se guardan en `%USERPROFILE%\.stonebot\appearance.ini`.
+
+La primera vez se usa el tema oscuro de StoneBot. El botón **Restaurar** junto a cada selector recupera solo ese color. **Restaurar colores predeterminados** recupera todos los colores. Ambas opciones conservan el tamaño de letra elegido.
 
 Para reiniciar la memoria experimental, cierra StoneBot y mueve su `memoria.db` y los archivos auxiliares de SQLite que existan a una carpeta de respaldo. Luego crea una base vacía con `python -c "from stonebot_engine import StoneBotEngine, default_root; StoneBotEngine(default_root() / 'memoria.db').close()"`. Para restaurar, con StoneBot cerrado, mueve la base experimental actual a otra carpeta y devuelve los archivos del respaldo a la carpeta de StoneBot.
 

@@ -32,7 +32,12 @@ def validate_server(name, server):
     reads = server.get("read_tools")
     if not isinstance(reads, list) or not all(isinstance(tool, str) and tool for tool in reads):
         raise ValueError("La lista de herramientas autorizadas es inválida.")
+    disabled = server.get("disabled_tools", [])
+    if not isinstance(disabled, list) or not all(isinstance(tool, str) and tool for tool in disabled):
+        raise ValueError("La lista de herramientas deshabilitadas es inválida.")
     common = {"enabled", "read_tools", "transport"}
+    if "disabled_tools" in server:
+        common.add("disabled_tools")
     if server.get("transport") == "stdio":
         command, args = server.get("command"), server.get("args")
         if (set(server) != common | {"command", "args"} or not isinstance(command, str)
@@ -123,13 +128,16 @@ async def session_for(name, server):
                     yield session
 
 
-async def discover(session, name, server):
+async def discover(session, name, server, *, include_disabled=False):
     tools = {}
     cursor = None
     seen = set()
+    disabled = set(server.get("disabled_tools", []))
     while True:
         page = await session.list_tools(cursor=cursor)
         for tool in page.tools:
+            if not include_disabled and tool.name in disabled:
+                continue
             slug = re.sub(r"[^a-zA-Z0-9_]", "_", tool.name)[:23]
             suffix = hashlib.sha256(tool.name.encode()).hexdigest()[:12]
             alias = f"mcp_{name}_{slug}_{suffix}"
@@ -147,7 +155,7 @@ async def discover(session, name, server):
 
 async def probe_server(name, server):
     async with session_for(name, server) as session:
-        entries = await discover(session, name, server)
+        entries = await discover(session, name, server, include_disabled=True)
         return sorted((tool.name, auto) for _, _, tool, auto in entries.values())
 
 
