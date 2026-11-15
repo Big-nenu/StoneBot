@@ -2,7 +2,7 @@
 
 > Un compañero de IA local que recuerda, razona, experimenta y, con el tiempo, puede interactuar con el mundo físico.
 
-**Estado:** prototipo conversacional con lectura de memoria persistente comprobada · **Inicio:** noviembre de 2026 · **Enfoque:** experimentación incremental, local-first.
+**Estado:** prototipo conversacional con herramientas de memoria persistente · **Inicio:** noviembre de 2026 · **Enfoque:** experimentación incremental, local-first.
 
 ## Visión
 
@@ -30,7 +30,7 @@ Las etapas son orientativas, no fechas prometidas. Cada etapa debe tener una dem
 | Etapa | Objetivo | Entregable comprobable | Estado |
 |---|---|---|---|
 | 0. Base segura | Definir alcance y separar la memoria | Motor local y base SQLite exclusiva | Completada. Lectura, escritura y rutas protegidas verificadas con bases de prueba. |
-| 1. Núcleo conversacional | Aplicación Windows con chat, Ollama y motor local | Conversa, recuerda y permanece en segundo plano al cerrar la ventana | Parcial. Faltan escritura desde el agente y bandeja. |
+| 1. Núcleo conversacional | Aplicación Windows con chat, Ollama y motor local | Conversa, recuerda y permanece en segundo plano al cerrar la ventana | Parcial. El chat consulta, guarda y relaciona recuerdos. Falta la bandeja. |
 | 2. Razonamiento | Formular preguntas e hipótesis | Explica una hipótesis, su evidencia y qué falta comprobar | Pendiente |
 | 3. Sueño y aprendizaje | Revisar experiencias, contradicciones y conclusiones | Ciclo programado que produce conclusiones trazables | Pendiente |
 | 4. Iniciativa controlada | Elegir tareas de una cola y proponer experimentos | Ejecuta tareas permitidas, con pausa y registro | Pendiente |
@@ -129,7 +129,15 @@ Futuro: sueños, iniciativa, mascota y sensores
 
 ## Relación con StoneWave
 
-El paquete local `stonebot_engine/` contiene la copia de `mem_engine.py`, `llm.py` y `notes.py`, con la licencia MIT original. La interfaz usa `StoneBotEngine.query()` para recuperar recuerdos y el motor puede actualizar su relevancia. La escritura de recuerdos nuevos desde el chat, los sueños automáticos y MCP quedan pendientes.
+El paquete local `stonebot_engine/` contiene la copia de `mem_engine.py`, `llm.py` y `notes.py`, con la licencia MIT original. Nemotron decide cuándo llamar a las herramientas del chat mediante Ollama. Las tres usan el namespace `default` del motor de StoneBot mediante llamadas directas a Python.
+
+| Herramienta | Función del motor | Ejemplo en el chat |
+|---|---|---|
+| `query_memory` | `query()` recupera recuerdos relevantes y actualiza su relevancia | «¿Qué montura te dije que usa el telescopio?» |
+| `inject_memory` | `inject()` guarda un hecho confirmado o una preferencia duradera | «Recuerda que el telescopio usa una montura ecuatorial.» |
+| `bridge_memory` | `bridge()` encuentra recuerdos que conectan dos temas | «Busca qué recuerdo conecta el telescopio con la montura ecuatorial.» |
+
+El puente presenta conexiones semánticas durante la consulta. Los sueños automáticos y el mantenimiento de relaciones persistentes quedan para una etapa posterior.
 
 El motor restringe SQLite a la carpeta de StoneBot. El validador bloquea las carpetas de memoria personal, el repositorio original, los enlaces duros a archivos y las redirecciones de archivos auxiliares de SQLite. `STONEWAVE_DB` y `MEMHOLOGRAFIC_DB` solo se consideran para bloquear bases personales configuradas fuera de sus carpetas habituales. Las rutas de notas, importaciones, exportaciones y sincronización también se validan.
 
@@ -139,7 +147,7 @@ Repositorio base: [StoneWave](https://github.com/Big-nenu/StoneWave).
 
 Con Python 3.14, instala `PySide6`, `ollama`, `requests` y `numpy`. Para usar `python app.py`, inicia Ollama local con los modelos `nemotron-3.5-bolt:e4b` y `embeddinggemma-2:270m` disponibles. `python test_memory.py` permite consultar manualmente la memoria experimental. La aplicación espera que la base de StoneBot ya exista.
 
-Las suites usan bases temporales y modelos simulados. Comprueban escritura, recuperación tras reabrir la base, integración con el trabajador de la interfaz y bloqueo de rutas protegidas.
+Las suites usan bases temporales y modelos simulados. Comprueban las tres herramientas desde el trabajador del chat, la recuperación tras reabrir la base y el bloqueo de rutas protegidas.
 En Windows, las pruebas de redirección requieren permiso para crear enlaces simbólicos.
 
 ```powershell
@@ -147,7 +155,7 @@ python -B tests/test_motor.py
 python -B tests/test_aislamiento.py
 ```
 
-También se comprobó la recuperación a través del trabajador de la interfaz con Ollama local y un recuerdo sintético en una base temporal.
+También se verificaron las tres herramientas con Nemotron y Ollama local desde la interfaz Qt. Se guardó un recuerdo sintético, se reinició la aplicación y se comprobó que el chat podía recuperarlo y encontrar su relación con dos temas.
 
 Para reiniciar la memoria experimental, cierra StoneBot y mueve su `memoria.db` y los archivos auxiliares de SQLite que existan a una carpeta de respaldo. Luego crea una base vacía con `python -c "from stonebot_engine import StoneBotEngine, default_root; StoneBotEngine(default_root() / 'memoria.db').close()"`. Para restaurar, con StoneBot cerrado, mueve la base experimental actual a otra carpeta y devuelve los archivos del respaldo a la carpeta de StoneBot.
 
@@ -198,11 +206,11 @@ Los experimentos de autoconocimiento usarán el motor local y bases desechables.
 - No es un agente consciente.
 - No tiene acceso irrestricto al sistema operativo.
 - No puede reescribir y desplegar libremente su propio código.
-- Sí existe un prototipo funcional de conversación y lectura de memoria, pero **no** un agente autónomo ni un sistema de autoconocimiento funcional.
+- El chat utiliza herramientas de memoria persistente. La autonomía y el autoconocimiento funcional siguen en exploración.
 
 ## Próxima acción
 
-Antes de añadir escritura desde el agente o MCP, definir cómo StoneBot representará sus experiencias e hipótesis y probar el flujo en una base desechable. La bandeja del sistema sigue pendiente.
+Definir cómo StoneBot representará sus experiencias e hipótesis y probar el flujo en una base desechable. La bandeja del sistema sigue pendiente.
 
 ---
 

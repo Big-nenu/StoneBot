@@ -213,38 +213,73 @@ def test_operaciones_auxiliares_bloquean_rutas_protegidas():
             assert protected.read_bytes() == b"contenido intacto"
 
 
-def test_worker_recupera_memoria_persistida_del_motor_local():
+def test_worker_guarda_consulta_y_conecta_recuerdos_tras_reabrir():
     import app
     import test_motor as tm
+    from ollama import Message
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         database = root / "memoria.db"
         text = "El telescopio de prueba tiene una montura ecuatorial"
-        e = tm.make_engine(str(database))
-        assert "NUEVA" in e.inject(text)
-        e.close()
-
-        def chat(**kwargs):
-            assert text in kwargs["messages"][0]["content"]
-            return SimpleNamespace(message=SimpleNamespace(content="Recuerdo recuperado"))
 
         with (patch.object(safety, "default_root", return_value=root),
               patch.object(tm.mem_engine, "default_root", return_value=root),
               patch.object(app, "DB_PATH", database),
               patch.object(app, "_memory", None),
-              patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)),
+              patch.object(StoneBotEngine, "get_embedding", side_effect=tm.fake_embedding),
               patch.object(StoneBotEngine, "get_embeddings",
                            side_effect=lambda texts: [tm.fake_embedding(t) for t in texts])):
-            worker = app.Worker([{"role": "system", "content": app.SYSTEM},
-                                 {"role": "user", "content": text}])
-            responses, errors = [], []
-            worker.finished.connect(responses.append)
-            worker.error.connect(errors.append)
-            try:
-                worker.run()
+            StoneBotEngine(database).close()
+
+            def turn(prompt, calls, expected):
+                messages = [{"role": "system", "content": app.SYSTEM}, {"role": "user", "content": prompt}]
+
+                def chat(**kwargs):
+                    assert {tool.__name__ for tool in kwargs["tools"]} == {
+                        "query_memory", "inject_memory", "bridge_memory"
+                    }
+                    transcript = kwargs["messages"]
+                    if len(transcript) == 2:
+                        assert transcript == messages
+                        if not calls:
+                            return SimpleNamespace(message=Message(role="assistant", content="Respuesta de prueba"))
+                        reply = Message(role="assistant", tool_calls=[
+                            Message.ToolCall(function=Message.ToolCall.Function(name=name, arguments=args))
+                            for name, args in calls
+                        ])
+                    else:
+                        assert transcript[2].tool_calls
+                        for tool_reply, (name, _), substring in zip(transcript[3:], calls, expected, strict=True):
+                            assert tool_reply["role"] == "tool"
+                            assert tool_reply["tool_name"] == name
+                            assert substring in tool_reply["content"], tool_reply
+                        reply = Message(role="assistant", content="Respuesta de prueba")
+                    return SimpleNamespace(message=reply)
+
+                worker = app.Worker(messages)
+                responses, errors = [], []
+                worker.finished.connect(responses.append)
+                worker.error.connect(errors.append)
+                with patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)):
+                    worker.run()
                 assert not errors, errors
-                assert responses == ["Recuerdo recuperado"], responses
+                assert responses == ["Respuesta de prueba"], responses
+                assert len(messages) == 2
+
+            try:
+                turn("Hola", [], [])
+                assert app._memory is None
+                turn("Recuerda este dato", [("inject_memory", {"content": text})], ["NUEVA"])
+                app._memory.close()
+                app._memory = None
+                turn("¿Qué montura usa el telescopio?", [
+                    ("query_memory", {"text": text}),
+                    ("bridge_memory", {"topic_a": "telescopio", "topic_b": "montura ecuatorial"}),
+                    ("inject_memory", {"content": "  "}),
+                    ("clear_memory", {}),
+                ], [text, '"status": "found"', "texto no vacío", "desconocida"])
+                assert app._memory.get_all_facts() == [text]
             finally:
                 if app._memory is not None:
                     app._memory.close()
