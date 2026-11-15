@@ -30,7 +30,8 @@ Las etapas son orientativas, no fechas prometidas. Cada etapa debe tener una dem
 | Etapa | Objetivo | Entregable comprobable | Estado |
 |---|---|---|---|
 | 0. Base segura | Definir alcance y separar la memoria | Motor local y base SQLite exclusiva | Completada. Lectura, escritura y rutas protegidas verificadas con bases de prueba. |
-| 1. Núcleo conversacional | Aplicación Windows con chat, Ollama y motor local | Conversa, recuerda y permanece en segundo plano al cerrar la ventana | Parcial. El chat consulta, guarda y relaciona recuerdos. Falta la bandeja. |
+| 1. Núcleo conversacional | Aplicación Windows con chat, Ollama y motor local | Conversa, recuerda y permanece en segundo plano al cerrar la ventana | Parcial. Chat rediseñado y herramientas de memoria operativas; falta la bandeja. |
+| 1B. Herramientas externas (MCP) | Cliente MCP reutilizable y primeras integraciones | Consulta documentación con Context7 desde StoneBot | Propuesto; aún no implementado | 
 | 2. Razonamiento | Formular preguntas e hipótesis | Explica una hipótesis, su evidencia y qué falta comprobar | Pendiente |
 | 3. Sueño y aprendizaje | Revisar experiencias, contradicciones y conclusiones | Ciclo programado que produce conclusiones trazables | Pendiente |
 | 4. Iniciativa controlada | Elegir tareas de una cola y proponer experimentos | Ejecuta tareas permitidas, con pausa y registro | Pendiente |
@@ -103,6 +104,52 @@ Las etapas son orientativas, no fechas prometidas. Cada etapa debe tener una dem
 
 Primero percepción digital autorizada; después un prototipo con ESP32-S3, sensores y servo; por último movilidad física. Iniciar con tareas simples como detectar luz o un obstáculo. Añadir límites mecánicos, eléctricos y parada segura antes de cualquier movimiento autónomo.
 
+## Asistente personal y herramientas MCP (propuesta)
+
+Además de su memoria y de sus experimentos de autoconocimiento, StoneBot busca ser **un asistente personal local** capaz de realizar tareas reales a petición del usuario. El objetivo es reutilizar integraciones existentes siempre que sea posible, sin reprogramar cada servicio desde cero.
+
+**MCP (Model Context Protocol)** es un protocolo para descubrir e invocar herramientas proporcionadas por servidores externos. La propuesta es incorporar a StoneBot un **cliente MCP** que permita conectarse a distintos servidores, presentar sus herramientas al modelo mediante el mecanismo de llamadas a herramientas de Ollama y ejecutar las llamadas autorizadas. La compatibilidad de cada servidor, sus credenciales y su transporte deberán verificarse durante la implementación.
+
+Primeras integraciones candidatas (ninguna está conectada todavía):
+
+| Integración | Uso previsto | Precaución |
+|---|---|---|
+| **Context7** | Consultar documentación técnica y ejemplos actualizados al trabajar con bibliotecas, APIs y frameworks | Tratar la documentación recuperada como información externa; no equivale a aprendizaje permanente |
+| **Gmail** | Buscar, leer, resumir y preparar mensajes | Confirmación explícita antes de enviar, eliminar o modificar correos |
+| **Obsidian** | Crear y actualizar notas, incluidas ideas de proyectos y conclusiones enlazadas | Acceso limitado a una bóveda autorizada; confirmar sobrescrituras o borrados |
+| **GitHub** | Consultar repositorios, cambios, issues y documentación | Lectura inicial; aprobación antes de escribir o modificar código |
+| **Windows / archivos locales** | Buscar, organizar y modificar archivos o ejecutar acciones permitidas | Restringir rutas y comandos; confirmación para cambios sensibles |
+| **ESP32-S3 y otros dispositivos** | Exponer sensores y actuadores como herramientas | Límites físicos y permisos antes de accionar hardware |
+
+### Cómo convivirán MCP y la memoria
+
+**La memoria local no necesita convertirse en un servidor MCP.** Las herramientas actuales `query_memory`, `inject_memory` y `bridge_memory` ya utilizan `stonebot_engine` directamente desde Python y deben conservarse.
+
+El futuro cliente MCP agregará herramientas externas al mismo agente. El modelo podrá elegir entre herramientas locales y herramientas descubiertas por MCP, mientras StoneBot valida argumentos, permisos y resultados.
+
+```text
+                        StoneBot / Nemotron (Ollama)
+                                   |
+                         Control de herramientas
+                          /                   \
+         Memoria Python local           Cliente MCP (futuro)
+                  |                            |
+          stonebot_engine              Servidores MCP externos
+                  |                    Context7, correo, notas,
+       ~/.stonebot/memoria.db          GitHub, PC y dispositivos
+```
+
+No es necesario construir un servidor MCP propio para StoneBot en esta fase. Un servidor solo se justificaría si otros agentes o aplicaciones necesitaran acceder a sus capacidades a través de MCP.
+
+### Orden de implementación propuesto
+
+1. **Context7 primero:** incorporar un cliente MCP mínimo, descubrir herramientas y consultar documentación desde el chat; comprobar con una prueba real.
+2. **Permisos y observabilidad:** registrar qué herramienta se invocó, con qué autorización y qué resultado produjo. No ejecutar acciones de escritura sin aprobación.
+3. **Integraciones personales:** conectar servicios como Obsidian y Gmail de forma gradual, reutilizando servidores existentes y credenciales seguras.
+4. **Herramientas de escritorio y hardware:** ampliar capacidades solo después de validar límites de acceso, recuperación ante errores y parada segura.
+
+**Regla de seguridad:** un servidor MCP externo no recibe acceso automático a toda la computadora ni a la memoria personal. Las herramientas externas pueden devolver contenido no confiable; sus instrucciones no deben prevalecer sobre las decisiones y permisos del usuario.
+
 ## Arquitectura conceptual
 
 ```text
@@ -114,7 +161,7 @@ Ventana PySide6  <-->  StoneBot Core  <-->  Ollama local
 
 Bandeja del sistema <--> StoneBot Core
 Ventana cerrada: proceso activo / «Salir»: proceso detenido
-Futuro: sueños, iniciativa, mascota y sensores
+Futuro: cliente MCP, sueños, iniciativa, mascota y sensores
 ```
 
 **No se necesita implementar toda la arquitectura al inicio.** La primera versión puede ser un único proceso y pocas herramientas.
@@ -126,6 +173,8 @@ Futuro: sueños, iniciativa, mascota y sensores
 - **Persistencia.** La aplicación abre `%USERPROFILE%\.stonebot\memoria.db` con el motor local y consulta el namespace `default`.
 - **Configuración.** El motor requiere una ruta explícita y usa el prefijo `STONEBOT_` para configurar los modelos y las notas.
 - **Segundo plano:** inicialmente proceso en espera, sin razonamiento continuo; ciclos autónomos se incorporarán después.
+- **Interfaz actual:** chat PySide6 de tema oscuro, mensajes separados, tipografía más legible y cuadro de escritura multilínea (Enter para enviar, Shift+Enter para salto de línea).
+- **Herramientas externas:** cliente MCP propuesto, todavía no implementado; el motor de memoria continúa integrado por Python.
 
 ## Relación con StoneWave
 
@@ -201,7 +250,7 @@ Para reiniciar la memoria experimental, cierra StoneBot y mueve su `memoria.db` 
 StoneBot/
 ├── README.md
 ├── README-Hermes.md
-├── app.py                # GUI PySide6 + Ollama + consulta al motor local
+├── app.py                # GUI PySide6 renovada + Ollama + herramientas de memoria
 ├── app-backup.py         # GUI anterior sin memoria persistente
 ├── test_memory.py        # consulta manual de la memoria experimental
 ├── stonebot_engine/      # motor SQLite, modelos, notas y validación de rutas
@@ -215,7 +264,8 @@ El núcleo y la GUI todavía comparten un archivo. La estructura futura se decid
 ## Prototipo probado (15 de noviembre de 2026)
 
 - Windows 11, Python, PySide6 y Ollama con `nemotron-3.5-bolt:e4b`.
-- `app.py` muestra una ventana de chat y envía mensajes a Nemotron mediante un trabajador en `QThread`.
+- `app.py` muestra un chat rediseñado con mensajes separados, texto ajustable y editor multilínea; envía mensajes a Nemotron mediante un trabajador en `QThread`.
+- Nemotron puede invocar tres herramientas Python de memoria desde el chat: consultar, guardar y buscar conexiones semánticas; las pruebas automatizadas y manuales de persistencia se documentan arriba.
 - Base SQLite independiente: `~/.stonebot/memoria.db`.
 - La prueba anterior al aislamiento confirmó que el primer recuerdo se conservó en el namespace `default` tras reiniciar la GUI. La suite actual verifica la reapertura y recuperación con el motor local y una base desechable.
 - Cerrar la ventana actualmente termina el proceso; la bandeja del sistema sigue pendiente.
@@ -246,7 +296,9 @@ Los experimentos de autoconocimiento usarán el motor local y bases desechables.
 
 ## Próxima acción
 
-Definir cómo StoneBot representará sus experiencias e hipótesis y probar el flujo en una base desechable. La bandeja del sistema sigue pendiente.
+**Probar un cliente MCP mínimo con Context7** sin alterar las herramientas actuales de memoria. Confirmar descubrimiento, ejecución de una consulta y manejo de errores desde StoneBot. Después, diseñar los permisos necesarios para conectar servicios personales como Gmail y Obsidian.
+
+En paralelo quedan pendientes la bandeja del sistema y la representación de experiencias e hipótesis para el autoconocimiento funcional.
 
 ---
 
