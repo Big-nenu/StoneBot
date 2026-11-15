@@ -2,7 +2,7 @@
 
 > Un compañero de IA local que recuerda, razona, experimenta y, con el tiempo, puede interactuar con el mundo físico.
 
-**Estado:** planificación · **Inicio:** noviembre de 2026 · **Enfoque:** experimentación incremental, local-first.
+**Estado:** planificación y preparación de prototipo · **Inicio:** noviembre de 2026 · **Enfoque:** experimentación incremental, local-first.
 
 ## Visión
 
@@ -20,6 +20,8 @@ Inspiraciones conceptuales: Jarvis (asistencia), Vision (reflexión) y Ultrón (
 - **Autonomía graduada:** observar y proponer antes de actuar; pedir permiso para acciones sensibles.
 - **Experimentos verificables:** registrar hipótesis, evidencias, fallos y conclusiones.
 - **Pocos componentes, interfaces claras y pruebas pequeñas.**
+- **Aplicación propia de Windows:** StoneBot no depende de la interfaz de Cline, Hermes ni Claude.
+- **Núcleo independiente de la ventana:** cerrar la ventana lo deja en segundo plano; «Salir» detiene el proceso.
 
 ## Hoja de ruta
 
@@ -27,8 +29,8 @@ Las etapas son orientativas, no fechas prometidas. Cada etapa debe tener una dem
 
 | Etapa | Objetivo | Entregable comprobable | Estado |
 |---|---|---|---|
-| 0. Base segura | Definir alcance y separar la memoria | Configuración propia; prueba que no toca la base personal | Pendiente |
-| 1. Núcleo conversacional | Conectar un agente local con StoneWave | Conversa, guarda y recupera recuerdos en sesiones distintas | Pendiente |
+| 0. Base segura | Definir alcance y separar la memoria | Configuración propia; prueba que no toca la base personal | En progreso: base separada creada |
+| 1. Núcleo conversacional | Aplicación Windows con chat, Ollama y StoneWave | Conversa, recuerda y permanece en segundo plano al cerrar la ventana | Pendiente |
 | 2. Razonamiento | Formular preguntas e hipótesis | Explica una hipótesis, su evidencia y qué falta comprobar | Pendiente |
 | 3. Sueño y aprendizaje | Revisar experiencias, contradicciones y conclusiones | Ciclo programado que produce conclusiones trazables | Pendiente |
 | 4. Iniciativa controlada | Elegir tareas de una cola y proponer experimentos | Ejecuta tareas permitidas, con pausa y registro | Pendiente |
@@ -49,12 +51,17 @@ Las etapas son orientativas, no fechas prometidas. Cada etapa debe tener una dem
 
 ### Etapa 1 — Primer StoneBot útil
 
+- Aplicación de escritorio independiente para Windows 11, inicialmente con Python + PySide6 (Qt).
+- Ventana de conversación propia, con historial y campo para escribir.
+- Icono en bandeja del sistema: cerrar ventana = ocultar; «Abrir» = mostrar; «Salir» = detener completamente.
+- Núcleo separado de la interfaz, preparado para incorporar una mascota visual después.
+- Mantener el proceso en segundo plano sin ejecutar inferencias continuas ni saturar la GPU.
 - Agente local sencillo con Ollama.
 - Herramientas mínimas: recordar, recuperar, conversar.
 - Contexto acotado y registro de acciones.
 - Prueba de continuidad tras cerrar y abrir el programa.
 
-**Criterio de salida:** recuerda algo relevante de una sesión anterior y distingue un recuerdo de una inferencia.
+**Criterio de salida:** la aplicación abre una ventana propia, recuerda algo de una sesión anterior, distingue recuerdo de inferencia y puede ocultarse sin finalizar el proceso.
 
 ### Etapa 2 — Curiosidad y razonamiento
 
@@ -99,22 +106,27 @@ Primero percepción digital autorizada; después un prototipo con ESP32-S3, sens
 ## Arquitectura conceptual
 
 ```text
-Usuario / Eventos permitidos / Sensores (futuro)
-                    |
-              StoneBot Core
-        (objetivos, decisiones, límites)
-             /             \
-    Ollama / modelos      Herramientas
-             \             /
-            StoneWave MCP
-        (memoria AISLADA)
-                    |
-       Registro de experiencias
-                    |
-       Revisión / sueño / hipótesis
+Ventana PySide6  <-->  StoneBot Core  <-->  Ollama local
+                           |
+                    StoneWave (SQLite)
+                           |
+             ~/.stonebot/memoria.db
+
+Bandeja del sistema <--> StoneBot Core
+Ventana cerrada: proceso activo / «Salir»: proceso detenido
+Futuro: sueños, iniciativa, mascota y sensores
 ```
 
 **No se necesita implementar toda la arquitectura al inicio.** La primera versión puede ser un único proceso y pocas herramientas.
+
+## Decisiones técnicas confirmadas
+
+- **Aplicación independiente:** ventana Windows y bandeja del sistema, no interfaz de un agente externo.
+- **Primera interfaz:** Python + PySide6 (Qt), sujeta a prueba de prototipo.
+- **Persistencia:** StoneWave usa una base SQLite separada para StoneBot, ubicada en `C:\\Users\\Luis_Hdez\\.stonebot\\memoria.db` en el equipo actual.
+- **Configuración:** `STONEWAVE_DB` debe apuntar explícitamente a esa ruta para evitar acceder por accidente a la memoria personal.
+- **Estado de la memoria:** carpeta y primera base experimental creadas; falta validar lectura y aislamiento de extremo a extremo.
+- **Segundo plano:** inicialmente proceso en espera, sin razonamiento continuo; ciclos autónomos se incorporarán después.
 
 ## Relación con StoneWave
 
@@ -157,7 +169,7 @@ Los directorios se crearán únicamente cuando hagan falta.
 
 ## Próxima acción
 
-**Completar la Etapa 0:** crear una instancia experimental de StoneWave y demostrar que su base de datos es independiente de la personal.
+**Completar la Etapa 0:** comprobar lectura de la memoria experimental y aislamiento de la personal; después crear el prototipo mínimo de ventana PySide6 con bandeja del sistema.
 
 ---
 
