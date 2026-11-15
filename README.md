@@ -2,7 +2,7 @@
 
 > Un compañero de IA local que recuerda, razona, experimenta y, con el tiempo, puede interactuar con el mundo físico.
 
-**Estado:** planificación y preparación de prototipo · **Inicio:** noviembre de 2026 · **Enfoque:** experimentación incremental, local-first.
+**Estado:** prototipo conversacional con lectura de memoria persistente comprobada · **Inicio:** noviembre de 2026 · **Enfoque:** experimentación incremental, local-first.
 
 ## Visión
 
@@ -13,7 +13,7 @@ Inspiraciones conceptuales: Jarvis (asistencia), Vision (reflexión) y Ultrón (
 ## Principios
 
 - **Primero razonamiento; después apariencia y cuerpo.**
-- **StoneWave es un componente independiente**, no se modifica su memoria personal.
+- **StoneWave original es intocable:** StoneBot usa su propia base de datos y no debe tener permisos de escritura sobre el código fuente de StoneWave. Las modificaciones experimentales del motor, si se necesitan, se prueban en una copia o variante aislada.
 - **Memoria aislada:** rutas, configuración, base de datos y pruebas exclusivas para StoneBot.
 - **Local-first:** Ollama y modelos adecuados a una RTX 4060 de 8 GB; servicios externos opcionales, nunca obligatorios.
 - **Un modelo cargado a la vez** cuando compartir GPU cause conflictos.
@@ -29,8 +29,8 @@ Las etapas son orientativas, no fechas prometidas. Cada etapa debe tener una dem
 
 | Etapa | Objetivo | Entregable comprobable | Estado |
 |---|---|---|---|
-| 0. Base segura | Definir alcance y separar la memoria | Configuración propia; prueba que no toca la base personal | En progreso: base separada creada |
-| 1. Núcleo conversacional | Aplicación Windows con chat, Ollama y StoneWave | Conversa, recuerda y permanece en segundo plano al cerrar la ventana | Pendiente |
+| 0. Base segura | Definir alcance y separar la memoria | Base SQLite exclusiva y prueba de lectura/escritura | Parcial: base separada y lectura/escritura manual verificadas; falta auditoría del aislamiento |
+| 1. Núcleo conversacional | Aplicación Windows con chat, Ollama y StoneWave | Conversa, recuerda y permanece en segundo plano al cerrar la ventana | Parcial: ventana, chat y recuperación persistente funcionando; faltan escritura desde agente y bandeja |
 | 2. Razonamiento | Formular preguntas e hipótesis | Explica una hipótesis, su evidencia y qué falta comprobar | Pendiente |
 | 3. Sueño y aprendizaje | Revisar experiencias, contradicciones y conclusiones | Ciclo programado que produce conclusiones trazables | Pendiente |
 | 4. Iniciativa controlada | Elegir tareas de una cola y proponer experimentos | Ejecuta tareas permitidas, con pausa y registro | Pendiente |
@@ -125,31 +125,49 @@ Futuro: sueños, iniciativa, mascota y sensores
 - **Primera interfaz:** Python + PySide6 (Qt), sujeta a prueba de prototipo.
 - **Persistencia:** StoneWave usa una base SQLite separada para StoneBot, ubicada en `C:\\Users\\Luis_Hdez\\.stonebot\\memoria.db` en el equipo actual.
 - **Configuración:** `STONEWAVE_DB` debe apuntar explícitamente a esa ruta para evitar acceder por accidente a la memoria personal.
-- **Estado de la memoria:** carpeta y primera base experimental creadas; falta validar lectura y aislamiento de extremo a extremo.
+- **Estado de la memoria:** base experimental creada; `inject` y `query` probados desde CLI; lectura directa desde Python y recuperación tras reiniciar la GUI comprobadas. Falta verificar formalmente que la memoria personal no cambió.
 - **Segundo plano:** inicialmente proceso en espera, sin razonamiento continuo; ciclos autónomos se incorporarán después.
 
 ## Relación con StoneWave
 
-StoneWave ya dispone de funciones de memoria, relaciones, sueños e hipótesis. StoneBot debe **reutilizarlas**, no duplicarlas. La integración concreta se validará revisando la API/MCP actual y sus opciones de configuración.
+StoneWave ya dispone de funciones de memoria, relaciones, sueños, contradicciones e hipótesis. Actualmente StoneBot **solo consulta recuerdos** mediante `StoneWaveEngine.query()` con una ruta SQLite explícita y el namespace `default` dentro de su base aislada. **No guarda recuerdos desde la interfaz, no usa MCP y no ejecuta sueños ni otras herramientas avanzadas.**
+
+La futura integración se evaluará antes de implementarse: acceso directo a la API, MCP o variante aislada del motor. **No modificar el repositorio StoneWave original para adaptar sus funciones a StoneBot.** El aislamiento de datos no sustituye al aislamiento del código: un agente con herramientas de escritura podría alterar archivos aunque su prompt lo prohíba. Se deben aplicar permisos y entornos de prueba reales.
 
 Repositorio base: [StoneWave](https://github.com/Big-nenu/StoneWave).
 
-## Estructura prevista (no implementada)
+## Archivos actuales
 
 ```text
 StoneBot/
 ├── README.md
-├── docs/
-│   ├── ideas.md
-│   └── decisiones.md
-├── config/
-│   └── example.env
-├── src/
-├── tests/
-└── experiments/
+├── README-Hermes.md
+├── app.py                # GUI PySide6 + Ollama + consulta a StoneWave
+├── app-backup.py         # GUI anterior sin memoria persistente
+├── test_memory.py        # prueba directa de lectura de memoria
+└── docs/
+    └── 01-primer-experimento-que-ve.md
 ```
 
-Los directorios se crearán únicamente cuando hagan falta.
+El núcleo y la GUI todavía comparten un archivo. La estructura futura se decidirá conforme avance el prototipo.
+
+## Prototipo probado (15 de noviembre de 2026)
+
+- Windows 11, Python, PySide6 y Ollama con `nemotron-3.5-bolt:e4b`.
+- `app.py` muestra una ventana de chat y envía mensajes a Nemotron mediante un trabajador en `QThread`.
+- Base SQLite independiente: `~/.stonebot/memoria.db`.
+- Se comprobó que el primer recuerdo quedó almacenado en el namespace `default` (no en `stonebot`); `mem_cli.py` usa `default` salvo que se pase `-n`.
+- `test_memory.py` recuperó el recuerdo desde Python con `StoneWaveEngine`; después, `app.py` también lo recuperó tras cerrar y abrir de nuevo la aplicación.
+- La recuperación es **solo lectura**: aún no hay guardado selectivo, edición, sueño, conclusiones ni MCP conectado a la GUI.
+- Cerrar la ventana actualmente termina el proceso; la bandeja del sistema sigue pendiente.
+
+## Autoconocimiento funcional: propuesta por investigar
+
+La intención no es únicamente recordar información sobre el usuario. StoneBot debe poder construir y revisar **un modelo de sí mismo basado en experiencias comprobables**: qué intentó, qué resultado obtuvo, qué capacidades o límites observó, qué hipótesis formuló y cómo cambió su evaluación tras nuevas pruebas. Esto **no demuestra ni presupone conciencia subjetiva**.
+
+Posibles registros propios de StoneBot (esquema todavía no aprobado): experiencias, autoevaluaciones de capacidades, hipótesis con evidencia y experimentos con resultados. Deben distinguirse **hechos observados**, **inferencias del modelo** y **objetivos propuestos**. También queda por estudiar si la energía/relevancia de StoneWave necesita adaptaciones para este tipo de información.
+
+**Decisión pendiente:** reutilizar StoneWave mediante su API/MCP o mantener una variante del motor dentro de StoneBot. No duplicar ni reescribir el motor antes de inspeccionar su diseño y definir pruebas. Cualquier copia debe estar aislada del repositorio original y de la memoria personal. Ningún agente debe tener acceso de escritura al StoneWave original; la seguridad debe depender de permisos efectivos, no solo de instrucciones en prompts.
 
 ## Ideas en exploración
 
@@ -165,11 +183,11 @@ Los directorios se crearán únicamente cuando hagan falta.
 - No es un agente consciente.
 - No tiene acceso irrestricto al sistema operativo.
 - No puede reescribir y desplegar libremente su propio código.
-- No hay una implementación funcional de StoneBot aún: este documento es el plan inicial.
+- Sí existe un prototipo funcional de conversación y lectura de memoria, pero **no** un agente autónomo ni un sistema de autoconocimiento funcional.
 
 ## Próxima acción
 
-**Completar la Etapa 0:** comprobar lectura de la memoria experimental y aislamiento de la personal; después crear el prototipo mínimo de ventana PySide6 con bandeja del sistema.
+**Antes de añadir escritura o MCP:** revisar la arquitectura de StoneWave y definir cómo StoneBot representará sus experiencias, sus hipótesis y su modelo de sí mismo. Mantener el código de StoneWave sin modificaciones. Después, probar escritura desde el agente en la base experimental y verificar el aislamiento. La bandeja del sistema sigue pendiente.
 
 ---
 
