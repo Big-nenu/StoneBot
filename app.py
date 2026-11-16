@@ -1,11 +1,14 @@
 import asyncio
 import json
+import math
 import sqlite3
 import sys
 import time
 from contextlib import AsyncExitStack
 from datetime import datetime
+from itertools import cycle
 from pathlib import Path
+from threading import Thread
 
 from ollama import Client, Tool
 from appearance import (
@@ -22,31 +25,17 @@ from mcp_client import call_external, connection_error, discover, load_servers, 
 from mcp_permissions import allowed, permission_signature, remember, safe_read
 from mcp_pool import McpPool
 from mcp_ui import McpDialog
-from stonebot_engine import StoneBotEngine, check_db_path, default_root
-from stonebot_memory import SCOPES, integrate_experience
+from stonebot_engine.llm import env_var
+import stonebot_service as memory_service
+from stonebot_service import MEMORY_TOOLS, SCOPES
 from win_caption import apply_native_caption
-from PySide6.QtCore import QEvent, QObject, QSize, Qt, QThread, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPlainTextEdit,
     QPushButton, QScrollArea, QSplitter, QVBoxLayout, QWidget,
 )
 
 MODEL = "nemotron-3.5-bolt:e4b"
-
-DB_PATH = default_root() / "memoria.db"
-_memory = None
-
-
-def get_memory():
-    """Motor de memoria de StoneBot: se crea una sola vez y se reutiliza."""
-    global _memory
-    if _memory is None:
-        db_path = check_db_path(DB_PATH)
-        if not Path(db_path).is_file():
-            raise FileNotFoundError(f"No existe la memoria de StoneBot: {DB_PATH}")
-        _memory = StoneBotEngine(db_path=db_path)
-    return _memory
-
 
 SYSTEM = """
 Eres StoneBot, un agente experimental de inteligencia artificial local.
@@ -73,47 +62,6 @@ No inventes recuerdos.
 """
 
 
-def _memory_text(text: str) -> str:
-    if not isinstance(text, str) or not text.strip():
-        raise ValueError("Se requiere texto no vacío.")
-    return text.strip()
-
-
-def query_memory(text: str) -> str:
-    """Busca recuerdos persistentes sobre el tema o pregunta indicada."""
-    results = get_memory().query(_memory_text(text))
-    if isinstance(results, str):
-        return results
-    return json.dumps([{"id": fact_id, "content": content} for _, fact_id, _, content in results],
-                      ensure_ascii=False)
-
-
-def inject_memory(content: str) -> str:
-    """Guarda un hecho o una preferencia duradera que el usuario haya confirmado."""
-    return get_memory().inject(_memory_text(content), source="chat", reinforce=False)
-
-
-def bridge_memory(topic_a: str, topic_b: str) -> str:
-    """Busca recuerdos que conecten semánticamente los dos temas indicados."""
-    result = get_memory().bridge(_memory_text(topic_a), _memory_text(topic_b))
-    return json.dumps(result, ensure_ascii=False)
-
-
-def query_conclusions(text: str, ambito: str = "experiencias") -> str:
-    """Busca hipótesis y conclusiones con sus evidencias. Ámbito: experiencias o memoria."""
-    if ambito not in SCOPES:
-        raise ValueError("Ámbito de conclusiones inválido.")
-    engine = get_memory()
-    namespace = SCOPES[ambito]
-    matches = engine.query_conclusions(_memory_text(text), namespace)
-    sources = {row["id"]: row["sources"] for row in engine.list_conclusions(namespace)}
-    return json.dumps([{**row, "recuerdos_origen": sources.get(row["id"], [])} for row in matches],
-                      ensure_ascii=False)
-
-
-MEMORY_TOOLS = {tool.__name__: tool for tool in (query_memory, inject_memory, bridge_memory, query_conclusions)}
-
-
 class TurnError(RuntimeError):
     pass
 
@@ -127,16 +75,19 @@ class Worker(QObject):
     reasoning = Signal(str)
     mcp_confirmation = Signal(object)
 
-    def __init__(self, messages, pool=None, *, identity_enabled=False):
+    def __init__(self, messages, pool=None, *, identity_enabled=False, dream_thread=None):
         super().__init__()
         self.messages = messages
         self.pool = pool
         self.permission = None
         self.identity_enabled = identity_enabled
+        self.dream_thread = dream_thread
 
     @Slot()
     def run(self):
         try:
+            if self.dream_thread is not None:
+                self.dream_thread.join()
             self.finished.emit(asyncio.run(self.chat()))
         except TurnError as exc:
             self.error.emit(str(exc))
@@ -162,7 +113,7 @@ class Worker(QObject):
             if command[0] == "/sueno":
                 if len(command) != 2 or command[1] not in SCOPES:
                     return "Usa /sueno memoria o /sueno experiencias."
-                return await asyncio.to_thread(get_memory().dream, SCOPES[command[1]])
+                return await asyncio.to_thread(memory_service.dream, command[1])
             try:
                 observation_id = int(command[1]) if len(command) == 2 else 0
             except ValueError:
@@ -170,7 +121,7 @@ class Worker(QObject):
             if observation_id < 1:
                 return "Usa /integrar seguido del identificador de una observación de /aprender."
             try:
-                result = await asyncio.to_thread(integrate_experience, get_memory(), observation_id)
+                result = await asyncio.to_thread(memory_service.integrate, observation_id)
             except ValueError as exc:
                 return str(exc)
             return f"Observación MCP #{observation_id} · {result}"
@@ -371,6 +322,9 @@ class StoneBot(QMainWindow):
         self.messages = [{"role": "system", "content": SYSTEM}]
         self.thread = None
         self.worker = None
+        self.dream_thread = None
+        self.dream_scopes = cycle(SCOPES)
+        self.last_activity = time.monotonic()
         self.mcp_dialog = None
         self.pool = McpPool()
         self.chat_id = None
@@ -495,8 +449,6 @@ class StoneBot(QMainWindow):
         self.problem.hide()
         layout.addWidget(self.problem)
         layout.addLayout(footer)
-        if QApplication.platformName() == "windows":
-            QApplication.instance().installEventFilter(self)
         self.refresh_appearance()
         self.chat_min_width = max(340, header.minimumSizeHint().width())
         conversation.setMinimumWidth(self.chat_min_width)
@@ -505,6 +457,25 @@ class StoneBot(QMainWindow):
         if self.history is None:
             self.show_problem("No se pudo abrir el historial. Los mensajes de esta sesión no se guardarán.")
         self.message.setFocus()
+        self.dream_idle_seconds = 600
+        try:
+            seconds = float(env_var("DREAM_IDLE_MIN", "10")) * 60
+            if not math.isfinite(seconds) or seconds < 0:
+                raise ValueError
+            self.dream_idle_seconds = seconds
+        except ValueError:
+            record("STONEBOT_DREAM_IDLE_MIN inválido. Se usan 10 minutos.")
+        self.dream_timer = QTimer(self)
+        self.dream_timer.timeout.connect(self.check_automatic_dream)
+
+    def check_automatic_dream(self):
+        if (not self.isVisible() or self.thread is not None
+                or time.monotonic() - self.last_activity < self.dream_idle_seconds
+                or (self.dream_thread is not None and self.dream_thread.is_alive())):
+            return
+        self.dream_thread = Thread(target=memory_service.dream_if_due, args=(next(self.dream_scopes),),
+                                   name="StoneBot sueño")
+        self.dream_thread.start()
 
     def toggle_history(self, visible):
         self.history_panel.setVisible(visible)
@@ -524,6 +495,12 @@ class StoneBot(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
+        if not self.dream_timer.isActive():
+            QApplication.instance().installEventFilter(self)
+            self.last_activity = time.monotonic()
+            self.dream_timer.start(30_000)
+        if QApplication.platformName() == "windows":
+            apply_native_caption(self, self.appearance["background"])
         if not self.history_panel.isHidden():
             self.restore_history_width()
 
@@ -615,7 +592,8 @@ class StoneBot(QMainWindow):
         dialog = QDialog(self)
         dialog.setWindowTitle("Diagnóstico de StoneBot")
         dialog.setStyleSheet(dialog_style(self.appearance))
-        text = QPlainTextEdit(read_log() or "Todavía no hay eventos de diagnóstico.")
+        newest_first = "\n".join(reversed(read_log().splitlines()))
+        text = QPlainTextEdit(newest_first or "Todavía no hay eventos de diagnóstico.")
         text.setReadOnly(True)
         layout = QVBoxLayout(dialog)
         layout.addWidget(text)
@@ -663,7 +641,11 @@ class StoneBot(QMainWindow):
         return False
 
     def eventFilter(self, watched, event):
-        if event.type() == QEvent.Type.Show and self.owns_caption(watched):
+        if (event.type() in (QEvent.Type.KeyPress, QEvent.Type.MouseButtonPress, QEvent.Type.Wheel)
+                and isinstance(watched, QWidget) and (watched is self or self.isAncestorOf(watched))):
+            self.last_activity = time.monotonic()
+        if (event.type() == QEvent.Type.Show and watched is not self and QApplication.platformName() == "windows"
+                and self.owns_caption(watched)):
             apply_native_caption(watched, self.appearance["background"])
         return super().eventFilter(watched, event)
 
@@ -806,6 +788,7 @@ class StoneBot(QMainWindow):
         self.start_turn()
 
     def start_turn(self):
+        self.last_activity = time.monotonic()
         self.message.setEnabled(False)
         self.send.setEnabled(False)
         self.mcp_button.setEnabled(False)
@@ -817,7 +800,7 @@ class StoneBot(QMainWindow):
 
         self.thread = QThread()
         self.worker = Worker([{"role": m["role"], "content": m["content"]} for m in self.messages],
-                             self.pool, identity_enabled=True)
+                             self.pool, identity_enabled=True, dream_thread=self.dream_thread)
         self.worker.moveToThread(self.thread)
 
         self.thread.started.connect(self.worker.run)
@@ -863,6 +846,8 @@ class StoneBot(QMainWindow):
         if self.thread is not None:
             event.ignore()
         else:
+            self.dream_timer.stop()
+            QApplication.instance().removeEventFilter(self)
             if self.history_width != self.saved_history_width:
                 try:
                     save_history_width(self.history_width)
@@ -910,6 +895,7 @@ class StoneBot(QMainWindow):
         self.thread.deleteLater()
         self.worker = None
         self.thread = None
+        self.last_activity = time.monotonic()
         if not self.activity_panel.latest.startswith("Error del turno"):
             self.activity_panel.add_event("Turno finalizado.")
         self.message.setEnabled(True)
@@ -922,6 +908,18 @@ class StoneBot(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    window = StoneBot()
-    window.show()
-    sys.exit(app.exec())
+    try:
+        memory_service.acquire_owner()
+    except (OSError, RuntimeError) as exc:
+        QMessageBox.warning(None, "StoneBot", str(exc))
+        sys.exit(1)
+    window = None
+    try:
+        window = StoneBot()
+        window.show()
+        code = app.exec()
+    finally:
+        if window is not None and window.dream_thread is not None:
+            window.dream_thread.join()
+        memory_service.close()
+    sys.exit(code)

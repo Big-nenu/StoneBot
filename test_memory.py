@@ -1,9 +1,6 @@
 """Consulta manual de la memoria de StoneBot. Requiere Ollama."""
-from app import get_memory
+from stonebot_service import memory_session
 
 if __name__ == "__main__":
-    memory = get_memory()
-    try:
+    with memory_session() as memory:
         print(memory.query("¿Qué es StoneBot?", namespace="default"))
-    finally:
-        memory.close()

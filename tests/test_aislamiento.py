@@ -161,7 +161,8 @@ def test_ningun_modulo_cargado_viene_de_stonewave_original():
     import stonebot_engine
     assert Path(stonebot_engine.__file__).resolve().is_relative_to(ROOT.resolve())
     import app  # importar no abre ventanas ni la base
-    assert app.StoneBotEngine is stonebot_engine.StoneBotEngine
+    import stonebot_service
+    assert stonebot_service.StoneBotEngine is stonebot_engine.StoneBotEngine
     for nombre, mod in list(sys.modules.items()):
         f = getattr(mod, "__file__", None)
         if f and safety._inside(f, STONEWAVE_REPO):
@@ -215,6 +216,7 @@ def test_operaciones_auxiliares_bloquean_rutas_protegidas():
 
 def test_worker_guarda_consulta_y_conecta_recuerdos_tras_reabrir():
     import app
+    import stonebot_service as memory_service
     import test_motor as tm
     from ollama import Message
 
@@ -226,8 +228,8 @@ def test_worker_guarda_consulta_y_conecta_recuerdos_tras_reabrir():
         with (patch.object(safety, "default_root", return_value=root),
               patch.object(tm.mem_engine, "default_root", return_value=root),
               patch.object(app, "load_servers", return_value={}),
-              patch.object(app, "DB_PATH", database),
-              patch.object(app, "_memory", None),
+              patch.object(memory_service, "DB_PATH", database),
+              patch.object(memory_service, "_memory", None),
               patch.object(StoneBotEngine, "get_embedding", side_effect=tm.fake_embedding),
               patch.object(StoneBotEngine, "get_embeddings",
                            side_effect=lambda texts: [tm.fake_embedding(t) for t in texts])):
@@ -270,20 +272,18 @@ def test_worker_guarda_consulta_y_conecta_recuerdos_tras_reabrir():
 
             try:
                 turn("Hola", [], [])
-                assert app._memory is None
+                assert memory_service._memory is None
                 turn("Recuerda este dato", [("inject_memory", {"content": text})], ["NUEVA"])
-                app._memory.close()
-                app._memory = None
+                memory_service.close()
                 turn("¿Qué montura usa el telescopio?", [
                     ("query_memory", {"text": text}),
                     ("bridge_memory", {"topic_a": "telescopio", "topic_b": "montura ecuatorial"}),
                     ("inject_memory", {"content": "  "}),
                     ("clear_memory", {}),
                 ], [text, '"status": "found"', "texto no vacío", "desconocida"])
-                assert app._memory.get_all_facts() == [text]
+                assert memory_service._memory.get_all_facts() == [text]
             finally:
-                if app._memory is not None:
-                    app._memory.close()
+                memory_service.close()
 
 
 def test_auditoria_en_ejecucion_ningun_open_ni_sqlite_toca_rutas_protegidas():

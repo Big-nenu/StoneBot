@@ -3,9 +3,11 @@ import asyncio
 import sqlite3
 import sys
 import tempfile
+import time
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
+from threading import Event
 from unittest.mock import AsyncMock, patch
 
 from mcp.types import Tool, ToolAnnotations
@@ -14,12 +16,67 @@ from PySide6.QtCore import QEvent, QEventLoop, QTimer, Qt
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from test_mcp import example_stdio
+from test_chat_presentation import wait_for_turn
 import app
+import stonebot_service as memory_service
 import mcp_client
 from diagnostics import read_log
 from history import History
 from mcp_permissions import allowed, list_permissions, permission_signature, remember, revoke, safe_read
 from mcp_pool import McpPool
+
+
+def test_sueno_espera_inactividad_y_se_serializa_con_el_turno():
+    window = app.StoneBot()
+    sueno_iniciado, liberar_sueno, conversacion = Event(), Event(), Event()
+
+    def dream(scope):
+        assert scope == "memoria"
+        sueno_iniciado.set()
+        liberar_sueno.wait(10)
+
+    async def chat(worker):
+        conversacion.set()
+        return "Turno sintético."
+
+    try:
+        window.show()
+        with (patch.object(memory_service, "dream_if_due", side_effect=dream) as automatic,
+              patch.object(app.Worker, "chat", chat)):
+            window.check_automatic_dream()
+            automatic.assert_not_called()
+            window.last_activity = time.monotonic() - window.dream_idle_seconds - 1
+            window.dream_timer.timeout.emit()
+            assert sueno_iniciado.wait(5)
+            window.check_automatic_dream()
+            automatic.assert_called_once()
+
+            window.message.setPlainText("Mensaje durante un sueño")
+            window.enviar()
+            assert not conversacion.wait(0.1)
+            liberar_sueno.set()
+            wait_for_turn(window)
+            assert conversacion.is_set()
+            assert History().messages(window.chat_id)[-1]["content"] == "Turno sintético."
+
+            conversacion.clear()
+            window.message.setPlainText("Segundo mensaje")
+            window.enviar()
+            window.last_activity = time.monotonic() - window.dream_idle_seconds - 1
+            window.check_automatic_dream()
+            automatic.assert_called_once()
+            wait_for_turn(window)
+            assert time.monotonic() - window.last_activity < 5
+    finally:
+        liberar_sueno.set()
+        if window.dream_thread is not None:
+            window.dream_thread.join()
+        if window.thread is not None:
+            wait_for_turn(window)
+        window.close()
+    assert not window.dream_timer.isActive()
+    window.deleteLater()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 def test_history_and_gui(qt):
@@ -70,7 +127,7 @@ def test_history_and_gui(qt):
     with (patch.object(app.Worker, "chat", instrument),
           patch.object(app, "load_servers", return_value={}),
           patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)),
-          patch.object(app, "get_memory", side_effect=AssertionError("El historial no debe acceder a memoria."))):
+          patch.object(memory_service, "get_memory", side_effect=AssertionError("El historial no debe acceder a memoria."))):
         window.message.setPlainText("Continúa con el ejemplo")
         window.send.click()
         loop = QEventLoop()
@@ -177,6 +234,7 @@ if __name__ == "__main__":
     qt_app = QApplication([])
     with tempfile.TemporaryDirectory() as directory, patch.object(mcp_client, "default_root", return_value=Path(directory)):
         test_history_and_gui(qt_app)
+        test_sueno_espera_inactividad_y_se_serializa_con_el_turno()
         asyncio.run(test_permissions())
         client = McpPool()
         try:

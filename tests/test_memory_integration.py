@@ -15,6 +15,7 @@ from ollama import Message
 from test_motor import make_engine
 import app
 import mcp_client
+import stonebot_service as memory_service
 from experiences import record_experience
 from identity import load_identity
 from stonebot_engine.safety import IsolationError
@@ -69,7 +70,7 @@ def test_notes_and_dream(root):
         engine.inject("Texto privado experimental que no debe publicarse.")
         ids = [record_experience("demo", "echo", "response") for _ in range(3)]
         assert "NUEVA" in integrate_experience(engine, ids[0])
-        with patch.object(app, "get_memory", return_value=engine):
+        with patch.object(memory_service, "get_memory", return_value=engine):
             command = [{"role": "user", "content": f"/integrar {ids[1]}"}]
             assert "NUEVA" in asyncio.run(app.Worker(command).chat())
         assert "YA EXISTE" in integrate_experience(engine, ids[0])
@@ -81,7 +82,7 @@ def test_notes_and_dream(root):
         engine.generator.generate = propose
         engine._ask_llm_support = lambda fact, conclusion: "RESPALDA"
         with patch.dict(os.environ, {"STONEBOT_NOTES": str(vault / "stonewave")}):
-            with patch.object(app, "get_memory", return_value=engine):
+            with patch.object(memory_service, "get_memory", return_value=engine):
                 command = [{"role": "user", "content": "/sueno experiencias"}]
                 assert "Sleeptime" in asyncio.run(app.Worker(command).chat())
         assert not (vault / "stonebot").exists()

@@ -1216,7 +1216,7 @@ class StoneBotEngine:
     def _reason_pending(self, namespace, groups=None):
         """Razona los recuerdos pendientes (reasoned=0): agrupa cada uno con sus vecinos mas parecidos, un modelo generativo
         propone UNA conclusion y el modelo de decision comprueba que los recuerdos la respalden. Si pasa, queda guardada como
-        'hipotesis' con poca energia. Devuelve (nuevas, reforzadas, descartadas).
+        'hipotesis' con poca energia. Devuelve los recuentos de nuevas, reforzadas y descartadas, y el error si se interrumpió.
         Si el modelo generativo no responde, el recuerdo sigue pendiente y se reintenta en el siguiente sueño."""
         groups = CONCLUSION_GROUPS if groups is None else groups
         with closing(sqlite3.connect(self.db_path)) as conn:
@@ -1224,6 +1224,7 @@ class StoneBotEngine:
                 "SELECT id, embedding FROM facts WHERE namespace=? AND COALESCE(reasoned,0)=0 "
                 "ORDER BY COALESCE(created_at, last_used, 0) LIMIT ?", (namespace, groups)).fetchall()
         new = reinforced = dropped = 0
+        error = None
         done, seen = [], set()
         for fid, blob in pending:
             try:
@@ -1244,12 +1245,14 @@ class StoneBotEngine:
             texts = [c for _i, c in facts]
             concl = self._ask_llm_conclusion(texts)
             if concl is None:
+                error = "El modelo de conclusiones no respondió."
                 break  # el modelo no responde: no insistir; lo pendiente se reintenta en otro sueño
             if not concl:
                 done.append(fid)
                 continue
             cvec = self.get_embedding(concl)
             if cvec is None:
+                error = "No se obtuvo el embedding de una conclusión."
                 break
             done.append(fid)
             verdicts = [self._ask_llm_support(t, concl) for t in texts]
@@ -1280,7 +1283,7 @@ class StoneBotEngine:
                 conn.executemany("UPDATE facts SET reasoned=1 WHERE id=?", [(i,) for i in done])
                 conn.commit()
         self._sync_version()  # solo cambiaron tablas sin vectores de la biblioteca
-        return new, reinforced, dropped
+        return new, reinforced, dropped, error
 
     def _decay_conclusions(self, namespace):
         """Limpieza de conclusiones viejas. Las hipotesis pierden energia con los dias (CONCLUSION_DECAY) y, bajo CONCLUSION_FLOOR,
@@ -1768,14 +1771,17 @@ class StoneBotEngine:
                 t0 = time.time()
                 expired = self._decay_conclusions(namespace)
                 confirmed, w_drop = self._weigh_conclusions(namespace)
-                c_new, c_re, c_drop = self._reason_pending(namespace)
+                c_new, c_re, c_drop, error = self._reason_pending(namespace)
                 derived = self._derive_conclusions(namespace)
                 replaced = self._count_history(namespace, "reemplazada", t0)
                 msg += (f" Conclusiones: {c_new} nuevas, {c_re} reforzadas, {confirmed} confirmadas, "
                         f"{c_drop + w_drop} descartadas, {expired} caducadas. "
                         f"{derived} derivadas de otras, {replaced} reemplazadas.")
+                if error:
+                    msg += f" Error razonando conclusiones: {error}"
             except Exception as ex:
                 print(f"StoneBot: error razonando conclusiones: {ex!r}", file=sys.stderr)
+                msg += f" Error razonando conclusiones: {ex!r}."
         with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"last_dream:{namespace}", str(time.time())))
             conn.commit()

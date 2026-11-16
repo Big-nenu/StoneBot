@@ -3,39 +3,13 @@ import argparse
 import hashlib
 import json
 import sqlite3
-from contextlib import closing
 from pathlib import Path
 
-from experiences import connect, evidence
 from identity import INITIAL_IDENTITY, load_identity, update_identity
-from mcp_client import data_path
-from stonebot_engine import StoneBotEngine
+import stonebot_service as service
+from stonebot_service import EXPERIENCES, SCOPES, integrate_experience
 from stonebot_engine.notes import checked_child, note_name, write_notes
 from stonebot_engine.safety import check_path
-
-
-EXPERIENCES = "experiencias_mcp"
-SCOPES = {"memoria": "default", "experiencias": EXPERIENCES}
-
-
-def integrate_experience(engine, observation_id):
-    if type(observation_id) is not int or not 1 <= observation_id < 2**63:
-        raise ValueError("El ID de observación debe ser un entero positivo válido.")
-    with connect() as db:
-        row = db.execute("SELECT * FROM observation WHERE id=?", (observation_id,)).fetchone()
-    if row is None:
-        raise ValueError(f"No existe la observación MCP {observation_id}.")
-    fact = evidence(row)
-    content = (f"Evidencia MCP #{row['id']}, {fact['observado_utc']} UTC. "
-               f"Servidor {json.dumps(row['server'], ensure_ascii=False)}, "
-               f"herramienta {json.dumps(row['tool'], ensure_ascii=False)}. "
-               f"{fact['tipo'].capitalize()}: {fact['resultado']}")
-    # El sueño evalúa evidencias nuevas por incorporación; el recibo conserva la fecha observada.
-    result = engine.inject(content, namespace=EXPERIENCES, pinned=True,
-                           source=f"mcp-observation:{observation_id}", reinforce=False, distinct_source=True)
-    if "ERROR" in result:
-        raise RuntimeError(result)
-    return result
 
 
 def vault_folders(vault):
@@ -110,8 +84,7 @@ def main():
             text = Path(check_path(args.archivo_revisado)).read_text(encoding="utf-8-sig")
             result = write_editable(args.boveda, args.titulo, text)
         else:
-            path = data_path("memoria.db")
-            with closing(StoneBotEngine(path, allowed_root=path.parent)) as engine:
+            with service.memory_session(create=True) as engine:
                 if args.action == "integrar":
                     result = {i: integrate_experience(engine, i) for i in args.ids}
                 elif args.action == "sonar":

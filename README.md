@@ -33,7 +33,7 @@ Las etapas son orientativas, no fechas prometidas. Cada etapa debe tener una dem
 | 1. Núcleo conversacional | Aplicación Windows con chat, Ollama y motor local | Conversa y recuerda; pendiente permanecer en segundo plano al cerrar la ventana | Parcial. Chat, historial, temas y herramientas de memoria operativos; falta la bandeja del sistema. |
 | 1B. Herramientas externas (MCP) | Cliente MCP reutilizable y primeras integraciones | Descubre e invoca herramientas desde el chat con controles de permiso | Implementada en prototipo. Cliente STDIO/HTTP, panel y permisos; Context7 y Exa comprobados en pruebas, Tavily pendiente de prueba en vivo según última revisión. | 
 | 2. Aprendizaje de experiencias | Evaluar capacidades a partir de resultados observados | Registra una ejecución MCP, la recupera tras reiniciar y revisa su conclusión con evidencia nueva | Primera implementación. Hipótesis causales y otras fuentes de evidencia pendientes. |
-| 3. Sueño y aprendizaje | Revisar experiencias, contradicciones y conclusiones | Ciclo programado que produce conclusiones trazables | Pendiente |
+| 3. Sueño y aprendizaje | Revisar experiencias, contradicciones y conclusiones | Ciclo programado que intenta producir conclusiones trazables | Sueño automático implementado mientras la ventana está abierta. Validado con modelos de prueba y bases temporales. |
 | 4. Iniciativa controlada | Elegir tareas de una cola y proponer experimentos | Ejecuta tareas permitidas, con pausa y registro | Pendiente |
 | 5. Compañero de escritorio | Presencia visual opcional en Windows | Mascota movible, silenciosa, activable/desactivable | Pendiente |
 | 6. Percepción digital | Comprender eventos autorizados del equipo | Reacciona a eventos concretos sin espiar continuamente | Futuro |
@@ -160,9 +160,8 @@ Ventana PySide6  <-->  StoneBot Core  <-->  Ollama local
                            |
              ~/.stonebot/memoria.db
 
-Bandeja del sistema <--> StoneBot Core
-Ventana cerrada: proceso activo / «Salir»: proceso detenido
-Cliente MCP actual; futuros: sueños, iniciativa, mascota y sensores
+Actual: cliente MCP y sueño automático mientras la ventana está abierta
+Futuro: bandeja del sistema, iniciativa, mascota y sensores
 ```
 
 **No se necesita implementar toda la arquitectura al inicio.** La primera versión puede ser un único proceso y pocas herramientas.
@@ -173,7 +172,7 @@ Cliente MCP actual; futuros: sueños, iniciativa, mascota y sensores
 - **Primera interfaz:** Python + PySide6 (Qt), sujeta a prueba de prototipo.
 - **Persistencia.** La aplicación abre `%USERPROFILE%\.stonebot\memoria.db` con el motor local y consulta el namespace `default`.
 - **Configuración.** El motor requiere una ruta explícita y usa el prefijo `STONEBOT_` para configurar los modelos y las notas.
-- **Segundo plano:** inicialmente proceso en espera, sin razonamiento continuo; ciclos autónomos se incorporarán después.
+- **Segundo plano.** El sueño automático se programa mientras la ventana está abierta. La bandeja del sistema queda pendiente.
 - **Interfaz actual:** chat PySide6 de tema oscuro, mensajes separados, tipografía más legible y cuadro de escritura multilínea (Enter para enviar, Shift+Enter para salto de línea).
 - **Herramientas externas:** cliente MCP STDIO/Streamable HTTP implementado con panel, permisos y registro de actividad; la memoria continúa integrada por Python.
 
@@ -187,9 +186,39 @@ El paquete local `stonebot_engine/` contiene la copia de `mem_engine.py`, `llm.p
 | `inject_memory` | `inject()` guarda un hecho confirmado o una preferencia duradera | «Recuerda que el telescopio usa una montura ecuatorial.» |
 | `bridge_memory` | `bridge()` encuentra recuerdos que conectan dos temas | «Busca qué recuerdo conecta el telescopio con la montura ecuatorial.» |
 
-El puente presenta conexiones semánticas durante la consulta. Los sueños automáticos y el mantenimiento de relaciones persistentes quedan para una etapa posterior.
+El puente presenta conexiones semánticas durante la consulta. El sueño manual y el automático mantienen las relaciones persistentes mediante el motor local.
+
+### Servicio de memoria (`stonebot_service.py`)
+
+`stonebot_service.py` abre y cierra el motor local de `stonebot_engine` para `memoria.db`. Las herramientas del chat (`query_memory`, `inject_memory`, `bridge_memory`, `query_conclusions`), `/sueno`, `/integrar` y los comandos de la CLI que usan esa base pasan por el servicio.
+
+- **Un proceso a la vez.** El servicio toma un candado en `%USERPROFILE%\.stonebot\stonebot.lock`. Mientras la app está abierta, una segunda copia de la ventana y los comandos `integrar`, `sonar`, `conclusiones`, `previsualizar` y `exportar` muestran un aviso y se detienen. El servicio libera el candado al cerrar. Si el proceso termina inesperadamente, el sistema lo libera.
+- **Una operación a la vez dentro del proceso.** Un candado interno serializa las llamadas al motor, incluidos los sueños.
+- **Verificación.** `tests/test_servicio.py` comprueba el bloqueo entre procesos, el cierre de la CLI y la serialización entre hilos con datos de prueba.
 
 El motor restringe SQLite a la carpeta de StoneBot. El validador bloquea las carpetas de memoria personal, el repositorio original, los enlaces duros a archivos y las redirecciones de archivos auxiliares de SQLite. `STONEWAVE_DB` y `MEMHOLOGRAFIC_DB` solo se consideran para bloquear bases personales configuradas fuera de sus carpetas habituales. Las rutas de notas, importaciones, exportaciones y sincronización también se validan.
+
+### Sueño automático
+
+Mientras la ventana está abierta, StoneBot comprueba cada 30 segundos si toca soñar y alterna los ámbitos `memoria` y `experiencias`. Por defecto requiere 10 minutos sin interacción en la ventana y 12 horas desde el último sueño del ámbito, incluido el manual. Si el ámbito nunca ha soñado, basta con que tenga recuerdos y se cumpla la inactividad.
+
+El sueño usa el mismo motor que `/sueno` para clasificar recuerdos, enlazarlos, revisar contradicciones e intentar generar conclusiones. Un turno activo aplaza el sueño. Si envías un mensaje durante un sueño, el turno espera a que el motor quede libre antes de usar Ollama. Al cerrar la ventana se detienen las comprobaciones y se deja terminar cualquier sueño en curso.
+
+En **Diagnóstico** y en `%USERPROFILE%\.stonebot\diagnostics.log` quedan la hora de inicio, el resumen del motor y los errores detectados. La generación usa `STONEBOT_CONCLUSION_MODEL` (por defecto el modelo de síntesis, `qwen2.5:0.5b`). Las decisiones usan `STONEBOT_LLM_MODEL` (por defecto `d1:3b` mediante `/v1/systemone`). Un sueño puede terminar sin producir conclusiones.
+
+**Probar sin esperar 12 horas.** Cierra la instancia habitual de StoneBot y abre una sesión aparte de PowerShell en el repositorio, con Ollama activo. Los comandos usan un perfil temporal. Al cerrar esa sesión también dejarán de aplicarse estas variables.
+
+```powershell
+$perfilPrueba = Join-Path ([System.IO.Path]::GetTempPath()) ("stonebot-sueno-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $perfilPrueba | Out-Null
+$env:USERPROFILE = $perfilPrueba
+$env:STONEBOT_DREAM_IDLE_MIN = '0.1'
+$env:STONEBOT_DREAM_HOURS = '0.025'
+python -B stonebot_memory.py conclusiones memoria
+if ($LASTEXITCODE -eq 0) { python -B app.py }
+```
+
+Pide a StoneBot que guarde dos recuerdos sintéticos relacionados. Tras el turno, deja la ventana sin interacción durante un minuto y abre **Diagnóstico**. Busca `Sueño automático (memoria) iniciado` y vuelve a abrir el diagnóstico cuando termine para ver el resumen. Con esos valores, el mínimo de inactividad es de seis segundos y el intervalo entre sueños de un mismo ámbito es de 90 segundos.
 
 Repositorio base: [StoneWave](https://github.com/Big-nenu/StoneWave).
 
@@ -203,6 +232,7 @@ En Windows, las pruebas de redirección requieren permiso para crear enlaces sim
 ```powershell
 python -B tests/test_motor.py
 python -B tests/test_aislamiento.py
+python -B tests/test_servicio.py
 ```
 
 También se verificaron las tres herramientas con Nemotron y Ollama local desde la interfaz Qt. Se guardó un recuerdo sintético, se reinició la aplicación y se comprobó que el chat podía recuperarlo y encontrar su relación con dos temas.
@@ -283,7 +313,7 @@ En Windows 11, StoneBot aplica el fondo del tema a la barra de título mediante 
 
 La primera vez se usa el tema oscuro de StoneBot. El botón **Restaurar** junto a cada selector recupera solo ese color. **Restaurar colores predeterminados** recupera todos los colores. Ambas opciones conservan el tamaño de letra elegido.
 
-Para reiniciar la memoria experimental, cierra StoneBot y mueve su `memoria.db` y los archivos auxiliares de SQLite que existan a una carpeta de respaldo. Luego crea una base vacía con `python -c "from stonebot_engine import StoneBotEngine, default_root; StoneBotEngine(default_root() / 'memoria.db').close()"`. Para restaurar, con StoneBot cerrado, mueve la base experimental actual a otra carpeta y devuelve los archivos del respaldo a la carpeta de StoneBot.
+Para reiniciar la memoria experimental, cierra StoneBot y mueve su `memoria.db` y los archivos auxiliares de SQLite que existan a una carpeta de respaldo. Luego crea una base vacía con `python -B stonebot_memory.py conclusiones memoria`. Para restaurar, con StoneBot cerrado, mueve la base experimental actual a otra carpeta y devuelve los archivos del respaldo a la carpeta de StoneBot.
 
 ## Archivos actuales
 
@@ -291,9 +321,10 @@ Para reiniciar la memoria experimental, cierra StoneBot y mueve su `memoria.db` 
 StoneBot/
 ├── README.md
 ├── README-Hermes.md
-├── app.py                # GUI PySide6 + Ollama + herramientas Python de memoria
+├── app.py                # GUI PySide6 + Ollama (la memoria vive en stonebot_service.py)
+├── stonebot_service.py   # único dueño del motor: candados, herramientas de memoria, sueño e integración
 ├── identity.py           # identidad declarada de StoneBot en SQLite local
-├── stonebot_memory.py    # integración de evidencias, sueño y publicación revisada
+├── stonebot_memory.py    # línea de comandos: identidad, integración, sueño y publicación revisada
 ├── app-backup.py         # GUI anterior sin memoria persistente
 ├── test_memory.py        # consulta manual de la memoria experimental
 ├── stonebot_engine/      # motor SQLite, modelos, notas y validación de rutas

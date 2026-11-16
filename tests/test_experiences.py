@@ -15,6 +15,7 @@ from ollama import Message
 from test_mcp import example_stdio
 import app
 import mcp_client
+import stonebot_service as memory_service
 from experiences import query_experiences, record_experience
 from stonebot_engine.safety import IsolationError
 
@@ -29,7 +30,7 @@ def demo(root, stage, *, live=False):
     db = root / "experiences.sqlite3"
     payload = "prueba-privada-42"
     with (patch.object(mcp_client, "default_root", return_value=root),
-          patch.object(app, "DB_PATH", root / "memoria.db")):
+          patch.object(memory_service, "DB_PATH", root / "memoria.db")):
         if stage == "registrar":
             command, *args = example_stdio()[1:]
             args = [arg.removeprefix("--arg=") for arg in args if arg != "--arg"]
