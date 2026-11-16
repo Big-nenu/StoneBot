@@ -297,6 +297,14 @@ Los mensajes con hora registrada la muestran en formato local. Los mensajes anti
 
 En un mensaje del usuario, **Editar → Regenerar** vuelve a usar el historial anterior a ese punto. Si Ollama entrega una respuesta nueva y se guarda correctamente, se reemplaza el tramo posterior solo en esa conversación. Si la regeneración falla, se restaura el historial guardado.
 
+### Adjuntos del chat
+
+Pulsa **+** junto al cuadro de mensaje y selecciona hasta cuatro archivos de hasta 10 MiB cada uno. La lista muestra sus nombres antes de enviar y permite quitarlos. Se admiten imágenes PNG, JPG/JPEG y WebP, PDF con texto seleccionable y archivos TXT, MD, CSV, TSV, LOG y JSON en UTF-8 o UTF-16 con BOM.
+
+Las imágenes de hasta 16 megapíxeles se redimensionan para Ollama y se envían al modelo local `nemotron-3.5-bolt:e4b`. StoneBot comprueba que Ollama anuncie capacidad visual y avisa si el modelo carece de ella. Por PDF se leen hasta 40 páginas y 12 000 caracteres, el mismo límite de caracteres por archivo de texto. Los PDF escaneados requieren OCR externo. Para cada respuesta StoneBot prioriza los adjuntos recientes, con un máximo de cuatro imágenes y 24 000 caracteres extraídos, e indica cuándo quedan partes fuera del contexto.
+
+El historial local conserva el nombre, una copia de la imagen redimensionada o el texto extraído. Al reabrir o regenerar el chat, los adjuntos siguen disponibles aunque se mueva el original. Las rutas de origen quedan fuera del historial. Mientras el chat incluya adjuntos, los turnos de conversación usan Ollama local sin herramientas MCP ni de memoria permanente.
+
 La fila **Actividad** aparece en la conversación junto a la respuesta en curso. Se puede desplegar para ver el estado del turno, las operaciones MCP y sus resultados o errores. **Mostrar razonamiento de Ollama** aparece solo cuando la API entrega el campo separado `message.thinking`. Con la integración actual ese campo llega al terminar cada respuesta de Ollama. La actividad y el razonamiento se conservan en la vista actual del chat y se descartan al cambiar de conversación. Los detalles técnicos siguen en **Diagnóstico**. [Campo de razonamiento en Ollama](https://docs.ollama.com/capabilities/thinking)
 
 ## Apariencia

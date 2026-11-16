@@ -1,4 +1,5 @@
 """Almacenamiento local de conversaciones, separado de la memoria."""
+import json
 import sqlite3
 import time
 from contextlib import closing, contextmanager
@@ -19,12 +20,15 @@ class History:
                 CREATE TABLE IF NOT EXISTS message (
                     id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL REFERENCES chat(id) ON DELETE CASCADE,
                     role TEXT NOT NULL CHECK(role IN ('user', 'assistant')), content TEXT NOT NULL,
-                    created INTEGER
+                    created INTEGER, attachments TEXT
                 );
                 CREATE INDEX IF NOT EXISTS messages_by_chat ON message(chat_id, id);
             """)
-            if "created" not in {row[1] for row in conn.execute("PRAGMA table_info(message)")}:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(message)")}
+            if "created" not in columns:
                 conn.execute("ALTER TABLE message ADD COLUMN created INTEGER")
+            if "attachments" not in columns:
+                conn.execute("ALTER TABLE message ADD COLUMN attachments TEXT")
 
     @contextmanager
     def connect(self):
@@ -33,7 +37,7 @@ class History:
             conn.execute("PRAGMA foreign_keys = ON")
             yield conn
 
-    def append(self, chat_id, role, content, *, created=None):
+    def append(self, chat_id, role, content, *, created=None, attachments=None):
         now = time.time_ns() if created is None else created
         with self.connect() as conn:
             if chat_id is None:
@@ -41,8 +45,7 @@ class History:
                 title = title if len(title) <= 60 else title[:59].rstrip() + "…"
                 chat_id = conn.execute("INSERT INTO chat(title, updated) VALUES (?, ?)",
                                        (title, now)).lastrowid
-            conn.execute("INSERT INTO message(chat_id, role, content, created) VALUES (?, ?, ?, ?)",
-                         (chat_id, role, content, now))
+            self.insert_message(conn, chat_id, role, content, now, attachments)
             conn.execute("UPDATE chat SET updated=? WHERE id=?", (now, chat_id))
         return chat_id
 
@@ -60,24 +63,35 @@ class History:
 
     def messages(self, chat_id):
         with self.connect() as conn:
-            return [dict(role=role, content=content, created=created)
-                    for _, role, content, created in self.message_rows(conn, chat_id)]
+            return [message for _, message in self.message_rows(conn, chat_id)]
 
     @staticmethod
     def message_rows(conn, chat_id):
-        return conn.execute("SELECT id, role, content, created FROM message WHERE chat_id=? ORDER BY id",
-                            (chat_id,)).fetchall()
+        rows = []
+        for mid, role, content, created, attachments in conn.execute(
+                "SELECT id, role, content, created, attachments FROM message WHERE chat_id=? ORDER BY id", (chat_id,)):
+            message = dict(role=role, content=content, created=created)
+            if attachments:
+                message["attachments"] = json.loads(attachments)
+            rows.append((mid, message))
+        return rows
+
+    @staticmethod
+    def insert_message(conn, chat_id, role, content, created, attachments):
+        packed = json.dumps(attachments, ensure_ascii=False) if attachments else None
+        conn.execute("INSERT INTO message(chat_id, role, content, created, attachments) VALUES (?, ?, ?, ?, ?)",
+                     (chat_id, role, content, created, packed))
 
     def replace_from(self, chat_id, index, expected, edited, answer):
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             rows = self.message_rows(conn, chat_id)
-            current = [dict(role=role, content=content, created=created) for _, role, content, created in rows]
-            if current != expected or not 0 <= index < len(rows) or rows[index][1] != "user":
+            current = [message for _, message in rows]
+            if current != expected or not 0 <= index < len(rows) or current[index]["role"] != "user":
                 raise ValueError("La conversación cambió durante la regeneración.")
             conn.execute("DELETE FROM message WHERE chat_id=? AND id>=?", (chat_id, rows[index][0]))
-            conn.executemany("INSERT INTO message(chat_id, role, content, created) VALUES (?, ?, ?, ?)",
-                             [(chat_id, item["role"], item["content"], item["created"]) for item in (edited, answer)])
+            for item in (edited, answer):
+                self.insert_message(conn, chat_id, item["role"], item["content"], item["created"], item.get("attachments"))
             conn.execute("UPDATE chat SET updated=? WHERE id=?", (answer["created"], chat_id))
 
     def rename(self, chat_id, title):

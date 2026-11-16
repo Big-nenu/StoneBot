@@ -2,15 +2,17 @@
 import re
 from collections import deque
 from math import ceil
+from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QDesktopServices, QTextCursor, QTextDocument, QTextFormat, QTextOption
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QLabel, QPlainTextEdit, QSizePolicy, QTextBrowser, QTextEdit, QToolButton,
+    QApplication, QCheckBox, QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QSizePolicy, QTextBrowser, QTextEdit, QToolButton,
     QVBoxLayout, QWidget,
 )
 
-from appearance import button_style, control_colors, link_color, readable_text, shade
+from appearance import button_style, control_colors, link_color, readable_text, secondary_button, shade
+from attachments import FILE_FILTER, MAX_FILES, read_attachment
 
 
 class ChatText(QTextEdit):
@@ -56,6 +58,60 @@ class Composer(ChatText):
             event.accept()
             return
         super().keyPressEvent(event)
+
+
+class AttachmentTray(QWidget):
+    problem = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.files = []
+        self.rows = QVBoxLayout(self)
+        self.rows.setContentsMargins(3, 0, 3, 0)
+        self.add_button = secondary_button(QPushButton("+"))
+        self.add_button.setAccessibleName("Adjuntar archivos")
+        self.add_button.setToolTip("Adjuntar imágenes, PDF o texto")
+        self.add_button.clicked.connect(self.choose)
+        self.hide()
+
+    def choose(self):
+        paths, _ = QFileDialog.getOpenFileNames(self, "Adjuntar archivos", filter=FILE_FILTER)
+        for path in paths:
+            if len(self.files) >= MAX_FILES:
+                self.problem.emit(f"Puedes adjuntar hasta {MAX_FILES} archivos por mensaje.")
+                break
+            try:
+                self.add_file(read_attachment(path))
+            except (OSError, ValueError, RuntimeError) as exc:
+                self.problem.emit(f"No se pudo adjuntar {Path(path).name}. {exc}")
+
+    def add_file(self, file):
+        self.files.append(file)
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        name = file["name"]
+        label = QLabel((name if len(name) <= 40 else name[:37] + "…") + (" (parcial)" if file.get("partial") else ""))
+        label.setTextFormat(Qt.TextFormat.PlainText)
+        label.setToolTip(name)
+        remove = secondary_button(QPushButton("Quitar"))
+        remove.setAccessibleName(f"Quitar {name}")
+        remove.clicked.connect(lambda: self.remove_row(row))
+        layout.addWidget(label, 1)
+        layout.addWidget(remove)
+        self.rows.addWidget(row)
+        self.show()
+
+    def remove_row(self, row):
+        del self.files[self.rows.indexOf(row)]
+        self.rows.removeWidget(row)
+        row.hide()
+        row.deleteLater()
+        self.setVisible(bool(self.files))
+
+    def clear(self):
+        while self.rows.count():
+            self.remove_row(self.rows.itemAt(0).widget())
 
 
 FENCE = re.compile(r"^( {0,3})(`{3,}|~{3,})(.*)$")
