@@ -7,12 +7,12 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QDesktopServices, QTextCursor, QTextDocument, QTextFormat, QTextOption
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QSizePolicy, QTextBrowser, QTextEdit, QToolButton,
-    QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMenu, QPlainTextEdit, QPushButton,
+    QSizePolicy, QTextBrowser, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
 from appearance import button_style, control_colors, link_color, readable_text, secondary_button, shade
-from attachments import FILE_FILTER, MAX_FILES, read_attachment
+from attachments import FILE_FILTER, MAX_FILES, MAX_IMAGES, PDFPageRange, attachment_images, attachment_label, read_attachment
 
 
 class ChatText(QTextEdit):
@@ -69,9 +69,12 @@ class AttachmentTray(QWidget):
         self.rows = QVBoxLayout(self)
         self.rows.setContentsMargins(3, 0, 3, 0)
         self.add_button = secondary_button(QPushButton("+"))
-        self.add_button.setAccessibleName("Adjuntar archivos")
-        self.add_button.setToolTip("Adjuntar imágenes, PDF o texto")
-        self.add_button.clicked.connect(self.choose)
+        self.add_button.setAccessibleName("Opciones del chat")
+        self.add_button.setToolTip("Adjuntos, MCP y memoria")
+        self.menu = QMenu(self.add_button)
+        self.menu.setObjectName("composerMenu")
+        self.menu.addAction("Adjuntar archivos…", self.choose)
+        self.add_button.setMenu(self.menu)
         self.hide()
 
     def choose(self):
@@ -81,9 +84,31 @@ class AttachmentTray(QWidget):
                 self.problem.emit(f"Puedes adjuntar hasta {MAX_FILES} archivos por mensaje.")
                 break
             try:
-                self.add_file(read_attachment(path))
+                file = self.read_selected(path)
+                if file is None:
+                    continue
+                if sum(map(attachment_images, self.files)) + attachment_images(file) > MAX_IMAGES:
+                    raise ValueError(f"El mensaje admite hasta {MAX_IMAGES} imágenes o páginas visuales. "
+                                     "Envía los archivos en mensajes separados.")
+                self.add_file(file)
             except (OSError, ValueError, RuntimeError) as exc:
                 self.problem.emit(f"No se pudo adjuntar {Path(path).name}. {exc}")
+
+    def read_selected(self, path):
+        pages = None
+        while True:
+            try:
+                return read_attachment(path, pages)
+            except PDFPageRange as exc:
+                span, accepted = QInputDialog.getText(
+                    self, "Elegir páginas del PDF", f"{exc}\nTras enviar el tramo, vuelve a adjuntar el PDF y elige las páginas siguientes.",
+                    text=exc.suggestion)
+                if not accepted:
+                    return None
+                pieces = span.strip().split("-")
+                if len(pieces) not in (1, 2) or not all(re.fullmatch(r"[0-9]{1,6}", part.strip()) for part in pieces):
+                    raise ValueError("Escribe un número de página o un tramo como 1-4.")
+                pages = (int(pieces[0]), int(pieces[-1]))
 
     def add_file(self, file):
         self.files.append(file)
@@ -91,9 +116,10 @@ class AttachmentTray(QWidget):
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         name = file["name"]
-        label = QLabel((name if len(name) <= 40 else name[:37] + "…") + (" (parcial)" if file.get("partial") else ""))
+        display = attachment_label(file)
+        label = QLabel((display if len(display) <= 64 else display[:61] + "…") + (" (parcial)" if file.get("partial") else ""))
         label.setTextFormat(Qt.TextFormat.PlainText)
-        label.setToolTip(name)
+        label.setToolTip(display)
         remove = secondary_button(QPushButton("Quitar"))
         remove.setAccessibleName(f"Quitar {name}")
         remove.clicked.connect(lambda: self.remove_row(row))
@@ -337,6 +363,12 @@ def chat_style(theme):
             QWidget#composerPanel {{
                 background: {surface}; border: 1px solid {subtle_edge}; border-radius: 16px;
             }}
+            QMenu#composerMenu {{
+                background: {surface}; color: {text}; border: 1px solid {edge}; padding: 4px;
+            }}
+            QMenu#composerMenu::item {{ padding: 6px 24px 6px 10px; }}
+            QMenu#composerMenu::item:selected {{ background: {accent}; color: {accent_text}; }}
+            QMenu#composerMenu::item:disabled {{ color: {muted}; }}
             QPushButton#sendMessage {{ padding: 5px 13px; font-size: 14px; }}
             QTextEdit#messageInput {{ color: {text}; placeholder-text-color: {shade(surface, .7)}; }}
         """

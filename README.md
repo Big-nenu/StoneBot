@@ -299,9 +299,11 @@ En un mensaje del usuario, **Editar → Regenerar** vuelve a usar el historial a
 
 ### Adjuntos del chat
 
-Pulsa **+** junto al cuadro de mensaje y selecciona hasta cuatro archivos de hasta 10 MiB cada uno. La lista muestra sus nombres antes de enviar y permite quitarlos. Se admiten imágenes PNG, JPG/JPEG y WebP, PDF con texto seleccionable y archivos TXT, MD, CSV, TSV, LOG y JSON en UTF-8 o UTF-16 con BOM.
+Pulsa **+ → Adjuntar archivos** junto al cuadro de mensaje y selecciona hasta cuatro archivos de hasta 10 MiB cada uno. La lista muestra sus nombres antes de enviar y permite quitarlos. El menú también abre el panel de servidores MCP y prepara consultas de memoria en el cuadro de mensaje. **Skills** aparece deshabilitado. Se admiten imágenes PNG, JPG/JPEG y WebP, PDF y archivos TXT, MD, CSV, TSV, LOG y JSON en UTF-8 o UTF-16 con BOM.
 
-Las imágenes de hasta 16 megapíxeles se redimensionan para Ollama y se envían al modelo local `nemotron-3.5-bolt:e4b`. StoneBot comprueba que Ollama anuncie capacidad visual y avisa si el modelo carece de ella. Por PDF se leen hasta 40 páginas y 12 000 caracteres, el mismo límite de caracteres por archivo de texto. Los PDF escaneados requieren OCR externo. Para cada respuesta StoneBot prioriza los adjuntos recientes, con un máximo de cuatro imágenes y 24 000 caracteres extraídos, e indica cuándo quedan partes fuera del contexto.
+Las imágenes de hasta 16 megapíxeles se redimensionan para Ollama y se envían al modelo local `nemotron-3.5-bolt:e4b`. StoneBot comprueba que Ollama anuncie capacidad visual y avisa si el modelo carece de ella. En un PDF mixto extrae el texto disponible por página y renderiza las páginas sin texto como imágenes para ese mismo modelo.
+
+Cada tramo de un PDF admite hasta 40 páginas, cuatro páginas visuales y 12 000 caracteres de texto. Si el PDF rebasa el límite, el selector pide un rango como `1-4`. Envía ese tramo y vuelve a adjuntar el PDF para elegir el siguiente. El chat indica las páginas incluidas y, cuando hay un solo PDF en el contexto, comprueba si los números de página solicitados están disponibles. Los PDF de más de 10 MiB se deben dividir en archivos más pequeños. Cada respuesta prioriza los adjuntos recientes y admite hasta cuatro imágenes o páginas visuales en total y 24 000 caracteres extraídos. StoneBot avisa si deja contenido fuera.
 
 El historial local conserva el nombre, una copia de la imagen redimensionada o el texto extraído. Al reabrir o regenerar el chat, los adjuntos siguen disponibles aunque se mueva el original. Las rutas de origen quedan fuera del historial. Mientras el chat incluya adjuntos, los turnos de conversación usan Ollama local sin herramientas MCP ni de memoria permanente.
 
