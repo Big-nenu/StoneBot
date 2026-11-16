@@ -22,9 +22,10 @@ STATUS_COLORS = {"Correcta": "#86efac", "Falló": "#fca5a5"}
 
 
 class Toggle(QCheckBox):
-    def __init__(self, checked, label, accent):
+    def __init__(self, checked, label, accent, surface=COLORS["background"]):
         super().__init__()
         self.accent = accent
+        self.surface = surface
         self.setAccessibleName(label)
         self.setChecked(checked)
         self.setFixedSize(QSize(38, 24))
@@ -34,11 +35,11 @@ class Toggle(QCheckBox):
 
     def paintEvent(self, event):
         checked = self.isChecked()
-        track = self.accent if checked else "#484452"
+        track = self.accent if checked and self.isEnabled() else shade(self.surface, .25)
+        edge = readable_text(self.surface)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setOpacity(1 if self.isEnabled() else 0.5)
-        painter.setPen(QPen(QColor("#ffffff"), 1) if self.hasFocus() else Qt.PenStyle.NoPen)
+        painter.setPen(QPen(QColor(edge), 2 if self.hasFocus() else 1))
         painter.setBrush(QColor(track))
         painter.drawRoundedRect(self.rect().adjusted(2, 3, -2, -3), 9, 9)
         painter.setPen(Qt.PenStyle.NoPen)
@@ -214,13 +215,14 @@ class McpDialog(QDialog):
         layout = QHBoxLayout(holder)
         layout.setContentsMargins(5, 0, 5, 0)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        switch = Toggle(checked, label, self.theme["accent"])
+        surface = shade(self.theme["background"], .06)
+        switch = Toggle(checked, label, self.theme["accent"], surface)
         switch.setEnabled(self.test is None)
         switch.toggled.connect(on_change)
         layout.addWidget(switch)
         if show_state:
             state = QLabel("Activo" if checked else "Inactivo")
-            state.setStyleSheet(f"background: {shade(self.theme['background'], .06)};")
+            state.setStyleSheet(f"background: {surface}; color: {readable_text(surface)};")
             layout.addWidget(state)
         tree.setItemWidget(item, column, holder)
         if show_state:
@@ -287,7 +289,8 @@ class McpDialog(QDialog):
             item.setToolTip(0, tool)
             self.tools.addTopLevelItem(item)
             self.add_toggle(self.tools, item, 2, checked, f"Herramienta {tool}",
-                            lambda enabled, name=name, tool=tool: self.toggle_tool(name, tool, enabled))
+                            lambda enabled, name=name, tool=tool: self.toggle_tool(name, tool, enabled),
+                            show_state=True)
 
     def commit(self, name, server):
         try:

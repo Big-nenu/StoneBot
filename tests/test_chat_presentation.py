@@ -11,13 +11,43 @@ from unittest.mock import patch
 from ollama import Message
 from PySide6.QtCore import QEventLoop, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox, QPushButton
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
 import mcp_client
-from appearance import AppearanceDialog, ColorEditor, PRESETS, load_appearance
+from appearance import (
+    AppearanceDialog, ColorEditor, ORIGINAL, PRESETS, appearance_settings, custom_themes, load_appearance,
+)
 from history import History
+from win_caption import CAPTION_COLOR, SYSTEM_COLOR, TEXT_COLOR, colorref, set_caption_colors
+
+
+def test_default_and_legacy():
+    original = {key: load_appearance()[key] for key in PRESETS[ORIGINAL]}
+    assert original == dict(accent="#5d8cc2", background="#222831", user_message="#294461", bot_message="#282f38")
+    settings = appearance_settings()
+    settings.setValue("theme", "StoneBot")
+    settings.setValue("accent", "#AA8844")
+    settings.setValue("font_size", 20)
+    settings.sync()
+    old = load_appearance()
+    assert old["accent"] == "#aa8844" and old["background"] == "#19191e" and old["font_size"] == 20
+    assert settings.value("theme") == "StoneBot"
+    settings.clear()
+    settings.sync()
+
+
+def test_caption_colors():
+    calls = []
+
+    def set_attribute(attribute, color):
+        calls.append((attribute, color))
+        return -1 if (attribute, color) == (CAPTION_COLOR, colorref("#222831")) else 0
+
+    assert not set_caption_colors(set_attribute, "#222831")
+    assert calls == [(TEXT_COLOR, colorref("#ffffff")), (CAPTION_COLOR, colorref("#222831")),
+                     (CAPTION_COLOR, SYSTEM_COLOR), (TEXT_COLOR, SYSTEM_COLOR)]
 
 
 def wait_for_turn(window):
@@ -42,6 +72,30 @@ def test_appearance(window):
         assert panel.preset.currentText() == name
     reopened = AppearanceDialog(window, load_appearance(), window.change_appearance)
     assert reopened.preset.currentText() == "SynthWave '84"
+    reopened.set_color("accent", "#113355")
+    with patch.object(QInputDialog, "getText", return_value=("Acero", True)):
+        reopened.save_theme.click()
+    reopened.set_color("accent", "#224488")
+    with patch.object(QInputDialog, "getText", return_value=("Azul", True)):
+        reopened.save_theme.click()
+    reopened.apply_named("Acero")
+    with patch.object(QInputDialog, "getText", return_value=("Medianoche", True)):
+        reopened.rename_theme.click()
+    assert set(custom_themes()) == {"Medianoche", "Azul"}
+    assert load_appearance()["named_theme"] == "Medianoche"
+    with (patch.object(QInputDialog, "getText", return_value=("stonebot original", True)),
+          patch.object(QMessageBox, "warning") as warning):
+        reopened.save_theme.click()
+    warning.assert_called_once()
+    assert set(custom_themes()) == {"Medianoche", "Azul"}
+    reopened.apply_named("Azul")
+    with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+        reopened.delete_theme.click()
+    assert set(custom_themes()) == {"Medianoche"}
+    assert "named_theme" not in load_appearance()
+    reopened.apply_named(ORIGINAL)
+    assert not reopened.rename_theme.isEnabled() and not reopened.delete_theme.isEnabled()
+    reopened.apply_named("Medianoche")
     editor = ColorEditor(window, "Acento", "#ffffff", window.appearance)
     editor.slots.button(3).click()
     assert editor.color.name() == "#ffffff" and "Vacío" in editor.slots.button(3).text()
@@ -56,15 +110,24 @@ def test_appearance(window):
     assert restored.color.name() == "#000000"
     restored.use_slot.click()
     assert restored.color.name() == "#ffffff"
+    restored.slots.button(4).click()
+    restored.save_slot.click()
+    restored.set_color(QColor("#990088"))
+    restored.save_slot.click()
+    assert restored.favorite(4) == "#990088"
+    restored.clear_slot.click()
+    assert not restored.favorite(4) and restored.color.name() == "#990088"
     subprocess.run([sys.executable, "-B", "-c", """
 import sys
 from pathlib import Path
 from unittest.mock import patch
 import mcp_client
-from appearance import appearance_settings, load_appearance, preset_name
+from appearance import appearance_settings, custom_themes, load_appearance, preset_name
 with patch.object(mcp_client, "default_root", return_value=Path(sys.argv[1])):
-    assert preset_name(load_appearance()) == "SynthWave '84"
+    assert preset_name(load_appearance()) == "Medianoche"
+    assert custom_themes()["Medianoche"]["accent"] == "#113355"
     assert appearance_settings().value("favorites/3") == "#ffffff"
+    assert not appearance_settings().value("favorites/4")
 """, str(window.history.path.parent)], cwd=Path(__file__).resolve().parents[1], check=True, timeout=15)
 
 
@@ -105,7 +168,7 @@ def test_regeneration(window):
     other = db.append(None, "user", "Otra conversación")
     window.open_chat(chat)
     before = db.messages(chat)
-    assert before[-1]["created"] and not window.activity_panel.isVisible()
+    assert before[-1]["created"] and window.activity_panel is None
 
     def reply(**kwargs):
         assert [m["content"] for m in kwargs["messages"][1:]] == [
@@ -117,16 +180,20 @@ def test_regeneration(window):
     with (patch.object(app, "load_servers", return_value={}),
           patch.object(app, "Client", return_value=SimpleNamespace(chat=reply))):
         window.regenerate(2, "Pregunta editada")
+        pending = window.activity_panel
+        assert window.transcript.itemAt(window.transcript.count() - 2).widget() is pending
+        assert "Procesando" in pending.summary.toolTip() and not pending.detail.isVisible()
         wait_for_turn(window)
     after = db.messages(chat)
     assert [item["content"] for item in after] == [
         "Primera pregunta", "Primera respuesta", "Pregunta editada", "Respuesta nueva"
     ]
     assert after[:2] == before[:2] and db.messages(other)[0]["content"] == "Otra conversación"
-    assert not window.activity_panel.isVisible()
-    assert "Traza del modelo" in window.activity_panel.reasoning.toPlainText()
-    window.activity_button.click()
-    assert window.activity_panel.isVisible() and not window.activity_panel.reasoning.isVisible()
+    assert window.transcript.itemAt(window.transcript.count() - 3).widget() is pending
+    assert not pending.detail.isVisible()
+    assert "Traza del modelo" in pending.reasoning.toPlainText()
+    pending.summary.click()
+    assert pending.detail.isVisible() and not pending.reasoning.isVisible()
     window.activity_panel.show_reasoning.click()
     assert window.activity_panel.reasoning.isVisible()
     assert "Esperando" in window.activity_panel.events.toPlainText()
@@ -138,6 +205,10 @@ def test_regeneration(window):
         wait_for_turn(window)
     assert db.messages(chat) == after and window.messages[1:] == after
     assert "conservó" in window.problem.text()
+    assert "Error del turno" in window.activity_panel.summary.toolTip()
+    assert window.activity_panel.show_reasoning.isHidden()
+    window.open_chat(other)
+    assert window.activity_panel is None
 
 
 if __name__ == "__main__":
@@ -152,6 +223,8 @@ if __name__ == "__main__":
                 INSERT INTO message VALUES (1, 1, 'user', 'Mensaje anterior');
             """)
         with patch.object(mcp_client, "default_root", return_value=root):
+            test_default_and_legacy()
+            test_caption_colors()
             assert History().messages(1)[0]["created"] is None
             window = app.StoneBot()
             window.show()

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 from mcp.types import Tool, ToolAnnotations
 from ollama import Message
-from PySide6.QtCore import QEventLoop, QTimer, Qt
+from PySide6.QtCore import QEvent, QEventLoop, QTimer, Qt
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from test_mcp import example_stdio
@@ -106,6 +106,8 @@ def test_history_and_gui(qt):
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     assert not (db.path.parent / "memoria.db").exists()
     window.close()
+    window.deleteLater()
+    qt.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     qt.processEvents()
 
 

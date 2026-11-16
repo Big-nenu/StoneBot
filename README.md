@@ -264,13 +264,17 @@ Cada mensaje nuevo muestra su hora local y permite copiar el original. El chat c
 
 En un mensaje del usuario, **Editar → Regenerar** vuelve a usar el historial anterior a ese punto. Si Ollama entrega una respuesta nueva y se guarda correctamente, se reemplaza el tramo posterior solo en esa conversación. Si la regeneración falla, se restaura el historial guardado.
 
-**Actividad** muestra los pasos del turno. Dentro del panel, **Mostrar razonamiento de Ollama** revela el texto del campo de razonamiento cuando el modelo lo devuelve. Este texto está separado de los avisos técnicos y se conserva solo mientras se visualiza ese turno.
+La fila **Actividad** aparece en la conversación junto a la respuesta en curso. Se puede desplegar para ver el estado del turno, las operaciones MCP y sus resultados o errores. **Mostrar razonamiento de Ollama** aparece solo cuando la API entrega el campo separado `message.thinking`. Con la integración actual ese campo llega al terminar cada respuesta de Ollama. La actividad y el razonamiento se conservan en la vista actual del chat y se descartan al cambiar de conversación. Los detalles técnicos siguen en **Diagnóstico**. [Campo de razonamiento en Ollama](https://docs.ollama.com/capabilities/thinking)
 
 ## Apariencia
 
-Abre el botón de **paleta → Apariencia**. El selector muestra una muestra de cada tema. Puedes usar el tema original de StoneBot, elegir un tema inspirado en un editor o ajustar el acento y los fondos manualmente. Los temas cambian también las ventanas y los diálogos. La selección, los colores y el tamaño de letra de 12 a 28 px se guardan en `%USERPROFILE%\.stonebot\appearance.ini`. Inspiración de las paletas [GitHub Dark Dimmed](https://github.com/primer/github-vscode-theme), [One Dark Pro](https://github.com/Binaryify/OneDark-Pro) y [SynthWave '84](https://github.com/robb0wen/synthwave-vscode).
+Abre el botón de **paleta → Apariencia**. **StoneBot Original** es el predeterminado de instalaciones nuevas. Si ya tienes colores o un tema guardado, se conserva esa configuración. El selector incluye muestras de [GitHub Dark Dimmed](https://github.com/primer/github-vscode-theme), [One Dark Pro](https://github.com/Binaryify/OneDark-Pro) y [SynthWave '84](https://github.com/robb0wen/synthwave-vscode).
 
-En un selector de color, pulsa **Elegir color…**, selecciona una casilla y pulsa **Guardar en casilla** para guardar el color en edición. **Usar favorito** carga el color de esa casilla. Las casillas vacías llevan la etiqueta **Vacío**, y el blanco puede guardarse como cualquier otro color.
+Usa **Guardar como…** para guardar la combinación de colores actual con un nombre. Los temas propios aparecen en el mismo selector y se pueden renombrar o eliminar. El tamaño de letra es un ajuste independiente de 12 a 28 px. Los temas y las preferencias se guardan en `%USERPROFILE%\.stonebot\appearance.ini`.
+
+El selector de color permite ajustar el matiz y la muestra o escribir el valor hexadecimal. Selecciona una de las ocho casillas y pulsa **Guardar en casilla** para guardar o reemplazar el favorito. **Usar favorito** lo carga y **Borrar favorito** vacía la casilla. Seleccionar una casilla conserva el color en edición. Una casilla vacía muestra **Vacío** y el blanco se puede guardar.
+
+En Windows 11, StoneBot aplica el fondo del tema a la barra de título mediante DWM. Si el sistema rechaza el cambio, usa sus colores nativos. Los controles de minimizar, maximizar y cerrar son los de Windows. [Atributos de ventana de DWM](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/ne-dwmapi-dwmwindowattribute)
 
 La primera vez se usa el tema oscuro de StoneBot. El botón **Restaurar** junto a cada selector recupera solo ese color. **Restaurar colores predeterminados** recupera todos los colores. Ambas opciones conservan el tamaño de letra elegido.
 

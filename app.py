@@ -20,7 +20,8 @@ from mcp_permissions import allowed, permission_signature, remember, safe_read
 from mcp_pool import McpPool
 from mcp_ui import McpDialog
 from stonebot_engine import StoneBotEngine, check_db_path, default_root
-from PySide6.QtCore import QObject, QSize, Qt, QThread, Signal, Slot
+from win_caption import apply_native_caption
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPlainTextEdit,
     QPushButton, QScrollArea, QVBoxLayout, QWidget,
@@ -221,19 +222,32 @@ class Worker(QObject):
                         _, server_name, tool, _ = external[name]
                         self.mcp_notice.emit(f"MCP {server_name}. Nemotron solicitó {tool.name}.")
                         self.activity.emit(f"Solicitando {tool.name} en {server_name}…")
+                        started = False
+
+                        def on_start():
+                            nonlocal started
+                            started = True
+                            self.activity.emit(f"En ejecución · {server_name} / {tool.name}…")
+
                         try:
                             self.permission = (permission_signature(servers[server_name], tool)
                                                if safe_read(tool, arguments) else None)
-                            result = await call_external(external[name], arguments, self.confirm_external)
+                            result = await call_external(external[name], arguments, self.confirm_external,
+                                                         on_start=on_start)
                         except Exception as exc:
                             result = f"Falló la llamada MCP. {connection_error(exc)}"
                             self.mcp_notice.emit(f"MCP {server_name}. {result}")
+                            self.activity.emit(f"Error · {server_name} / {tool.name}. {connection_error(exc)}")
                             self.operation_error.emit(f"No se pudo completar una operación en {server_name}. Consulta el diagnóstico.")
                         else:
-                            self.activity.emit(f"Procesando el resultado de {tool.name}.")
                             if result.startswith("Error MCP:"):
                                 self.mcp_notice.emit(f"MCP {server_name}. La herramienta devolvió un error.")
+                                self.activity.emit(f"Terminó con error · {server_name} / {tool.name}.")
                                 self.operation_error.emit(f"Una herramienta de {server_name} devolvió un error.")
+                            elif started:
+                                self.activity.emit(f"Finalizó {tool.name}; procesando el resultado…")
+                            else:
+                                self.activity.emit(f"No se ejecutó {tool.name}.")
                     elif name in MEMORY_TOOLS:
                         try:
                             result = MEMORY_TOOLS[name](**arguments)
@@ -354,17 +368,7 @@ class StoneBot(QMainWindow):
         self.chat.setWidget(canvas)
         layout.addWidget(self.chat, 1)
 
-        self.activity_panel = ActivityPanel()
-        self.activity_button = QPushButton("Actividad")
-        self.activity_button.setObjectName("messageAction")
-        self.activity_button.setCheckable(True)
-        self.activity_button.toggled.connect(self.activity_panel.setVisible)
-        activity_row = QHBoxLayout()
-        activity_row.setContentsMargins(16, 0, 16, 4)
-        activity_row.addStretch()
-        activity_row.addWidget(self.activity_button)
-        layout.addLayout(activity_row)
-        layout.addWidget(self.activity_panel)
+        self.activity_panel = None
 
         composer = QWidget()
         composer.setObjectName("composerPanel")
@@ -383,11 +387,6 @@ class StoneBot(QMainWindow):
         footer.addStretch(1)
         footer.addWidget(composer, 100)
         footer.addStretch(1)
-        self.status = QLabel()
-        self.status.setObjectName("chatStatus")
-        self.status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.status.hide()
-        layout.addWidget(self.status)
         self.problem = QLabel()
         self.problem.setObjectName("chatStatus")
         self.problem.setTextFormat(Qt.TextFormat.PlainText)
@@ -396,6 +395,8 @@ class StoneBot(QMainWindow):
         self.problem.hide()
         layout.addWidget(self.problem)
         layout.addLayout(footer)
+        if QApplication.platformName() == "windows":
+            QApplication.instance().installEventFilter(self)
         self.refresh_appearance()
         self.chat_min_width = max(340, header.minimumSizeHint().width())
         self.toggle_history(True)
@@ -429,15 +430,23 @@ class StoneBot(QMainWindow):
             return
         self.render_chat(chat_id, saved)
 
-    def render_chat(self, chat_id, saved):
+    def render_chat(self, chat_id, saved, *, keep_activity=False):
         self.chat_id = chat_id
         self.messages = [{"role": "system", "content": SYSTEM}, *saved]
         self.message.clear()
-        self.activity_panel.reset()
+        if keep_activity and self.activity_panel is not None:
+            self.transcript.removeWidget(self.activity_panel)
+        else:
+            self.activity_panel = None
         self.problem.hide()
         self.follow_latest = True
         for _ in range(self.transcript.count() - 1):
-            row = self.transcript.takeAt(0).layout()
+            item = self.transcript.takeAt(0)
+            if (panel := item.widget()) is not None:
+                panel.hide()
+                panel.deleteLater()
+                continue
+            row = item.layout()
             while row.count():
                 widget = row.takeAt(0).widget()
                 if widget is not None:
@@ -447,6 +456,8 @@ class StoneBot(QMainWindow):
         for index, message in enumerate(saved):
             self.append_message(message["content"], user=message["role"] == "user",
                                 created=message["created"], index=index)
+        if self.activity_panel is not None:
+            self.transcript.insertWidget(self.transcript.count() - 1, self.activity_panel)
         self.refresh_history()
         self.message.setFocus()
 
@@ -516,6 +527,26 @@ class StoneBot(QMainWindow):
             self.fit_bubble(bubble)
         if self.mcp_dialog is not None:
             self.mcp_dialog.set_appearance(theme)
+        if QApplication.platformName() == "windows":
+            for window in QApplication.topLevelWidgets():
+                if window.isVisible() and self.owns_caption(window):
+                    apply_native_caption(window, theme["background"])
+
+    def owns_caption(self, window):
+        if window is self:
+            return True
+        if isinstance(window, QDialog):
+            parent = window.parentWidget()
+            while parent is not None:
+                if parent is self:
+                    return True
+                parent = parent.parentWidget()
+        return False
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Show and self.owns_caption(watched):
+            apply_native_caption(watched, self.appearance["background"])
+        return super().eventFilter(watched, event)
 
     def open_mcp(self):
         if self.mcp_dialog is None:
@@ -656,26 +687,27 @@ class StoneBot(QMainWindow):
         self.send.setEnabled(False)
         self.mcp_button.setEnabled(False)
         self.history_panel.setEnabled(False)
-        self.activity_panel.reset()
-        self.activity_panel.events.appendPlainText("Procesando el mensaje…")
-        self.status.setText("StoneBot está trabajando…")
-        self.status.show()
+        self.activity_panel = ActivityPanel()
+        self.transcript.insertWidget(self.transcript.count() - 1, self.activity_panel)
+        self.activity_panel.add_event("Procesando el mensaje…")
+        self.scroll_to_latest()
 
         self.thread = QThread()
         self.worker = Worker([{"role": m["role"], "content": m["content"]} for m in self.messages], self.pool)
         self.worker.moveToThread(self.thread)
 
         self.thread.started.connect(self.worker.run)
+        self.thread.finished.connect(self.worker.deleteLater)
         self.worker.finished.connect(self.respuesta)
         self.worker.error.connect(self.error)
         self.worker.mcp_notice.connect(record)
         self.worker.operation_error.connect(self.show_problem)
-        self.worker.activity.connect(self.activity_panel.events.appendPlainText)
-        self.worker.reasoning.connect(self.activity_panel.reasoning.appendPlainText)
+        self.worker.activity.connect(self.activity_panel.add_event)
+        self.worker.reasoning.connect(self.activity_panel.add_reasoning)
         self.worker.mcp_confirmation.connect(self.confirmar_mcp, Qt.ConnectionType.BlockingQueuedConnection)
         self.worker.finished.connect(self.thread.quit)
         self.worker.error.connect(self.thread.quit)
-        self.thread.finished.connect(self.limpiar)
+        self.thread.finished.connect(self.limpiar, Qt.ConnectionType.QueuedConnection)
         self.thread.start()
 
     @Slot(object)
@@ -738,16 +770,18 @@ class StoneBot(QMainWindow):
                 saved = self.history.messages(chat_id)
             except (OSError, ValueError, RuntimeError, sqlite3.Error):
                 pass
-            self.render_chat(chat_id, saved)
+            self.render_chat(chat_id, saved, keep_activity=True)
+        self.activity_panel.add_event(f"Error del turno · {detalle}")
         self.show_problem(detalle)
 
+    @Slot()
     def limpiar(self):
-        self.worker.deleteLater()
+        self.thread.wait()
         self.thread.deleteLater()
         self.worker = None
         self.thread = None
-        self.status.hide()
-        self.activity_panel.events.appendPlainText("Turno finalizado.")
+        if not self.activity_panel.latest.startswith("Error del turno"):
+            self.activity_panel.add_event("Turno finalizado.")
         self.message.setEnabled(True)
         self.send.setEnabled(True)
         self.mcp_button.setEnabled(True)

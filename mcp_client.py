@@ -261,7 +261,7 @@ def check_tool_paths(value):
             check_tool_paths(item)
 
 
-async def call_external(entry, arguments, confirm):
+async def call_external(entry, arguments, confirm, *, on_start=None):
     from jsonschema import ValidationError, validators
     from referencing import Registry
 
@@ -277,6 +277,8 @@ async def call_external(entry, arguments, confirm):
         return "La herramienta MCP recibió una ruta local bloqueada."
     if not (auto and safe_read(tool, arguments)) and not await confirm(name, tool.name, arguments):
         return "El usuario no autorizó esta operación MCP."
+    if on_start is not None:
+        on_start()
     reply = await session.call_tool(tool.name, arguments)
     result = "\n".join(item.text for item in reply.content if item.type == "text")
     if reply.structuredContent is not None and not result:

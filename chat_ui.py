@@ -6,7 +6,7 @@ from math import ceil
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QDesktopServices, QTextCursor, QTextDocument, QTextFormat, QTextOption
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QLabel, QPlainTextEdit, QSizePolicy, QTextBrowser, QTextEdit,
+    QApplication, QCheckBox, QLabel, QPlainTextEdit, QSizePolicy, QTextBrowser, QTextEdit, QToolButton,
     QVBoxLayout, QWidget,
 )
 
@@ -141,30 +141,69 @@ class ActivityPanel(QWidget):
     def __init__(self):
         super().__init__()
         self.setObjectName("activityPanel")
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        self.latest = ""
+        self.summary = QToolButton()
+        self.summary.setObjectName("activitySummary")
+        self.summary.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.summary.setArrowType(Qt.ArrowType.RightArrow)
+        self.summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.summary.setAccessibleName("Expandir o contraer actividad de este turno")
+        self.summary.setCheckable(True)
+        self.summary.toggled.connect(self.expand)
+        self.detail = QWidget()
+        self.detail.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         self.events = QPlainTextEdit()
         self.events.setReadOnly(True)
-        self.events.setMaximumHeight(84)
+        self.events.setFixedHeight(74)
         self.events.setAccessibleName("Actividad de StoneBot")
         self.events.document().setMaximumBlockCount(40)
         self.show_reasoning = QCheckBox("Mostrar razonamiento de Ollama")
+        self.show_reasoning.hide()
         self.reasoning = QPlainTextEdit()
         self.reasoning.setReadOnly(True)
-        self.reasoning.setMaximumHeight(100)
+        self.reasoning.setFixedHeight(96)
         self.reasoning.setAccessibleName("Razonamiento proporcionado por Ollama")
-        self.reasoning.setPlaceholderText("Ollama aún no ha enviado razonamiento para este turno.")
         self.reasoning.document().setMaximumBlockCount(400)
         self.reasoning.hide()
         self.show_reasoning.toggled.connect(self.reasoning.setVisible)
+        details = QVBoxLayout(self.detail)
+        details.setContentsMargins(0, 4, 0, 0)
+        details.setSpacing(4)
+        details.addWidget(QLabel("Actividad observable"))
+        details.addWidget(self.events)
+        details.addWidget(self.show_reasoning)
+        details.addWidget(self.reasoning)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Actividad de este turno"))
-        layout.addWidget(self.events)
-        layout.addWidget(self.show_reasoning)
-        layout.addWidget(self.reasoning)
-        self.hide()
+        layout.setContentsMargins(8, 3, 8, 3)
+        layout.setSpacing(3)
+        layout.addWidget(self.summary)
+        layout.addWidget(self.detail)
+        self.detail.hide()
 
-    def reset(self):
-        self.events.clear()
-        self.reasoning.clear()
+    def expand(self, expanded):
+        self.summary.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.detail.setVisible(expanded)
+
+    def add_event(self, text):
+        self.latest = text
+        self.events.appendPlainText(text)
+        self.update_summary()
+
+    def update_summary(self):
+        text = f"Actividad · {self.latest}"
+        self.summary.setToolTip(text)
+        self.summary.setText(self.summary.fontMetrics().elidedText(
+            text, Qt.TextElideMode.ElideRight, max(60, self.width() - 48)))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update_summary()
+
+    def add_reasoning(self, text):
+        if text.strip():
+            self.show_reasoning.show()
+            self.reasoning.appendPlainText(text)
 
 
 def chat_style(theme):
@@ -194,6 +233,11 @@ def chat_style(theme):
                 font-size: 12px; border-radius: 6px; padding: 2px 6px;
             }}
             QWidget#activityPanel {{ border-top: 1px solid {edge}; }}
+            QToolButton#activitySummary {{
+                color: {readable_text(surface)}; background: {surface};
+                border: 1px solid {edge}; border-radius: 6px; padding: 3px 8px;
+                text-align: left;
+            }}
             QWidget#activityPanel QPlainTextEdit {{
                 background: {surface}; color: {readable_text(surface)};
                 border: 1px solid {edge};

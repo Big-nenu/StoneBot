@@ -10,12 +10,12 @@ import httpx
 from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QColorDialog, QDialog, QLabel, QLineEdit, QMessageBox, QPushButton
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QLineEdit, QMessageBox, QPushButton
 
 from test_mcp import example_stdio
 import app
 import mcp_client
-from appearance import AppearanceDialog, COLORS, ColorEditor, DEFAULT_FONT_SIZE
+from appearance import AppearanceDialog, COLORS, ColorEditor, DEFAULT_FONT_SIZE, PRESETS, readable_text, shade
 from mcp_ui import McpDialog, ServerForm, Toggle
 
 
@@ -97,6 +97,7 @@ def test_manager():
             assert dialog.tools.topLevelItemCount() == 2
             assert dialog.tools.topLevelItem(0).text(1) == "Lectura automática"
             assert dialog.tools.topLevelItem(1).text(1) == "Requiere confirmación"
+            assert dialog.tools.itemWidget(dialog.tools.topLevelItem(0), 2).findChild(QLabel).text() == "Activo"
             widths = []
             for width in (380, 980):
                 dialog.resize(width, 460)
@@ -124,6 +125,7 @@ def test_manager():
             QTest.mouseClick(switch(dialog.tools, 1), Qt.MouseButton.LeftButton)
             assert mcp_client.load_servers()["ejemplo"]["disabled_tools"] == ["mark"]
             assert dialog.tools.topLevelItem(1).text(1) == "Deshabilitada"
+            assert dialog.tools.itemWidget(dialog.tools.topLevelItem(1), 2).findChild(QLabel).text() == "Inactivo"
             assert not switch(dialog.tools, 1).isChecked()
             QTest.mouseClick(switch(dialog.table), Qt.MouseButton.LeftButton)
             assert not mcp_client.load_servers()["ejemplo"]["enabled"]
@@ -261,15 +263,13 @@ def test_appearance():
             colors = dict(accent="#00bb99", background="#eeeeee", user_message="#333366", bot_message="#e7e7f2")
 
             def customize(dialog):
-                def choose(editor):
-                    editor.pick.click()
-                    return 1
-
                 for key, color in colors.items():
-                    with (patch.object(QColorDialog, "getColor", return_value=QColor(color)) as picker,
-                          patch.object(ColorEditor, "exec", choose)):
+                    def choose(editor):
+                        editor.set_color(QColor(color))
+                        return 1
+
+                    with patch.object(ColorEditor, "exec", choose):
                         dialog.swatches[key].click()
-                    picker.assert_called_once()
                     assert window.appearance[key] == color
                     assert color in window.centralWidget().styleSheet()
                 dialog.font_size.setValue(23)
@@ -313,7 +313,23 @@ def test_appearance():
             qt.processEvents()
 
 
+def test_toggle_contrast():
+    qt = QApplication.instance() or QApplication([])
+    samples = [*PRESETS.values(), dict(COLORS, background="#ffffff", accent="#f0f0f0")]
+    for theme in samples:
+        surface = shade(theme["background"], .06)
+        for checked in (False, True):
+            control = Toggle(checked, "Interruptor de prueba", theme["accent"], surface)
+            track = theme["accent"] if checked else shade(surface, .25)
+            image = control.grab().toImage()
+            thumb_x = 27 if checked else 10
+            assert image.pixelColor(thumb_x, 12).name() == readable_text(track)
+            assert image.pixelColor(10 if checked else 27, 12).name() == QColor(track).name()
+    qt.processEvents()
+
+
 if __name__ == "__main__":
     test_manager()
     test_appearance()
+    test_toggle_contrast()
     print("PASS: colores de estado, interruptores MCP, catálogo STDIO y apariencia persistente.")

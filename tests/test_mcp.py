@@ -120,9 +120,11 @@ def test_empty_reply_retries_selection_across_active_servers():
 
     worker = app.Worker([{"role": "user", "content": "Busca en la web. " + "Referencia previa. " * 400}])
     outputs, errors, notices = [], [], []
+    activity = []
     worker.finished.connect(outputs.append)
     worker.error.connect(errors.append)
     worker.mcp_notice.connect(notices.append)
+    worker.activity.connect(activity.append)
     confirm = AsyncMock(return_value=True)
     servers = {name: {"enabled": name != "disabled", "read_tools": []}
                for name in ("docs", "offline", "web", "disabled")}
@@ -137,6 +139,8 @@ def test_empty_reply_retries_selection_across_active_servers():
     fixtures["docs"].call_tool.assert_not_awaited()
     assert any("offline" in notice and "variable de entorno" in notice for notice in notices)
     assert any("web" in notice and "solicitó search" in notice for notice in notices)
+    assert next(i for i, event in enumerate(activity) if "En ejecución · web / search" in event) < next(
+        i for i, event in enumerate(activity) if "Finalizó search" in event)
 
 
 def test_stdio_chat_and_permissions():
