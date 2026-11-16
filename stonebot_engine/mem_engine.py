@@ -473,15 +473,27 @@ class StoneBotEngine:
     # ------------------------------------------------------------------
     # Guardar
     # ------------------------------------------------------------------
-    def inject(self, content, energy=0.5, namespace="default", pinned=False, source=None, created_at=None, reinforce=True):
+    def inject(self, content, energy=0.5, namespace="default", pinned=False, source=None, created_at=None,
+               reinforce=True, distinct_source=False):
         """Guarda un recuerdo. Rapido: no usa LLM. El sueño se encarga de ordenar y enlazar."""
+        provenance = None
+        if distinct_source:
+            if not source:
+                raise ValueError("Un registro por procedencia necesita un identificador.")
+            provenance = f"imported:{namespace}:{source}"
+            with closing(sqlite3.connect(self.db_path)) as conn:
+                if conn.execute("SELECT 1 FROM meta WHERE key=?", (provenance,)).fetchone():
+                    return "= YA EXISTE (misma procedencia)."
         vec = self.get_embedding(content)
         if vec is None:
             return "❌ ERROR: No se obtuvo embedding."
-        ids, sims = self._sims(vec, namespace)
-        dup = self._top(ids, sims, 1, DUPLICATE_SIM)
+        dup = [] if distinct_source else self._top(*self._sims(vec, namespace), 1, DUPLICATE_SIM)
         with closing(sqlite3.connect(self.db_path)) as conn, conn:
             cursor = conn.cursor()
+            if provenance:
+                conn.execute("BEGIN IMMEDIATE")
+                if conn.execute("INSERT OR IGNORE INTO meta VALUES (?, ?)", (provenance, "1")).rowcount == 0:
+                    return "= YA EXISTE (misma procedencia)."
             if dup:
                 fid, sim = dup[0]
                 if not reinforce:  # sync: lo que ya existe no se refuerza (si no, cada sync inflaria la energia)
@@ -1150,6 +1162,13 @@ class StoneBotEngine:
             "un hábito o una forma de trabajar o aprender. No repitas un recuerdo tal cual y no inventes nada que no esté respaldado. "
             "Si no hay una conclusión clara, responde exactamente: NINGUNA"
         )
+        if all(f.startswith("Evidencia MCP #") for f in facts_list):
+            prompt = (
+                "Estas son observaciones de ejecuciones MCP de StoneBot:\n\n" + facts_str + "\n\n"
+                "Escribe una frase respaldada por al menos dos observaciones sobre lo que ocurrió. "
+                "Limita la conclusión a las ejecuciones observadas. No atribuyas causas ni prometas "
+                "comportamiento futuro. Si la evidencia es insuficiente, responde exactamente: NINGUNA"
+            )
         text = self.generator.generate(prompt, timeout=60, model=CONCLUSION_MODEL)
         if text is None:
             return None
@@ -1651,11 +1670,11 @@ class StoneBotEngine:
 
     def export_notes(self, namespace="default", base_dir=None):
         """Escribe las conclusiones como notas de Obsidian con wikilinks (ver notes.py). Solo escribe una COPIA para ver: la memoria
-        no cambia. base_dir: la carpeta (por defecto STONEBOT_NOTES). Devuelve un dict con 'status' ('ok' | 'off' | 'error') y el resumen."""
+        no cambia. La carpeta debe indicarse explícitamente. Para Big-vault usa la publicación revisada de StoneBot."""
         from . import notes
-        base = base_dir or notes.notes_dir()
+        base = base_dir
         if not base:
-            return {"status": "off", "message": "Las notas de Obsidian estan apagadas: define STONEBOT_NOTES (la carpeta donde escribirlas)."}
+            return {"status": "off", "message": "Indica explícitamente una carpeta para exportar las notas."}
         if not os.path.isdir(base):
             return {"status": "error", "message": f"La carpeta de las notas no existe: {base}. Crea la carpeta (o corrige STONEBOT_NOTES)."}
         res = notes.write_notes(self.notes_data(namespace), base)
@@ -1757,14 +1776,6 @@ class StoneBotEngine:
                         f"{derived} derivadas de otras, {replaced} reemplazadas.")
             except Exception as ex:
                 print(f"StoneBot: error razonando conclusiones: {ex!r}", file=sys.stderr)
-        try:  # notas de Obsidian: solo si esta activado STONEBOT_NOTES (es una copia para ver; nunca debe tirar el sueño)
-            from . import notes
-            if notes.notes_dir():
-                r = self.export_notes(namespace)
-                msg += (f" Notas de Obsidian: {r['written']} escritas, {r['unchanged']} sin cambios, {r['deleted']} borradas."
-                        if r["status"] == "ok" else f" Notas de Obsidian: {r['message']}")
-        except Exception as ex:
-            print(f"StoneBot: error escribiendo las notas de Obsidian: {ex!r}", file=sys.stderr)
         with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"last_dream:{namespace}", str(time.time())))
             conn.commit()

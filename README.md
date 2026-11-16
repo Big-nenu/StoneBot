@@ -291,7 +291,9 @@ Para reiniciar la memoria experimental, cierra StoneBot y mueve su `memoria.db` 
 StoneBot/
 ├── README.md
 ├── README-Hermes.md
-├── app.py                # GUI PySide6 renovada + Ollama + herramientas de memoria
+├── app.py                # GUI PySide6 + Ollama + herramientas Python de memoria
+├── identity.py           # identidad declarada de StoneBot en SQLite local
+├── stonebot_memory.py    # integración de evidencias, sueño y publicación revisada
 ├── app-backup.py         # GUI anterior sin memoria persistente
 ├── test_memory.py        # consulta manual de la memoria experimental
 ├── stonebot_engine/      # motor SQLite, modelos, notas y validación de rutas
@@ -322,6 +324,36 @@ Las experiencias se guardan en `%USERPROFILE%\.stonebot\experiences.sqlite3`, se
 Ejecuta `python -B tests/test_experiences.py` para probar el reinicio con dos procesos de la aplicación, un perfil temporal, un MCP STDIO real y un modelo simulado. La prueba verifica la recuperación desde un chat nuevo, la revisión de una conclusión con evidencia contraria y el bloqueo de rutas protegidas. Con Ollama en ejecución y `nemotron-3.5-bolt:e4b` instalado, usa `python -B tests/test_experiences.py --live` para realizar el recorrido con el modelo local.
 
 La demostración con Nemotron y Ollama local guardó la observación 1 tras ejecutar `demo / echo`. En un segundo proceso, desde un chat nuevo, el modelo recuperó ese ID y explicó que la respuesta anterior había llegado sin error y que aún quedaba por probar si se repetiría con otros argumentos o configuraciones.
+
+## Identidad, sueños y Obsidian
+
+La identidad declarada se inicializa en `%USERPROFILE%\.stonebot\identity.sqlite3` y se incorpora al contexto del chat. Usa `/identidad` para verla o `/identidad campo valor` para corregir un dato. También puedes consultar y corregir la identidad con `python -B stonebot_memory.py identidad` y `corregir-identidad CAMPO VALOR`. La procedencia del proyecto se conserva como datos declarados por su responsable.
+
+StoneBot utiliza funciones Python del motor incluido en el repositorio. El chat puede consultar conclusiones con `query_conclusions`, que devuelve su estado y los IDs de evidencia. Usa `/integrar ID` para incorporar una observación y `/sueno experiencias` o `/sueno memoria` para iniciar un sueño desde el chat. El sueño local clasifica, relaciona, revisa contradicciones y genera hipótesis. Una conclusión marcada como confirmada tiene respaldo según los criterios del motor y puede revisarse posteriormente.
+
+```powershell
+# Usa los IDs reales capturados previamente con /aprender.
+python -B stonebot_memory.py integrar 1 2
+python -B stonebot_memory.py sonar experiencias
+python -B stonebot_memory.py conclusiones experiencias
+```
+
+`integrar` importa únicamente los resultados observados de los IDs elegidos al ámbito `experiencias_mcp` de `memoria.db`. Cada observación se identifica por su procedencia y puede importarse una sola vez. Los recibos conservan la fecha y no incluyen argumentos ni respuestas brutas. Para revisar la memoria conversacional propia de StoneBot, usa `sonar memoria`. El sueño no exporta notas, incluso si está definida la antigua variable `STONEBOT_NOTES`.
+
+Para publicar en tu clon local de **Big-vault**, indica la raíz de la bóveda. Revisa la previsualización, incluidos el texto de las conclusiones inferidas y las evidencias. Autoriza únicamente esa versión con el valor `aprobacion` que imprime el comando.
+
+```powershell
+$boveda = 'C:\ruta\a\Big-vault'
+python -B stonebot_memory.py preparar $boveda
+python -B stonebot_memory.py previsualizar
+python -B stonebot_memory.py exportar $boveda --aprobar VALOR_DE_APROBACION
+```
+
+Sustituye `VALOR_DE_APROBACION` por el valor completo de `aprobacion`. Las copias se escriben en `stonebot/generadas/` y sus `[[wikilinks]]` apuntan a rutas de la bóveda. La exportación se limita al ámbito de experiencias. Las notas generadas que se editaron manualmente se conservan. SQLite es la fuente de verdad.
+
+Para ideas, observaciones y aprendizajes, pide al chat un borrador Markdown. Revísalo en un archivo y guárdalo como nota editable con `python -B stonebot_memory.py nota $boveda --titulo "Mi idea" --archivo-revisado .\borrador.md`. StoneBot crea la nota una sola vez en `stonebot/editables/` y preserva el contenido existente. Puedes sincronizar las notas con el complemento Git que ya usa la bóveda.
+
+`python -B tests/test_memory_integration.py` prueba la recuperación de identidad tras un reinicio, el sueño con modelos de prueba, la aprobación por versión, la resolución de wikilinks y la protección de notas ajenas y de ediciones manuales. En una bóveda temporal generó una conclusión con tres evidencias enlazadas. En una prueba separada, Nemotron recuperó la identidad de un perfil temporal inicializado desde otro proceso y reconoció la separación entre StoneBot y StoneWave.
 
 ## Ideas en exploración
 

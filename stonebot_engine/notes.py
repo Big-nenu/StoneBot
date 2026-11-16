@@ -1,8 +1,7 @@
 """Notas de Obsidian: exporta las conclusiones de StoneBot (y los recuerdos de donde salieron) como notas .md con wikilinks [[...]].
 
 Reglas:
-  - StoneBot es la fuente de verdad. Las notas son una COPIA para VER (Graph View). Este modulo solo escribe: nunca lee las notas
-    para cambiar la memoria. Lo que edites en una nota se pierde en la siguiente exportacion.
+  - Las notas son copias de SQLite para consultar en Obsidian. Las ediciones manuales se conservan.
   - Carpetas separadas: <base>/conclusiones/ y <base>/recuerdos/. En el Graph View se ocultan los recuerdos con el filtro
     `-path:recuerdos` y quedan solo las conclusiones.
   - Tercera carpeta: <base>/historial/ guarda las conclusiones que caducaron o se reemplazaron (se ocultan con `-path:historial`).
@@ -18,11 +17,11 @@ import hashlib
 import json
 import platform
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from .llm import env_var
-from .safety import check_path
+from .safety import IsolationError, check_path
 
 FOLDER_CONCLUSIONS = "conclusiones"
 FOLDER_MEMORIES = "recuerdos"
@@ -30,12 +29,6 @@ FOLDER_HISTORY = "historial"
 _BAD_CHARS = re.compile(r'[\\/:*?"<>|#^\[\]\x00-\x1f]')
 _MARK = re.compile(r'^generado_por:\s*"stonebot"\s*$', re.M)
 _HOST = re.compile(r'^equipo:\s*(".*")\s*$', re.M)
-
-
-def notes_dir():
-    """Carpeta base de las notas (variable STONEBOT_NOTES), o None si estan apagadas."""
-    value = (env_var("NOTES") or "").strip()
-    return None if value.lower() in ("", "off", "false", "0", "no") else value
 
 
 def this_host():
@@ -108,8 +101,7 @@ def _state_label(status):
 # ----------------------------------------------------------------------
 # Contenido de las notas
 # ----------------------------------------------------------------------
-_WARNING = ("> Nota generada por StoneBot: es una copia de solo lectura. La fuente de verdad es la memoria de StoneBot; "
-            "si editas esta nota, el siguiente sueño la sobrescribe.")
+_WARNING = ("> Nota generada por StoneBot desde SQLite. Usa la carpeta de notas editables para tus anotaciones.")
 
 
 def render_conclusion(c, memories, relations, names, host, namespace, extra=None):
@@ -188,13 +180,28 @@ def _owner(text):
 
 
 def _read(path):
-    try:
-        return Path(check_path(path)).read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
+    return checked_child(path.parent, path.name).read_text(encoding="utf-8", errors="replace")
 
 
-def write_notes(data, base_dir, host=None):
+def checked_child(parent, name):
+    path = Path(parent) / name
+    if path.is_symlink() or path.is_junction() or Path(check_path(path, parent)) != path:
+        raise IsolationError("Ruta de notas redirigida o fuera de la carpeta autorizada.")
+    return path
+
+
+def seal(text):
+    first, body = text.split("\n", 1)
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return f"{first}\nhash_contenido: {digest}\n{body}"
+
+
+def managed(text, host):
+    first, _, body = text.split("\n", 2) if text.count("\n") >= 2 else ("", "", "")
+    return first == "---" and _is_generated(text) and _owner(text) == host and text == seal(f"{first}\n{body}")
+
+
+def write_notes(data, base_dir, host=None, *, link_prefix=""):
     """Escribe las notas de 'data' (ver StoneBotEngine.notes_data) dentro de base_dir y limpia las que ya no corresponden.
 
     Devuelve un dict: written, unchanged, deleted, skipped (notas tuyas con el mismo nombre que no se tocaron), conclusions, memories.
@@ -202,7 +209,7 @@ def write_notes(data, base_dir, host=None):
     host = host or this_host()
     base = Path(check_path(base_dir))
     conc_dir, mem_dir, hist_dir = (
-        Path(check_path(base / folder)) for folder in (FOLDER_CONCLUSIONS, FOLDER_MEMORIES, FOLDER_HISTORY)
+        checked_child(base, folder) for folder in (FOLDER_CONCLUSIONS, FOLDER_MEMORIES, FOLDER_HISTORY)
     )
     conc_dir.mkdir(parents=True, exist_ok=True)
     mem_dir.mkdir(parents=True, exist_ok=True)
@@ -218,9 +225,14 @@ def write_notes(data, base_dir, host=None):
         hist.setdefault(note_name(f"historial{int(h.get('ended') or 0)}", h["content"]), h)
     memories = data["facts"]
     used = sorted({f for c in list(by_id.values()) + list(hist.values()) for f in c["sources"] if f in memories})
-    names = {("c", c["id"]): n for n, c in concs.items()}
-    names.update({("h", h["id"]): n for n, h in hist.items()})
-    names.update({("m", f): note_name("recuerdo", memories[f]["content"]) for f in used})
+    memory_names = {f: note_name("recuerdo", memories[f]["content"]) for f in used}
+
+    def target(folder, name):
+        return f"{link_prefix}/{folder}/{name}" if link_prefix else name
+
+    names = {("c", c["id"]): target(FOLDER_CONCLUSIONS, n) for n, c in concs.items()}
+    names.update({("h", h["id"]): target(FOLDER_HISTORY, n) for n, h in hist.items()})
+    names.update({("m", f): target(FOLDER_MEMORIES, n) for f, n in memory_names.items()})
 
     using = {}
     for c in by_id.values():
@@ -247,26 +259,44 @@ def write_notes(data, base_dir, host=None):
         rels = [{"other": by_id[r["id"]], **r} for r in data["relations"].get(c["id"], []) if r["id"] in by_id]
         wanted[conc_dir / f"{name}.md"] = render_conclusion(c, memories, rels, names, host, data["namespace"], extra(c))
     for f in used:
-        wanted[mem_dir / f"{names[('m', f)]}.md"] = render_memory(memories[f], using[f], names, host, data["namespace"])
+        wanted[mem_dir / f"{memory_names[f]}.md"] = render_memory(memories[f], using[f], names, host, data["namespace"])
     for name, h in hist.items():
         wanted[hist_dir / f"{name}.md"] = render_history(h, memories, names, host, data["namespace"], pick)
 
     res = {"written": 0, "unchanged": 0, "deleted": 0, "skipped": [], "conclusions": len(concs), "memories": len(used), "history": len(hist)}
     for path, text in wanted.items():
+        path = checked_child(path.parent, path.name)
+        text = seal(text)
         old = _read(path) if path.exists() else None
-        if old is not None and not _is_generated(old):
-            res["skipped"].append(path.name)  # una nota tuya con ese nombre: no se toca
+        if old is not None and not managed(old, host):
+            res["skipped"].append(path.name)
         elif old == text:
             res["unchanged"] += 1
         else:
-            Path(check_path(path)).write_text(text, encoding="utf-8", newline="\n")
+            if old is None:
+                with path.open("x", encoding="utf-8", newline="\n") as out:
+                    out.write(text)
+            else:
+                tmp = None
+                try:
+                    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n",
+                                                     dir=path.parent, delete=False) as out:
+                        tmp = Path(out.name)
+                        out.write(text)
+                    if _read(path) != old:
+                        res["skipped"].append(path.name)
+                        continue
+                    tmp.replace(path)
+                finally:
+                    if tmp is not None:
+                        tmp.unlink(missing_ok=True)
             res["written"] += 1
     for folder in (conc_dir, mem_dir, hist_dir):
         for path in folder.glob("*.md"):
             if path in wanted:
                 continue
             old = _read(path)
-            if old is not None and _is_generated(old) and _owner(old) == host:  # solo lo que escribio este equipo y ya no corresponde
+            if managed(old, host):
                 path.unlink()
                 res["deleted"] += 1
     return res

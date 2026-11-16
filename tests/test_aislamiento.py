@@ -238,7 +238,7 @@ def test_worker_guarda_consulta_y_conecta_recuerdos_tras_reabrir():
 
                 def chat(**kwargs):
                     assert {tool.__name__ for tool in kwargs["tools"]} == {
-                        "query_memory", "inject_memory", "bridge_memory", "query_experiences"
+                        "query_memory", "inject_memory", "bridge_memory", "query_experiences", "query_conclusions"
                     }
                     transcript = kwargs["messages"]
                     if len(transcript) == 2:
