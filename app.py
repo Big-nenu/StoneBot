@@ -10,11 +10,12 @@ from pathlib import Path
 from ollama import Client, Tool
 from appearance import (
     AppearanceDialog, apply_palette, dialog_style, load_appearance, palette_icon, readable_text, save_appearance,
+    secondary_button,
 )
 from chat_ui import ActivityPanel, ChatText, Composer, MarkdownText, chat_style
 from diagnostics import read_log, record
 from history import History
-from history_ui import HistoryPanel
+from history_ui import HistoryPanel, load_history_width, save_history_width
 from mcp_client import call_external, connection_error, discover, load_servers, ollama_tool, session_for
 from mcp_permissions import allowed, permission_signature, remember, safe_read
 from mcp_pool import McpPool
@@ -24,7 +25,7 @@ from win_caption import apply_native_caption
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPlainTextEdit,
-    QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QSplitter, QVBoxLayout, QWidget,
 )
 
 MODEL = "nemotron-3.5-bolt:e4b"
@@ -300,6 +301,11 @@ class StoneBot(QMainWindow):
         main_layout = QHBoxLayout(central)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
+        self.history_width = self.saved_history_width = load_history_width()
+        self.history_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.history_splitter.setChildrenCollapsible(False)
+        self.history_splitter.setHandleWidth(6)
+        main_layout.addWidget(self.history_splitter)
         self.history_panel = HistoryPanel()
         self.history_panel.new_chat.connect(self.new_chat)
         self.history_panel.opened.connect(self.open_chat)
@@ -307,9 +313,12 @@ class StoneBot(QMainWindow):
         self.history_panel.deleted.connect(self.delete_chat)
         self.history_panel.searched.connect(self.refresh_history)
         self.history_panel.diagnostics.connect(self.open_diagnostics)
-        main_layout.addWidget(self.history_panel)
+        self.history_splitter.addWidget(self.history_panel)
         conversation = QWidget()
-        main_layout.addWidget(conversation, 1)
+        self.history_splitter.addWidget(conversation)
+        self.history_splitter.setStretchFactor(0, 0)
+        self.history_splitter.setStretchFactor(1, 1)
+        self.history_splitter.splitterMoved.connect(self.remember_history_width)
         layout = QVBoxLayout(conversation)
         layout.setContentsMargins(0, 0, 0, 14)
         layout.setSpacing(0)
@@ -317,12 +326,14 @@ class StoneBot(QMainWindow):
         header = QWidget()
         header.setObjectName("chatHeader")
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(20, 12, 20, 12)
+        header_layout.setContentsMargins(16, 9, 16, 9)
+        header_layout.setSpacing(8)
         title = QLabel("StoneBot")
         title.setObjectName("chatTitle")
-        model = QLabel(MODEL)
-        model.setObjectName("chatModel")
-        self.history_button = QPushButton("☰")
+        title.setToolTip(f"Modelo activo · {MODEL}")
+        title.setAccessibleDescription(f"Modelo activo: {MODEL}")
+        self.history_button = secondary_button(QPushButton("☰"))
+        self.history_button.setProperty("quiet", True)
         self.history_button.setCheckable(True)
         self.history_button.setChecked(True)
         self.history_button.setAccessibleName("Mostrar u ocultar el historial")
@@ -331,12 +342,13 @@ class StoneBot(QMainWindow):
         header_layout.addWidget(self.history_button)
         header_layout.addWidget(title)
         header_layout.addStretch()
-        header_layout.addWidget(model)
-        self.mcp_button = QPushButton("MCP")
+        self.mcp_button = secondary_button(QPushButton("MCP"))
+        self.mcp_button.setProperty("quiet", True)
         self.mcp_button.setAccessibleName("Administrar servidores MCP")
         self.mcp_button.clicked.connect(self.open_mcp)
         header_layout.addWidget(self.mcp_button)
-        self.settings_button = QPushButton()
+        self.settings_button = secondary_button(QPushButton())
+        self.settings_button.setProperty("quiet", True)
         self.settings_button.setIconSize(QSize(26, 20))
         self.settings_button.setAccessibleName("Configuración de apariencia")
         self.settings_button.setToolTip("Apariencia")
@@ -355,12 +367,12 @@ class StoneBot(QMainWindow):
         canvas = QWidget()
         canvas.setObjectName("chatCanvas")
         canvas_layout = QHBoxLayout(canvas)
-        canvas_layout.setContentsMargins(16, 20, 16, 14)
+        canvas_layout.setContentsMargins(22, 24, 22, 16)
         transcript = QWidget()
         transcript.setMaximumWidth(760)
         self.transcript = QVBoxLayout(transcript)
         self.transcript.setContentsMargins(0, 0, 0, 0)
-        self.transcript.setSpacing(16)
+        self.transcript.setSpacing(20)
         self.transcript.addStretch()
         canvas_layout.addStretch(1)
         canvas_layout.addWidget(transcript, 100)
@@ -377,13 +389,14 @@ class StoneBot(QMainWindow):
         composer_layout.setContentsMargins(6, 4, 8, 4)
         self.message = Composer()
         self.send = QPushButton("Enviar")
+        self.send.setObjectName("sendMessage")
         self.send.clicked.connect(self.enviar)
         self.message.submitted.connect(self.enviar)
         composer_layout.addWidget(self.message, 1)
-        composer_layout.addWidget(self.send, 0, Qt.AlignmentFlag.AlignBottom)
+        composer_layout.addWidget(self.send, 0, Qt.AlignmentFlag.AlignVCenter)
 
         footer = QHBoxLayout()
-        footer.setContentsMargins(16, 0, 16, 0)
+        footer.setContentsMargins(22, 0, 22, 0)
         footer.addStretch(1)
         footer.addWidget(composer, 100)
         footer.addStretch(1)
@@ -399,6 +412,7 @@ class StoneBot(QMainWindow):
             QApplication.instance().installEventFilter(self)
         self.refresh_appearance()
         self.chat_min_width = max(340, header.minimumSizeHint().width())
+        conversation.setMinimumWidth(self.chat_min_width)
         self.toggle_history(True)
         self.refresh_history()
         if self.history is None:
@@ -407,7 +421,24 @@ class StoneBot(QMainWindow):
 
     def toggle_history(self, visible):
         self.history_panel.setVisible(visible)
-        self.setMinimumWidth(self.chat_min_width + (self.history_panel.width() if visible else 0))
+        extra = self.history_panel.minimumWidth() + self.history_splitter.handleWidth() if visible else 0
+        self.setMinimumWidth(self.chat_min_width + extra)
+        if visible:
+            self.restore_history_width()
+
+    def restore_history_width(self):
+        available = self.history_splitter.width() - self.history_splitter.handleWidth()
+        width = min(self.history_width, max(self.history_panel.minimumWidth(), available - self.chat_min_width))
+        self.history_splitter.setSizes([width, max(self.chat_min_width, available - width)])
+
+    def remember_history_width(self, _position, _index):
+        if not self.history_panel.isHidden():
+            self.history_width = self.history_splitter.sizes()[0]
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self.history_panel.isHidden():
+            self.restore_history_width()
 
     def refresh_history(self, _query=None):
         if self.history is not None:
@@ -522,7 +553,8 @@ class StoneBot(QMainWindow):
         apply_palette(theme)
         self.centralWidget().setStyleSheet(chat_style(theme))
         self.settings_button.setIcon(palette_icon(
-            [readable_text(theme["accent"]), theme["accent"], "#94c6ff", "#d4a2e8"], artist=True))
+            [readable_text(theme["background"]), theme["background"], theme["accent"], theme["background"]],
+            artist=True))
         for bubble in self.chat.findChildren(ChatText, "userMessage"):
             self.fit_bubble(bubble)
         if self.mcp_dialog is not None:
@@ -586,12 +618,16 @@ class StoneBot(QMainWindow):
             body.setPlainText(text)
         actions = QHBoxLayout()
         actions.setContentsMargins(4, 0, 4, 0)
-        stamp = datetime.fromtimestamp(created / 1_000_000_000) if created is not None else None
-        time_label = QLabel(stamp.strftime("%H:%M") if stamp else "Hora no registrada")
-        time_label.setObjectName("messageTime")
-        if stamp:
-            time_label.setToolTip(stamp.strftime("%d/%m/%Y %H:%M:%S"))
-        actions.addWidget(time_label)
+        if created is not None:
+            try:
+                stamp = datetime.fromtimestamp(created / 1_000_000_000)
+            except (OSError, OverflowError, TypeError, ValueError):
+                pass
+            else:
+                time_label = QLabel(stamp.strftime("%H:%M"))
+                time_label.setObjectName("messageTime")
+                time_label.setToolTip(stamp.strftime("%d/%m/%Y %H:%M:%S"))
+                actions.addWidget(time_label)
         actions.addStretch()
         actions.addWidget(self.message_button("Copiar", lambda: QApplication.clipboard().setText(text)))
         if user and index is not None and self.chat_id is not None:
@@ -608,7 +644,7 @@ class StoneBot(QMainWindow):
 
     @staticmethod
     def message_button(title, action):
-        button = QPushButton(title)
+        button = secondary_button(QPushButton(title))
         button.setObjectName("messageAction")
         button.clicked.connect(lambda checked=False: action())
         return button
@@ -739,6 +775,12 @@ class StoneBot(QMainWindow):
         if self.thread is not None:
             event.ignore()
         else:
+            if self.history_width != self.saved_history_width:
+                try:
+                    save_history_width(self.history_width)
+                    self.saved_history_width = self.history_width
+                except (OSError, RuntimeError, ValueError):
+                    record("No se pudo guardar el ancho del historial.")
             self.pool.close()
             super().closeEvent(event)
 

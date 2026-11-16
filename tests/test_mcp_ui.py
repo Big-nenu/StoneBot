@@ -15,7 +15,10 @@ from PySide6.QtWidgets import QApplication, QDialog, QLabel, QLineEdit, QMessage
 from test_mcp import example_stdio
 import app
 import mcp_client
-from appearance import AppearanceDialog, COLORS, ColorEditor, DEFAULT_FONT_SIZE, PRESETS, readable_text, shade
+from appearance import (
+    AppearanceDialog, COLORS, ColorEditor, DEFAULT_FONT_SIZE, PRESETS, XCODE,
+    control_colors, readable_text, shade,
+)
 from mcp_ui import McpDialog, ServerForm, Toggle
 
 
@@ -317,10 +320,10 @@ def test_toggle_contrast():
     qt = QApplication.instance() or QApplication([])
     samples = [*PRESETS.values(), dict(COLORS, background="#ffffff", accent="#f0f0f0")]
     for theme in samples:
-        surface = shade(theme["background"], .06)
+        surface = control_colors(theme["background"])[0]
         for checked in (False, True):
             control = Toggle(checked, "Interruptor de prueba", theme["accent"], surface)
-            track = theme["accent"] if checked else shade(surface, .25)
+            track = theme["accent"] if checked else shade(surface, .16)
             image = control.grab().toImage()
             thumb_x = 27 if checked else 10
             assert image.pixelColor(thumb_x, 12).name() == readable_text(track)
@@ -328,8 +331,28 @@ def test_toggle_contrast():
     qt.processEvents()
 
 
+def test_xcode_manager_layout():
+    qt = QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as directory, patch.object(
+        mcp_client, "default_root", return_value=Path(directory)
+    ):
+        window = app.StoneBot()
+        dialog = McpDialog(window)
+        dialog.set_appearance(PRESETS[XCODE])
+        dialog.resize(dialog.minimumSize())
+        dialog.show()
+        qt.processEvents()
+        assert dialog.add.geometry().bottom() < dialog.table.geometry().top()
+        assert dialog.probe.geometry().top() > dialog.table.geometry().bottom()
+        assert dialog.probe.property("primary")
+        assert_controls_fit(dialog, dialog.findChildren(QPushButton))
+        dialog.close()
+        window.close()
+
+
 if __name__ == "__main__":
     test_manager()
     test_appearance()
     test_toggle_contrast()
+    test_xcode_manager_layout()
     print("PASS: colores de estado, interruptores MCP, catálogo STDIO y apariencia persistente.")

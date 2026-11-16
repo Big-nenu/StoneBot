@@ -20,9 +20,11 @@ COLORS = {
     "bot_message": "#282f38",
 }
 ORIGINAL = "StoneBot Original"
+XCODE = "Xcode"
 DEFAULT_FONT_SIZE = 15
 PRESETS = {
     ORIGINAL: COLORS,
+    XCODE: dict(zip(COLORS, ("#81acf1", "#202126", "#303c50", "#272930"))),
     "GitHub Dark Dimmed": dict(zip(COLORS, ("#78b4fa", "#222831", "#294461", "#282f38"))),
     "One Dark Pro": dict(zip(COLORS, ("#69afea", "#292e37", "#3a4a61", "#303641"))),
     "SynthWave '84": dict(zip(COLORS, ("#f68ac5", "#251d35", "#55375e", "#332644"))),
@@ -37,13 +39,29 @@ def valid_color(color):
     return isinstance(color, str) and bool(re.fullmatch(r"#[0-9a-fA-F]{6}", color))
 
 
-def custom_themes(settings=None):
+def custom_themes(settings=None, *, aliases=None):
     try:
         items = json.loads((settings or appearance_settings()).value("custom_themes", "{}"))
         if isinstance(items, dict):
-            return {name: {key: palette[key].lower() for key in COLORS} for name, palette in items.items()
-                    if isinstance(palette, dict) and all(valid_color(palette.get(key)) for key in COLORS)
-                    and name.casefold() not in RESERVED_NAMES}
+            themes = {}
+            names = {name.casefold() for name in items} | RESERVED_NAMES
+            for name, palette in items.items():
+                if not isinstance(palette, dict) or not all(valid_color(palette.get(key)) for key in COLORS):
+                    continue
+                display = name
+                if name.casefold() == XCODE.casefold():
+                    display = f"{name} (personalizado)"
+                    number = 2
+                    while display.casefold() in names:
+                        display = f"{name} (personalizado {number})"
+                        number += 1
+                    names.add(display.casefold())
+                    if aliases is not None:
+                        aliases[name] = display
+                elif name.casefold() in RESERVED_NAMES:
+                    continue
+                themes[display] = {key: palette[key].lower() for key in COLORS}
+            return themes
     except (OSError, RuntimeError, TypeError, ValueError):
         pass
     return {}
@@ -71,7 +89,8 @@ def load_appearance():
     try:
         settings = appearance_settings()
         selected = settings.value("theme", "")
-        saved = custom_themes(settings)
+        aliases = {}
+        saved = custom_themes(settings, aliases=aliases)
         if isinstance(selected, str) and selected in PRESETS:
             theme.update(PRESETS[selected])
         elif isinstance(selected, str) and selected in saved:
@@ -82,8 +101,11 @@ def load_appearance():
             value = settings.value(key, "")
             if valid_color(value):
                 theme[key] = value.lower()
-        if isinstance(selected, str) and selected in saved and saved[selected] == {key: theme[key] for key in COLORS}:
-            theme["named_theme"] = selected
+        if isinstance(selected, str):
+            colors = {key: theme[key] for key in COLORS}
+            named = aliases.get(selected, selected) if colors != PRESETS[XCODE] else selected
+            if saved.get(named) == colors:
+                theme["named_theme"] = named
         size = int(settings.value("font_size", DEFAULT_FONT_SIZE))
         if 12 <= size <= 28:
             theme["font_size"] = size
@@ -125,15 +147,58 @@ def link_color(background):
     return "#24448c" if readable_text(background) == "#000000" else "#a9ccff"
 
 
+def control_colors(background):
+    if background == COLORS["background"]:
+        return "#2d3744", "#536275", "#363f4b", "#e4e9f0"
+    if background == PRESETS[XCODE]["background"]:
+        return "#292b32", "#4b4f5b", "#343741", "#e7eaf1"
+    field = shade(background, .08)
+    return field, shade(background, .25), shade(background, .14), readable_text(field)
+
+
+def secondary_button(button):
+    button.setProperty("secondary", True)
+    button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+    return button
+
+
+def button_style(theme, *, dialog=False):
+    background, accent = theme["background"], theme["accent"]
+    field, edge, secondary, text = control_colors(background)
+    focus = link_color(background)
+
+    def states(selector, fill, ink, hover, pressed, border):
+        return f"""
+            {selector} {{ background: {fill}; color: {ink}; border-color: {border}; }}
+            {selector}:hover:enabled {{ background: {hover}; color: {readable_text(hover)}; }}
+            {selector}:pressed:enabled {{ background: {pressed}; color: {readable_text(pressed)}; }}
+            {selector}:focus:enabled {{ border-color: {focus}; }}
+            {selector}:disabled {{ background: {field}; color: {shade(field, .55)}; border-color: {edge}; }}
+        """
+
+    neutral = (secondary, text, shade(secondary, .10), shade(secondary, .18), edge)
+    primary = (accent, readable_text(accent), shade(accent, .09), shade(accent, .16), "transparent")
+    quiet = ("transparent", text, shade(background, .11), shade(background, .17), "transparent")
+    return (
+        "QPushButton { border: 2px solid transparent; border-radius: 9px; padding: 6px 11px; font-weight: 600; }"
+        + states("QPushButton", *(neutral if dialog else primary))
+        + states('QPushButton[secondary="true"]', *neutral)
+        + states('QPushButton[quiet="true"]', *quiet)
+        + states('QPushButton[primary="true"]', *primary)
+        + states("QToolButton#activitySummary", *neutral)
+    )
+
+
 def apply_palette(theme):
     background, accent = theme["background"], theme["accent"]
+    field, _, secondary, text = control_colors(background)
     roles = QPalette.ColorRole
     palette = QPalette()
     for role, color in (
-        (roles.Window, background), (roles.Base, shade(background, .05)),
-        (roles.AlternateBase, shade(background, .08)), (roles.Text, readable_text(background)),
-        (roles.WindowText, readable_text(background)), (roles.ButtonText, readable_text(background)),
-        (roles.Button, shade(background, .12)), (roles.Highlight, accent),
+        (roles.Window, background), (roles.Base, field),
+        (roles.AlternateBase, shade(background, .08)), (roles.Text, text),
+        (roles.WindowText, readable_text(background)), (roles.ButtonText, text),
+        (roles.Button, secondary), (roles.Highlight, accent),
         (roles.HighlightedText, readable_text(accent)), (roles.Link, link_color(background)),
         (roles.ToolTipBase, shade(background, .08)), (roles.ToolTipText, readable_text(background)),
     ):
@@ -147,27 +212,30 @@ def apply_palette(theme):
 def dialog_style(theme):
     accent = theme["accent"]
     background = theme.get("background", COLORS["background"])
-    surface = shade(background, .06)
-    edge = shade(background, .24)
-    text = readable_text(background)
+    surface, edge, _, text = control_colors(background)
     ink = readable_text(accent)
     return f"""
         QDialog {{ background: {background}; }}
         QLabel, QListWidget, QTreeWidget, QLineEdit, QPlainTextEdit, QComboBox, QPushButton, QSpinBox {{
             color: {text}; font-family: "Segoe UI"; font-size: 14px;
         }}
-        QListWidget, QTreeWidget, QLineEdit, QPlainTextEdit, QComboBox, QSpinBox, QComboBox QAbstractItemView {{
+        QListWidget, QTreeWidget, QLineEdit, QPlainTextEdit, QComboBox, QComboBox QAbstractItemView {{
             background: {surface}; color: {text}; border: 1px solid {edge};
             selection-background-color: {accent}; selection-color: {ink};
         }}
+        QSpinBox QLineEdit {{ background: transparent; border: 0; }}
         QHeaderView::section {{ background: {shade(background, .1)}; color: {text}; padding: 5px; border: 0; }}
-        QPushButton {{
-            background: {shade(background, .12)}; border: 1px solid {edge}; border-radius: 7px; padding: 6px 10px;
+        QLabel[sectionHeading="true"] {{ font-size: 14px; font-weight: 700; }}
+        QLabel#mcpNotice {{ color: {shade(background, .68)}; font-size: 13px; padding: 4px 2px; }}
+        QDialog#mcpManager QTreeWidget {{
+            alternate-background-color: {shade(surface, .035)};
+            selection-background-color: {shade(surface, .13)}; selection-color: {text};
+            border-color: {shade(background, .18)}; border-radius: 7px;
         }}
-        QPushButton:hover {{ background: {accent}; color: {ink}; }}
-        QPushButton:focus {{ border-color: {accent}; }}
-        QPushButton:disabled {{ color: {shade(background, .48)}; background: {surface}; }}
-    """
+        QDialog#mcpManager QHeaderView::section {{
+            background: {shade(background, .06)}; padding: 7px 8px; font-weight: 600;
+        }}
+    """ + button_style(dict(theme, background=background), dialog=True)
 
 
 def palette_icon(colors, *, artist=False):

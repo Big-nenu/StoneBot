@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from appearance import COLORS, dialog_style, readable_text, shade
+from appearance import COLORS, control_colors, dialog_style, link_color, readable_text, shade
 from mcp_client import connection_error, load_servers, probe_server, save_servers, validate_server
 from mcp_credentials import credential_target, delete_key, read_key, store_key
 from mcp_permissions import list_permissions, revoke
@@ -35,15 +35,18 @@ class Toggle(QCheckBox):
 
     def paintEvent(self, event):
         checked = self.isChecked()
-        track = self.accent if checked and self.isEnabled() else shade(self.surface, .25)
-        edge = readable_text(self.surface)
+        enabled = self.isEnabled()
+        track = self.accent if checked and enabled else shade(self.surface, .16 if enabled else .07)
+        if enabled and (self.underMouse() or self.isDown()):
+            track = shade(track, .18 if self.isDown() else .09)
+        edge = link_color(self.surface) if self.hasFocus() else shade(self.surface, .42 if enabled else .26)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QPen(QColor(edge), 2 if self.hasFocus() else 1))
         painter.setBrush(QColor(track))
         painter.drawRoundedRect(self.rect().adjusted(2, 3, -2, -3), 9, 9)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(readable_text(track)))
+        painter.setBrush(QColor(readable_text(track) if enabled else shade(self.surface, .42)))
         painter.drawEllipse(22 if checked else 5, 6, 12, 12)
 
 
@@ -153,9 +156,10 @@ class McpDialog(QDialog):
 
     def __init__(self, parent):
         super().__init__(parent)
+        self.setObjectName("mcpManager")
         self.setWindowTitle("Servidores MCP")
-        self.resize(700, 480)
-        self.setMinimumSize(560, 360)
+        self.resize(700, 510)
+        self.setMinimumSize(560, 410)
         self.theme = COLORS
         self.setStyleSheet(dialog_style(self.theme))
         self.servers = {}
@@ -163,6 +167,7 @@ class McpDialog(QDialog):
         self.test = None
 
         self.table = QTreeWidget()
+        self.table.setAccessibleName("Servidores configurados")
         self.table.setHeaderLabels(["Servidor", "Transporte", "Activación", "Última prueba"])
         self.table.setRootIsDecorated(False)
         self.table.currentItemChanged.connect(self.refresh_selection)
@@ -171,15 +176,24 @@ class McpDialog(QDialog):
         self.tools.setRootIsDecorated(False)
         self.tools.setAccessibleName("Herramientas del servidor")
         for tree in (self.table, self.tools):
+            tree.setAlternatingRowColors(True)
+            tree.setUniformRowHeights(True)
             header = tree.header()
             header.setStretchLastSection(False)
             header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
             header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.notice = QLabel("Probar conexión descubre herramientas. En STDIO también inicia el ejecutable.")
         self.notice.setWordWrap(True)
+        self.notice.setObjectName("mcpNotice")
 
-        controls = QHBoxLayout()
+        servers_header = QHBoxLayout()
+        servers_title = QLabel("Servidores configurados")
+        servers_title.setProperty("sectionHeading", True)
+        servers_header.addWidget(servers_title)
+        servers_header.addStretch()
         self.add = QPushButton("Agregar")
+        servers_header.addWidget(self.add)
+        controls = QHBoxLayout()
         self.edit = QPushButton("Editar")
         self.remove = QPushButton("Eliminar")
         self.api_key = QPushButton("Clave API…")
@@ -189,19 +203,29 @@ class McpDialog(QDialog):
                                  (self.api_key, self.manage_credential),
                                  (self.probe, self.test_connection)):
             button.clicked.connect(callback)
+        for button in (self.edit, self.remove, self.api_key):
             controls.addWidget(button)
+        controls.addStretch()
+        self.probe.setProperty("primary", True)
+        controls.addWidget(self.probe)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(9)
+        layout.addLayout(servers_header)
         layout.addWidget(self.table, 2)
         layout.addLayout(controls)
+        layout.addSpacing(4)
         tools_header = QHBoxLayout()
-        tools_header.addWidget(QLabel("Herramientas descubiertas"))
+        tools_title = QLabel("Herramientas descubiertas")
+        tools_title.setProperty("sectionHeading", True)
+        tools_header.addWidget(tools_title)
         tools_header.addStretch()
         self.permissions = QPushButton("Permisos…")
         self.permissions.clicked.connect(self.review_permissions)
         tools_header.addWidget(self.permissions)
         layout.addLayout(tools_header)
-        layout.addWidget(self.tools, 1)
+        layout.addWidget(self.tools, 2)
         layout.addWidget(self.notice)
         self.reload()
 
@@ -215,14 +239,14 @@ class McpDialog(QDialog):
         layout = QHBoxLayout(holder)
         layout.setContentsMargins(5, 0, 5, 0)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        surface = shade(self.theme["background"], .06)
+        surface, _, _, text = control_colors(self.theme["background"])
         switch = Toggle(checked, label, self.theme["accent"], surface)
         switch.setEnabled(self.test is None)
         switch.toggled.connect(on_change)
         layout.addWidget(switch)
         if show_state:
             state = QLabel("Activo" if checked else "Inactivo")
-            state.setStyleSheet(f"background: {surface}; color: {readable_text(surface)};")
+            state.setStyleSheet(f"background: transparent; color: {text};")
             layout.addWidget(state)
         tree.setItemWidget(item, column, holder)
         if show_state:
@@ -257,10 +281,10 @@ class McpDialog(QDialog):
             label = QLabel(f"●  {status}")
             label.setToolTip(detail)
             color = STATUS_COLORS.get(status, "#b8b2c4")
-            background = shade(self.theme["background"], .06)
+            background, _, _, _ = control_colors(self.theme["background"])
             if readable_text(background) == "#000000":
                 color = {"Correcta": "#126133", "Falló": "#a32929"}.get(status, "#52525b")
-            label.setStyleSheet(f"color: {color}; background: {background}; padding-left: 5px;")
+            label.setStyleSheet(f"color: {color}; background: transparent; padding-left: 5px;")
             self.table.setItemWidget(item, 3, label)
             label.ensurePolished()
             status_width = max(label.fontMetrics().horizontalAdvance(f"●  {text}")

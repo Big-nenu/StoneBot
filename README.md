@@ -256,11 +256,13 @@ El panel se probó con servidores de ejemplo mediante STDIO y Streamable HTTP en
 
 ## Historial de conversaciones
 
-Usa **☰** para mostrar u ocultar el panel izquierdo. **Nuevo chat** inicia una conversación vacía. Al enviar el primer mensaje se genera un título a partir de su texto. Haz clic en una conversación para retomarla. El buscador filtra por título o contenido y los botones **Renombrar** y **Eliminar** actúan sobre la conversación seleccionada.
+Usa **☰** para mostrar u ocultar el panel izquierdo. Arrastra su borde derecho para ajustar el ancho. StoneBot lo guarda al cerrar la ventana. Los títulos largos se muestran con puntos suspensivos. Pasa el cursor sobre uno para leerlo completo. **Nuevo chat** inicia una conversación vacía y genera un título a partir del primer mensaje. Haz clic en una conversación para retomarla. El buscador filtra por título o contenido.
 
 Las conversaciones se guardan en `%USERPROFILE%\.stonebot\conversations.sqlite3`. El historial almacena los mensajes del usuario y las respuestas visibles. Los permisos MCP se guardan en `mcp_permissions.sqlite3` y el diagnóstico en `diagnostics.log`. La memoria seleccionada de StoneBot continúa en `memoria.db` y se usa mediante sus herramientas existentes.
 
-Cada mensaje nuevo muestra su hora local y permite copiar el original. El chat conserva los mensajes antiguos aunque su hora no estuviera registrada. Las respuestas renderizan Markdown con títulos, énfasis, listas, enlaces HTTP(S) y código; **Copiar código** copia el contenido del bloque.
+Los mensajes con hora registrada la muestran en formato local. Los mensajes antiguos sin hora siguen visibles con su contenido original. Las respuestas muestran Markdown con títulos, énfasis, listas, enlaces HTTP(S) y bloques de código. **Copiar código** copia el contenido del bloque.
+
+**Copiar**, **Editar**, **Renombrar**, **Eliminar** y **Diagnóstico** usan el estilo secundario. Con **Tab** puedes recorrerlos y ver el foco de teclado.
 
 En un mensaje del usuario, **Editar → Regenerar** vuelve a usar el historial anterior a ese punto. Si Ollama entrega una respuesta nueva y se guarda correctamente, se reemplaza el tramo posterior solo en esa conversación. Si la regeneración falla, se restaura el historial guardado.
 
@@ -268,7 +270,9 @@ La fila **Actividad** aparece en la conversación junto a la respuesta en curso.
 
 ## Apariencia
 
-Abre el botón de **paleta → Apariencia**. **StoneBot Original** es el predeterminado de instalaciones nuevas. Si ya tienes colores o un tema guardado, se conserva esa configuración. El selector incluye muestras de [GitHub Dark Dimmed](https://github.com/primer/github-vscode-theme), [One Dark Pro](https://github.com/Binaryify/OneDark-Pro) y [SynthWave '84](https://github.com/robb0wen/synthwave-vscode).
+Abre el botón de **paleta → Apariencia**. **StoneBot Original** sigue siendo el predeterminado de instalaciones nuevas. **Xcode** ofrece grises fríos, un acento azul suave y fondos discretos para los mensajes. Puedes previsualizarlo y seleccionarlo junto con [GitHub Dark Dimmed](https://github.com/primer/github-vscode-theme), [One Dark Pro](https://github.com/Binaryify/OneDark-Pro) y [SynthWave '84](https://github.com/robb0wen/synthwave-vscode). Las preferencias guardadas se conservan. Si ya habías creado un tema propio llamado Xcode, aparecerá como **Xcode (personalizado)**.
+
+La barra superior concentra el historial, MCP y Apariencia. Pasa el cursor sobre **StoneBot** para consultar el modelo activo. El historial marca la conversación seleccionada y mantiene el separador ajustable. En **MCP**, **Agregar** está junto a la lista de servidores y **Probar conexión** se distingue de las acciones de edición. Los estados y permisos conservan sus etiquetas.
 
 Usa **Guardar como…** para guardar la combinación de colores actual con un nombre. Los temas propios aparecen en el mismo selector y se pueden renombrar o eliminar. El tamaño de letra es un ajuste independiente de 12 a 28 px. Los temas y las preferencias se guardan en `%USERPROFILE%\.stonebot\appearance.ini`.
 

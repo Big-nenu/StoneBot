@@ -1,4 +1,5 @@
 """Pruebas de apariencia, Markdown y regeneración transaccional."""
+import json
 import sqlite3
 import subprocess
 import sys
@@ -9,15 +10,17 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from ollama import Message
-from PySide6.QtCore import QEventLoop, QTimer, QUrl
+from PySide6.QtCore import QEvent, QEventLoop, QPoint, QTimer, Qt, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
-from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox, QPushButton
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QInputDialog, QLabel, QMessageBox, QPushButton
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
 import mcp_client
 from appearance import (
-    AppearanceDialog, ColorEditor, ORIGINAL, PRESETS, appearance_settings, custom_themes, load_appearance,
+    AppearanceDialog, ColorEditor, ORIGINAL, PRESETS, XCODE, appearance_settings, control_colors,
+    custom_themes, link_color, load_appearance, shade,
 )
 from history import History
 from win_caption import CAPTION_COLOR, SYSTEM_COLOR, TEXT_COLOR, colorref, set_caption_colors
@@ -50,6 +53,21 @@ def test_caption_colors():
                      (CAPTION_COLOR, SYSTEM_COLOR), (TEXT_COLOR, SYSTEM_COLOR)]
 
 
+def test_existing_theme_named_xcode():
+    settings = appearance_settings()
+    previous = dict(PRESETS[ORIGINAL], accent="#446688")
+    settings.setValue("custom_themes", json.dumps({XCODE: previous}))
+    settings.setValue("theme", XCODE)
+    for key, color in previous.items():
+        settings.setValue(key, color)
+    settings.sync()
+    alias = "Xcode (personalizado)"
+    assert custom_themes()[alias] == previous
+    assert load_appearance()["named_theme"] == alias
+    settings.clear()
+    settings.sync()
+
+
 def wait_for_turn(window):
     loop = QEventLoop()
     window.thread.finished.connect(loop.quit)
@@ -70,6 +88,11 @@ def test_appearance(window):
         panel.select_preset(index)
         assert all(load_appearance()[key] == color for key, color in palette.items())
         assert panel.preset.currentText() == name
+        if name == XCODE:
+            reopened = app.StoneBot()
+            assert all(reopened.appearance[key] == color for key, color in palette.items())
+            assert reopened.settings_button.property("quiet")
+            reopened.close()
     reopened = AppearanceDialog(window, load_appearance(), window.change_appearance)
     assert reopened.preset.currentText() == "SynthWave '84"
     reopened.set_color("accent", "#113355")
@@ -211,8 +234,98 @@ def test_regeneration(window):
     assert window.activity_panel is None
 
 
+def test_button_styles(window):
+    window.activateWindow()
+    recent = window.history.append(None, "user", "Control de apariencia")
+    window.open_chat(recent)
+    QApplication.processEvents()
+    actions = {button.text(): button for button in window.chat.findChildren(QPushButton)
+               if button.isVisible()}
+    assert actions["Editar"].focusPolicy() == Qt.FocusPolicy.TabFocus
+    copy = actions["Copiar"]
+
+    def sample(button, *, border=False):
+        QApplication.processEvents()
+        image = button.grab().toImage()
+        x, y = (button.width() // 2, 1) if border else (4, button.height() // 2)
+        scale = image.devicePixelRatio()
+        return image.pixelColor(round(x * scale), round(y * scale)).name()
+
+    for palette in PRESETS.values():
+        window.change_appearance(dict(window.appearance, **palette))
+        QTest.mouseMove(window.message, window.message.rect().center())
+        normal = control_colors(palette["background"])[2]
+        assert sample(copy) == normal
+
+    palette = PRESETS[ORIGINAL]
+    window.change_appearance(dict(window.appearance, **palette))
+    field, edge, normal, _ = control_colors(palette["background"])
+    window.message.setFocus()
+    QTest.mouseMove(copy, copy.rect().center())
+    assert sample(copy) == shade(normal, .10)
+    QTest.mousePress(copy, Qt.MouseButton.LeftButton, pos=copy.rect().center())
+    assert sample(copy) == shade(normal, .18)
+    QTest.mouseRelease(copy, Qt.MouseButton.LeftButton, pos=copy.rect().center())
+    assert not copy.isDown() and not copy.hasFocus()
+    assert QApplication.clipboard().text() == "Control de apariencia"
+    QTest.mouseMove(window.message, window.message.rect().center())
+    assert sample(copy) == normal and sample(copy, border=True) == edge
+    copy.setFocus(Qt.FocusReason.TabFocusReason)
+    assert copy.hasFocus() and sample(copy, border=True) == link_color(palette["background"])
+    copy.setEnabled(False)
+    assert sample(copy) == field
+    copy.setEnabled(True)
+    window.message.setPlainText("Primera línea\nSegunda línea\nTercera línea")
+    QTest.qWait(50)
+    send, message = window.send.geometry(), window.message.geometry()
+    assert abs(send.center().y() - message.center().y()) <= 1, (send, message)
+    window.message.clear()
+
+
+def test_history_panel_and_timestamps(window):
+    window.open_chat(1)
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert not window.chat.findChildren(QLabel, "messageTime")
+    assert History().messages(1)[0]["created"] is None
+
+    recent = window.history.append(None, "user", "Hora disponible")
+    title = "Una conversación con un título largo " * 30
+    window.history.rename(recent, title.strip())
+    window.open_chat(recent)
+    QApplication.processEvents()
+    assert any(label.isVisible() and ":" in label.text() for label in window.chat.findChildren(QLabel, "messageTime"))
+
+    history_list = window.history_panel.list
+    item = history_list.currentItem()
+    assert item.toolTip() == title.strip()
+    assert history_list.textElideMode() == Qt.TextElideMode.ElideRight
+    assert history_list.horizontalScrollBar().maximum() == 0
+    assert history_list.visualItemRect(item).width() <= history_list.viewport().width()
+    before = window.history_panel.width()
+    handle = window.history_splitter.handle(1)
+    point = handle.rect().center()
+    QTest.mousePress(handle, Qt.MouseButton.LeftButton, pos=point)
+    QTest.mouseMove(handle, point + QPoint(90, 0))
+    QTest.mouseRelease(handle, Qt.MouseButton.LeftButton, pos=point)
+    QApplication.processEvents()
+    width = window.history_panel.width()
+    assert width > before and window.history_width == width
+    assert history_list.visualItemRect(item).width() <= history_list.viewport().width()
+    window.history_button.click()
+    window.history_button.click()
+    assert window.history_panel.width() == width
+    window.close()
+    assert appearance_settings().value("history_width", type=int) == width
+    reopened = app.StoneBot()
+    reopened.show()
+    QApplication.processEvents()
+    assert reopened.history_panel.width() == width
+    reopened.close()
+
+
 if __name__ == "__main__":
     qt = QApplication([])
+    qt.setStyle("Fusion")
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         with closing(sqlite3.connect(root / "conversations.sqlite3")) as conn, conn:
@@ -224,6 +337,7 @@ if __name__ == "__main__":
             """)
         with patch.object(mcp_client, "default_root", return_value=root):
             test_default_and_legacy()
+            test_existing_theme_named_xcode()
             test_caption_colors()
             assert History().messages(1)[0]["created"] is None
             window = app.StoneBot()
@@ -231,5 +345,6 @@ if __name__ == "__main__":
             test_appearance(window)
             test_markdown(window)
             test_regeneration(window)
-            window.close()
-    print("PASS: temas, favoritos, Markdown, copia, actividad, migración y edición del historial.")
+            test_button_styles(window)
+            test_history_panel_and_timestamps(window)
+    print("PASS: apariencia, Markdown, actividad, historial, botón Enviar, estados, ancho y horas.")

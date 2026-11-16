@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from appearance import readable_text, shade
+from appearance import button_style, control_colors, link_color, readable_text, shade
 
 
 class ChatText(QTextEdit):
@@ -210,36 +210,53 @@ def chat_style(theme):
     background, accent = theme["background"], theme["accent"]
     accent_text = readable_text(accent)
     user, bot = theme["user_message"], theme["bot_message"]
-    surface = shade(background, .06)
-    edge = shade(background, .22)
-    return f"""
+    sidebar = shade(background, .035)
+    subtle_edge = shade(background, .16)
+    muted = shade(background, .63)
+    surface, edge, _, text = control_colors(background)
+    return button_style(theme) + f"""
             QWidget#chatWindow, QWidget#chatCanvas {{ background: {background}; }}
-            QLabel, QTextEdit, QPushButton {{
+            QLabel, QTextEdit {{
                 color: {readable_text(background)}; font-family: "Segoe UI"; font-size: 15px;
             }}
-            QWidget#chatHeader {{ border-bottom: 1px solid {edge}; }}
-            QWidget#historyPanel {{ border-right: 1px solid {edge}; }}
+            QPushButton {{ font-family: "Segoe UI"; font-size: 15px; }}
+            QWidget#chatHeader {{ border-bottom: 1px solid {subtle_edge}; }}
+            QWidget#chatHeader QPushButton {{ padding: 4px 8px; font-size: 14px; }}
+            QPushButton[quiet="true"]:checked:enabled:!hover:!pressed {{ background: {shade(background, .09)}; }}
+            QWidget#historyPanel {{ background: {sidebar}; }}
             QWidget#historyPanel QListWidget, QWidget#historyPanel QLineEdit {{
-                background: {background}; color: {readable_text(background)};
-                font-family: "Segoe UI"; font-size: 14px; border: 1px solid {edge};
-                selection-background-color: {accent}; selection-color: {accent_text}; padding: 4px;
+                color: {text}; font-family: "Segoe UI"; font-size: 14px;
             }}
+            QWidget#historyPanel QLineEdit {{
+                background: {surface}; color: {text};
+                border: 1px solid {subtle_edge}; border-radius: 7px;
+                selection-background-color: {accent}; selection-color: {accent_text}; padding: 6px 8px;
+            }}
+            QWidget#historyPanel QLineEdit:focus {{ border-color: {accent}; }}
+            QWidget#historyPanel QListWidget {{ background: transparent; border: 0; outline: 0; }}
+            QWidget#historyPanel QListWidget::item {{ padding: 7px 8px; border: 1px solid transparent; border-radius: 7px; }}
+            QWidget#historyPanel QListWidget::item:hover {{ background: {shade(sidebar, .07)}; }}
+            QWidget#historyPanel QListWidget::item:selected {{
+                background: {shade(sidebar, .14)}; color: {text}; border-left-color: {link_color(background)};
+            }}
+            QWidget#historyPanel QListWidget::item:focus {{ border-color: {link_color(background)}; }}
+            QLabel#historyHeading {{ color: {muted}; font-size: 13px; font-weight: 600; padding: 0 7px; }}
             QWidget#historyPanel QPushButton {{ padding: 6px 8px; }}
+            QSplitter::handle:horizontal {{ background: {sidebar}; border-right: 1px solid {subtle_edge}; }}
+            QSplitter::handle:horizontal:hover {{ background: {edge}; }}
             QLabel#chatTitle {{ font-weight: 700; }}
-            QLabel#chatModel, QLabel#chatStatus {{ font-size: 14px; }}
-            QLabel#messageTime {{ font-size: 12px; }}
+            QLabel#chatStatus {{ font-size: 14px; }}
+            QLabel#messageTime {{ font-size: 12px; color: {muted}; }}
             QPushButton#messageAction {{
-                background: {surface}; color: {readable_text(surface)};
                 font-size: 12px; border-radius: 6px; padding: 2px 6px;
             }}
             QWidget#activityPanel {{ border-top: 1px solid {edge}; }}
             QToolButton#activitySummary {{
-                color: {readable_text(surface)}; background: {surface};
-                border: 1px solid {edge}; border-radius: 6px; padding: 3px 8px;
+                border-width: 2px; border-style: solid; border-radius: 6px; padding: 3px 8px;
                 text-align: left;
             }}
             QWidget#activityPanel QPlainTextEdit {{
-                background: {surface}; color: {readable_text(surface)};
+                background: {surface}; color: {text};
                 border: 1px solid {edge};
             }}
             QScrollArea, QTextEdit {{ background: transparent; border: 0; }}
@@ -254,19 +271,16 @@ def chat_style(theme):
                 selection-color: {accent_text};
             }}
             QTextEdit#userMessage {{
-                background: {user}; color: {readable_text(user)}; border-radius: 16px;
+                background: {user}; color: {readable_text(user)}; border-radius: 14px;
+                border-bottom-right-radius: 5px;
             }}
             QTextEdit#botMessage {{
-                background: {bot}; color: {readable_text(bot)}; border-radius: 12px;
+                background: {bot}; color: {readable_text(bot)}; border-radius: 14px;
+                border-bottom-left-radius: 5px;
             }}
             QWidget#composerPanel {{
-                background: {surface}; border: 1px solid {edge}; border-radius: 18px;
+                background: {surface}; border: 1px solid {subtle_edge}; border-radius: 16px;
             }}
-            QTextEdit#messageInput {{ color: {readable_text(surface)}; placeholder-text-color: {shade(surface, .7)}; }}
-            QPushButton {{
-                background: {accent}; color: {accent_text}; border: 2px solid transparent;
-                border-radius: 12px; padding: 6px 13px; font-weight: 600;
-            }}
-            QPushButton:hover, QPushButton:focus {{ border-color: {accent_text}; }}
-            QPushButton:disabled {{ background: {surface}; color: {shade(surface, .55)}; }}
+            QPushButton#sendMessage {{ padding: 5px 13px; font-size: 14px; }}
+            QTextEdit#messageInput {{ color: {text}; placeholder-text-color: {shade(surface, .7)}; }}
         """
