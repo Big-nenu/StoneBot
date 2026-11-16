@@ -293,7 +293,7 @@ Las conversaciones se guardan en `%USERPROFILE%\.stonebot\conversations.sqlite3`
 
 Los mensajes con hora registrada la muestran en formato local. Los mensajes antiguos sin hora siguen visibles con su contenido original. Las respuestas muestran Markdown con títulos, énfasis, listas, enlaces HTTP(S) y bloques de código. **Copiar código** copia el contenido del bloque.
 
-**Copiar**, **Editar**, **Renombrar**, **Eliminar** y **Diagnóstico** usan el estilo secundario. Con **Tab** puedes recorrerlos y ver el foco de teclado.
+Al pasar el cursor sobre una conversación, **⋯** abre las acciones **Renombrar** y **Eliminar**. También puedes abrir ese menú con clic derecho o con **Mayús + F10** sobre la fila seleccionada.
 
 En un mensaje del usuario, **Editar → Regenerar** vuelve a usar el historial anterior a ese punto. Si Ollama entrega una respuesta nueva y se guarda correctamente, se reemplaza el tramo posterior solo en esa conversación. Si la regeneración falla, se restaura el historial guardado.
 
@@ -306,6 +306,8 @@ Las imágenes de hasta 16 megapíxeles se redimensionan para Ollama y se envían
 Cada tramo de un PDF admite hasta 40 páginas, cuatro páginas visuales y 12 000 caracteres de texto. Si el PDF rebasa el límite, el selector pide un rango como `1-4`. Envía ese tramo y vuelve a adjuntar el PDF para elegir el siguiente. El chat indica las páginas incluidas y, cuando hay un solo PDF en el contexto, comprueba si los números de página solicitados están disponibles. Los PDF de más de 10 MiB se deben dividir en archivos más pequeños. Cada respuesta prioriza los adjuntos recientes y admite hasta cuatro imágenes o páginas visuales en total y 24 000 caracteres extraídos. StoneBot avisa si deja contenido fuera.
 
 El historial local conserva el nombre, una copia de la imagen redimensionada o el texto extraído. Al reabrir o regenerar el chat, los adjuntos siguen disponibles aunque se mueva el original. Las rutas de origen quedan fuera del historial. Mientras el chat incluya adjuntos, los turnos de conversación usan Ollama local sin herramientas MCP ni de memoria permanente.
+
+Al elegir una consulta de **Memoria** desde una conversación con adjuntos ya enviados, StoneBot la prepara en un chat nuevo. Si hay adjuntos pendientes de enviar, primero puedes enviarlos o quitarlos.
 
 La fila **Actividad** aparece en la conversación junto a la respuesta en curso. Se puede desplegar para ver el estado del turno, las operaciones MCP y sus resultados o errores. **Mostrar razonamiento de Ollama** aparece solo cuando la API entrega el campo separado `message.thinking`. Con la integración actual ese campo llega al terminar cada respuesta de Ollama. La actividad y el razonamiento se conservan en la vista actual del chat y se descartan al cambiar de conversación. Los detalles técnicos siguen en **Diagnóstico**. [Campo de razonamiento en Ollama](https://docs.ollama.com/capabilities/thinking)
 

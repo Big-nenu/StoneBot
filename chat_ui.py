@@ -72,7 +72,7 @@ class AttachmentTray(QWidget):
         self.add_button.setAccessibleName("Opciones del chat")
         self.add_button.setToolTip("Adjuntos, MCP y memoria")
         self.menu = QMenu(self.add_button)
-        self.menu.setObjectName("composerMenu")
+        self.menu.setObjectName("chatMenu")
         self.menu.addAction("Adjuntar archivos…", self.choose)
         self.add_button.setMenu(self.menu)
         self.hide()
@@ -316,7 +316,7 @@ def chat_style(theme):
             }}
             QWidget#historyPanel QLineEdit:focus {{ border-color: {accent}; }}
             QWidget#historyPanel QListWidget {{ background: transparent; border: 0; outline: 0; }}
-            QWidget#historyPanel QListWidget::item {{ padding: 7px 8px; border: 1px solid transparent; border-radius: 7px; }}
+            QWidget#historyPanel QListWidget::item {{ padding: 7px 36px 7px 8px; border: 1px solid transparent; border-radius: 7px; }}
             QWidget#historyPanel QListWidget::item:hover {{ background: {shade(sidebar, .07)}; }}
             QWidget#historyPanel QListWidget::item:selected {{
                 background: {shade(sidebar, .14)}; color: {text}; border-left-color: {link_color(background)};
@@ -324,6 +324,7 @@ def chat_style(theme):
             QWidget#historyPanel QListWidget::item:focus {{ border-color: {link_color(background)}; }}
             QLabel#historyHeading {{ color: {muted}; font-size: 13px; font-weight: 600; padding: 0 7px; }}
             QWidget#historyPanel QPushButton {{ padding: 6px 8px; }}
+            QPushButton#historyRowOptions {{ padding: 0; border: none; border-radius: 6px; }}
             QSplitter::handle:horizontal {{ background: {sidebar}; border-right: 1px solid {subtle_edge}; }}
             QSplitter::handle:horizontal:hover {{ background: {edge}; }}
             QLabel#chatTitle {{ font-weight: 700; }}
@@ -363,12 +364,12 @@ def chat_style(theme):
             QWidget#composerPanel {{
                 background: {surface}; border: 1px solid {subtle_edge}; border-radius: 16px;
             }}
-            QMenu#composerMenu {{
+            QMenu#chatMenu {{
                 background: {surface}; color: {text}; border: 1px solid {edge}; padding: 4px;
             }}
-            QMenu#composerMenu::item {{ padding: 6px 24px 6px 10px; }}
-            QMenu#composerMenu::item:selected {{ background: {accent}; color: {accent_text}; }}
-            QMenu#composerMenu::item:disabled {{ color: {muted}; }}
+            QMenu#chatMenu::item {{ padding: 6px 24px 6px 10px; }}
+            QMenu#chatMenu::item:selected {{ background: {accent}; color: {accent_text}; }}
+            QMenu#chatMenu::item:disabled {{ color: {muted}; }}
             QPushButton#sendMessage {{ padding: 5px 13px; font-size: 14px; }}
             QTextEdit#messageInput {{ color: {text}; placeholder-text-color: {shade(surface, .7)}; }}
         """

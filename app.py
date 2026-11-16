@@ -484,7 +484,7 @@ class StoneBot(QMainWindow):
         menu = self.attachments.menu
         menu.addAction("Administrar servidores MCP…", self.open_mcp)
         self.memory_menu = menu.addMenu("Memoria")
-        self.memory_menu.setObjectName("composerMenu")
+        self.memory_menu.setObjectName("chatMenu")
         self.memory_menu.addAction("Consultar recuerdos…").setData("Busca en la memoria: ")
         self.memory_menu.addAction("Consultar conclusiones…").setData("Consulta las conclusiones de la memoria: ")
         self.memory_menu.triggered.connect(self.draft_memory_query)
@@ -728,10 +728,21 @@ class StoneBot(QMainWindow):
         self.mcp_dialog.exec()
 
     def update_composer_menu(self):
-        self.memory_menu.setEnabled(
-            not self.attachments.files and not any(message.get("attachments") for message in self.messages))
+        self.memory_menu.setEnabled(not self.attachments.files)
+        attached_chat = any(message.get("attachments") for message in self.messages)
+        self.memory_menu.setTitle("Memoria · en un chat nuevo" if attached_chat else "Memoria")
 
     def draft_memory_query(self, action):
+        if self.thread is not None or self.attachments.files:
+            return
+        if any(message.get("attachments") for message in self.messages):
+            if self.message.toPlainText().strip():
+                buttons = QMessageBox.StandardButton
+                if QMessageBox.question(self, "Consulta de memoria",
+                                        "La consulta se preparará en un chat nuevo. ¿Descartar el borrador actual?",
+                                        buttons.Yes | buttons.No, buttons.No) != buttons.Yes:
+                    return
+            self.new_chat()
         prefix = action.data()
         draft = self.message.toPlainText()
         if not draft.startswith(prefix):

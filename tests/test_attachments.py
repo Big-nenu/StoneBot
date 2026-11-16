@@ -11,7 +11,7 @@ from unittest.mock import patch
 from PySide6.QtCore import QEvent, QTimer
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QPushButton
+from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox, QPushButton
 
 from test_chat_presentation import wait_for_turn
 import app
@@ -198,6 +198,7 @@ def test_window(root):
               patch.object(app, "load_servers", side_effect=AssertionError("Los adjuntos no pasan a MCP."))):
             window.message.setPlainText("Revisa los adjuntos")
             window.enviar()
+            assert not window.attachments.add_button.isEnabled() and not window.history_panel.isEnabled()
             wait_for_turn(window)
             chat_id = window.chat_id
             saved = History().messages(chat_id)
@@ -223,6 +224,17 @@ def test_window(root):
             assert regenerated[0]["attachments"] == saved[0]["attachments"]
             assert regenerated[0]["content"] == "Revisa los mismos adjuntos" and len(regenerated) == 2
             assert not (root / "memoria.db").exists()
+            menu.aboutToShow.emit()
+            assert window.attachments.add_button.isEnabled() and window.history_panel.isEnabled()
+            assert memory.isEnabled() and "chat nuevo" in memory.text() and mcp.isEnabled() and attach.isEnabled()
+            window.message.setPlainText("Borrador sin enviar")
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No):
+                memory.menu().actions()[1].trigger()
+            assert window.chat_id == chat_id and window.message.toPlainText() == "Borrador sin enviar"
+            window.message.clear()
+            memory.menu().actions()[1].trigger()
+            assert window.chat_id is None and window.message.toPlainText() == "Consulta las conclusiones de la memoria: "
+            assert History().messages(chat_id) == regenerated
 
         with patch.object(app, "Client", return_value=SimpleNamespace(show=lambda model: SimpleNamespace(capabilities=[]))):
             worker = app.Worker([regenerated[0]])

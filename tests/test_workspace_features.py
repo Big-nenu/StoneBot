@@ -13,7 +13,8 @@ from unittest.mock import AsyncMock, patch
 from mcp.types import Tool, ToolAnnotations
 from ollama import Message
 from PySide6.QtCore import QEvent, QEventLoop, QTimer, Qt
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QInputDialog, QMenu, QMessageBox, QPushButton
 
 from test_mcp import example_stdio
 from test_chat_presentation import wait_for_turn
@@ -144,21 +145,56 @@ def test_history_and_gui(qt):
     bubbles = window.chat.findChildren(app.ChatText) + window.chat.findChildren(app.MarkdownText)
     assert all("Diagnóstico sintético" not in w.toPlainText() for w in bubbles)
 
-    window.rename_chat(first, "Nuevo título")
-    assert History().find("nuevo título") == [(first, "Nuevo título")]
+    window.history_panel.search.clear()
+    view = window.history_panel.list
+    assert not any(button.text() in ("Renombrar", "Eliminar") for button in window.history_panel.findChildren(QPushButton))
+
+    def hover_second_chat():
+        item = next(view.item(row) for row in range(view.count())
+                    if view.item(row).data(Qt.ItemDataRole.UserRole) == recent)
+        center = view.visualItemRect(item).center()
+        QTest.mouseMove(view.viewport(), view.viewport().rect().bottomLeft())
+        QTest.mouseMove(view.viewport(), center)
+        QApplication.processEvents()
+        assert view.options.isVisible() and view.hovered is item
+
+    def choose(text):
+        selected = []
+
+        def select():
+            menu = QApplication.activePopupWidget()
+            if isinstance(menu, QMenu):
+                menu.setActiveAction(next(action for action in menu.actions() if action.text() == text))
+                selected.append(text)
+                QTest.keyClick(menu, Qt.Key.Key_Return)
+
+        QTimer.singleShot(0, select)
+        view.options.click()
+        assert selected == [text]
+
+    assert view.options.isHidden()
+    hover_second_chat()
+    with patch.object(QInputDialog, "getText", return_value=("Nuevo título", True)) as dialog:
+        choose("Renombrar")
+        assert dialog.call_args.kwargs["text"] == "Otra conversación"
+    assert History().find("nuevo título") == [(recent, "Nuevo título")]
+    assert window.chat_id == first
     window.history_button.click()
     assert not window.history_panel.isVisible()
     window.history_button.click()
     assert window.history_panel.isVisible()
-    window.new_chat()
-    assert window.chat_id is None and len(window.messages) == 1
-    window.history_panel.list.setCurrentRow(0)
+    hover_second_chat()
+    QApplication.sendEvent(view.viewport(), QEvent(QEvent.Type.Leave))
+    assert view.options.isHidden()
+    hover_second_chat()
     with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No):
-        window.history_panel.remove.click()
+        choose("Eliminar")
     assert len(db.find()) == 2
     with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
-        window.history_panel.remove.click()
-    assert len(db.find()) == 1
+        choose("Eliminar")
+    assert len(db.find()) == 1 and window.chat_id == first
+    window.new_chat()
+    assert window.chat_id is None and len(window.messages) == 1
     with closing(sqlite3.connect(db.path)) as conn:
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     assert not (db.path.parent / "memoria.db").exists()
