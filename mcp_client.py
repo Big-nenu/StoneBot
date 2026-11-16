@@ -261,7 +261,7 @@ def check_tool_paths(value):
             check_tool_paths(item)
 
 
-async def call_external(entry, arguments, confirm, *, on_start=None):
+async def call_external(entry, arguments, confirm, *, on_start=None, on_result=None):
     from jsonschema import ValidationError, validators
     from referencing import Registry
 
@@ -283,6 +283,8 @@ async def call_external(entry, arguments, confirm, *, on_start=None):
     result = "\n".join(item.text for item in reply.content if item.type == "text")
     if reply.structuredContent is not None and not result:
         result = json.dumps(reply.structuredContent, ensure_ascii=False)
+    if on_result is not None:
+        on_result("tool_error" if reply.isError else "response" if result else "no_text")
     if not result:
         result = "(La herramienta no devolvió texto.)"
     return ("Error MCP: " if reply.isError else "") + (

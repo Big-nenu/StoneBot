@@ -1,0 +1,84 @@
+"""Observaciones optativas sobre operaciones MCP del propio StoneBot."""
+import json
+import sqlite3
+from contextlib import closing, contextmanager
+
+from mcp_client import data_path
+from stonebot_engine import check_db_path
+
+
+OBSERVATIONS = {
+    "response": "MCP devolvió texto o datos estructurados y no marcó error.",
+    "no_text": "MCP respondió sin marcar error, sin texto ni datos estructurados.",
+    "tool_error": "MCP devolvió una respuesta marcada como error.",
+    "timeout": "La llamada terminó por tiempo de espera.",
+    "exception": "La llamada terminó con una excepción antes de obtener un resultado utilizable.",
+}
+SUCCEEDED = {"response", "no_text"}
+
+
+@contextmanager
+def connect():
+    path = data_path("experiences.sqlite3")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(check_db_path(path, path.parent))) as db, db:
+        db.row_factory = sqlite3.Row
+        db.execute("""CREATE TABLE IF NOT EXISTS observation (
+            id INTEGER PRIMARY KEY, server TEXT NOT NULL, tool TEXT NOT NULL,
+            outcome TEXT NOT NULL, observed TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )""")
+        db.execute("CREATE INDEX IF NOT EXISTS observation_tool ON observation(server, tool, id)")
+        yield db
+
+
+def record_experience(server, tool, outcome):
+    if outcome not in OBSERVATIONS:
+        raise ValueError("Resultado de experiencia desconocido.")
+    with connect() as db:
+        return db.execute("INSERT INTO observation(server, tool, outcome) VALUES (?, ?, ?)",
+                          (server, tool, outcome)).lastrowid
+
+
+def evidence(row):
+    outcome = row["outcome"]
+    return dict(id=row["id"], observado_utc=row["observed"],
+                tipo="hecho observado" if outcome in SUCCEEDED else "error observado",
+                resultado=OBSERVATIONS[outcome])
+
+
+def query_experiences(busqueda: str) -> str:
+    """Recupera experiencias propias por nombre de servidor o herramienta MCP. Usa una cadena vacía para las recientes."""
+    if not isinstance(busqueda, str) or len(busqueda) > 256:
+        raise ValueError("La búsqueda de experiencias debe tener hasta 256 caracteres.")
+    terms = busqueda.casefold().split()
+    with connect() as db:
+        db.execute("BEGIN")
+        db.create_function("casefold", 1, str.casefold, deterministic=True)
+        rows = db.execute("""
+            SELECT o.* FROM observation o JOIN (
+                SELECT max(id) AS latest FROM observation GROUP BY server, tool
+            ) latest ON o.id = latest.latest
+            WHERE NOT EXISTS (
+                SELECT 1 FROM json_each(?) term
+                WHERE instr(casefold(o.server || ' ' || o.tool), term.value) = 0
+            )
+            ORDER BY o.id DESC LIMIT 5
+        """, (json.dumps(terms),)).fetchall()
+        experiences = []
+        for row in rows:
+            succeeded = row["outcome"] in SUCCEEDED
+            previous = db.execute("""
+                SELECT * FROM observation WHERE server=? AND tool=? AND id<?
+                AND (outcome IN ('response', 'no_text')) != ?
+                ORDER BY id DESC LIMIT 1
+            """, (row["server"], row["tool"], row["id"], succeeded)).fetchone()
+            item = dict(servidor=row["server"], herramienta=row["tool"], intento="ejecutar la herramienta",
+                        evidencia_actual=evidence(row),
+                        conclusion=("La última ejecución obtuvo una respuesta sin error de MCP." if succeeded
+                                    else "La última ejecución no obtuvo una respuesta satisfactoria."),
+                        incertidumbre="Se desconoce si se repetirá con otros argumentos o configuraciones.")
+            if previous:
+                item["evidencia_contraria_anterior"] = evidence(previous)
+                item["hipotesis"] = "El resultado podría depender de las condiciones de ejecución; no se verificó la causa."
+            experiences.append(item)
+    return json.dumps(experiences, ensure_ascii=False)

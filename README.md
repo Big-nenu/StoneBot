@@ -32,7 +32,7 @@ Las etapas son orientativas, no fechas prometidas. Cada etapa debe tener una dem
 | 0. Base segura | Definir alcance y separar la memoria | Motor local y base SQLite exclusiva | Completada. Lectura, escritura y rutas protegidas verificadas con bases de prueba. |
 | 1. Núcleo conversacional | Aplicación Windows con chat, Ollama y motor local | Conversa y recuerda; pendiente permanecer en segundo plano al cerrar la ventana | Parcial. Chat, historial, temas y herramientas de memoria operativos; falta la bandeja del sistema. |
 | 1B. Herramientas externas (MCP) | Cliente MCP reutilizable y primeras integraciones | Descubre e invoca herramientas desde el chat con controles de permiso | Implementada en prototipo. Cliente STDIO/HTTP, panel y permisos; Context7 y Exa comprobados en pruebas, Tavily pendiente de prueba en vivo según última revisión. | 
-| 2. Razonamiento | Formular preguntas e hipótesis | Explica una hipótesis, su evidencia y qué falta comprobar | Pendiente |
+| 2. Aprendizaje de experiencias | Evaluar capacidades a partir de resultados observados | Registra una ejecución MCP, la recupera tras reiniciar y revisa su conclusión con evidencia nueva | Primera implementación. Hipótesis causales y otras fuentes de evidencia pendientes. |
 | 3. Sueño y aprendizaje | Revisar experiencias, contradicciones y conclusiones | Ciclo programado que produce conclusiones trazables | Pendiente |
 | 4. Iniciativa controlada | Elegir tareas de una cola y proponer experimentos | Ejecuta tareas permitidas, con pausa y registro | Pendiente |
 | 5. Compañero de escritorio | Presencia visual opcional en Windows | Mascota movible, silenciosa, activable/desactivable | Pendiente |
@@ -64,12 +64,13 @@ Las etapas son orientativas, no fechas prometidas. Cada etapa debe tener una dem
 
 **Criterio de salida:** la aplicación abre una ventana propia, recuerda algo de una sesión anterior, distingue recuerdo de inferencia y puede ocultarse sin finalizar el proceso.
 
-### Etapa 2 — Curiosidad y razonamiento
+### Etapa 2 — Aprendizaje a partir de experiencias
 
 - Preguntas surgidas de contradicciones, vacíos o resultados inesperados.
 - Hipótesis con evidencia a favor/en contra y nivel de incertidumbre.
 - Capacidad de decir «no sé» y proponer una prueba.
 - Separar ideas sugeridas por el usuario de conclusiones propias del agente.
+- Primer alcance implementado: registrar ejecuciones MCP seleccionadas y revisar sus resultados al consultar la evidencia.
 
 **Criterio de salida:** genera y revisa una hipótesis sin inventar evidencias.
 
@@ -310,13 +311,17 @@ El núcleo y la GUI todavía comparten un archivo. La estructura futura se decid
 - La prueba anterior al aislamiento confirmó que el primer recuerdo se conservó en el namespace `default` tras reiniciar la GUI. La suite actual verifica la reapertura y recuperación con el motor local y una base desechable.
 - Cerrar la ventana actualmente termina el proceso; la bandeja del sistema sigue pendiente.
 
-## Autoconocimiento funcional: propuesta por investigar
+## Aprendizaje a partir de experiencias MCP
 
-La intención no es únicamente recordar información sobre el usuario. StoneBot debe poder construir y revisar **un modelo de sí mismo basado en experiencias comprobables**: qué intentó, qué resultado obtuvo, qué capacidades o límites observó, qué hipótesis formuló y cómo cambió su evaluación tras nuevas pruebas. Esto **no demuestra ni presupone conciencia subjetiva**.
+Escribe `/aprender` seguido de una tarea concreta para conservar sus resultados MCP. Con un servidor de eco configurado y permitido, usa `/aprender Ejecuta echo en demo con un texto de prueba`. El registro se crea a partir de la ejecución efectiva y conserva el identificador de evidencia, fecha UTC, servidor, herramienta y clase de resultado. Distingue respuestas sin error, respuestas sin texto ni datos estructurados, errores comunicados por el servidor y excepciones, incluidos los tiempos de espera. Las operaciones denegadas o rechazadas antes de la ejecución quedan fuera del registro.
 
-Posibles registros propios de StoneBot (esquema todavía no aprobado): experiencias, autoevaluaciones de capacidades, hipótesis con evidencia y experimentos con resultados. Deben distinguirse **hechos observados**, **inferencias del modelo** y **objetivos propuestos**. También queda por estudiar si la energía/relevancia de StoneWave necesita adaptaciones para este tipo de información.
+En un chat nuevo, incluso después de cerrar y volver a abrir la aplicación, pregunta «¿Qué aprendiste sobre demo echo?». El modelo puede consultar `query_experiences` por palabras del nombre del servidor y de la herramienta. La consulta devuelve la observación más reciente de cada coincidencia, hasta cinco, junto con evidencia anterior de un resultado opuesto si existe. La conclusión describe la última ejecución. La hipótesis y la incertidumbre aparecen aparte. La causa de un fallo, la veracidad del contenido y el comportamiento con otros argumentos o configuraciones requieren pruebas adicionales.
 
-Los experimentos de autoconocimiento usarán el motor local y bases desechables.
+Las experiencias se guardan en `%USERPROFILE%\.stonebot\experiences.sqlite3`, separadas del historial y de `memoria.db`, con las validaciones de aislamiento del motor local. Se omiten mensajes del chat, argumentos, credenciales y contenido devuelto. El alcance inicial se limita a ejecuciones MCP registradas explícitamente y búsquedas por nombre. La interpretación semántica, la atribución de causas y la evaluación de capacidades sin evidencia quedan pendientes.
+
+Ejecuta `python -B tests/test_experiences.py` para probar el reinicio con dos procesos de la aplicación, un perfil temporal, un MCP STDIO real y un modelo simulado. La prueba verifica la recuperación desde un chat nuevo, la revisión de una conclusión con evidencia contraria y el bloqueo de rutas protegidas. Con Ollama en ejecución y `nemotron-3.5-bolt:e4b` instalado, usa `python -B tests/test_experiences.py --live` para realizar el recorrido con el modelo local.
+
+La demostración con Nemotron y Ollama local guardó la observación 1 tras ejecutar `demo / echo`. En un segundo proceso, desde un chat nuevo, el modelo recuperó ese ID y explicó que la respuesta anterior había llegado sin error y que aún quedaba por probar si se repetiría con otros argumentos o configuraciones.
 
 ## Ideas en exploración
 
@@ -332,11 +337,11 @@ Los experimentos de autoconocimiento usarán el motor local y bases desechables.
 - No es un agente consciente.
 - No tiene acceso irrestricto al sistema operativo.
 - No puede reescribir y desplegar libremente su propio código.
-- El chat utiliza herramientas de memoria persistente. La autonomía y el autoconocimiento funcional siguen en exploración.
+- El chat utiliza memoria persistente y puede consultar resultados observados de MCP. La autonomía experimental sigue en exploración.
 
 ## Próxima acción
 
-**Etapa 2: experiencias y autoevaluación de capacidades.** Probar primero en una base temporal un ciclo concreto: StoneBot intenta una acción autorizada; registra la herramienta, el resultado observable y los errores; distingue observaciones de inferencias; y recupera ese episodio para evaluar qué puede hacer y qué le falta comprobar. Después integrar gradualmente esa capacidad al chat sin alterar el motor personal de StoneWave ni romper las herramientas actuales.
+**Etapa 2: experiencias y autoevaluación de capacidades.** Ampliar la evaluación a otras fuentes de evidencia verificable después de probar el registro de ejecuciones MCP.
 
 Siguen pendientes la bandeja del sistema, la validación en vivo de integraciones MCP aún no probadas, el trabajo con hipótesis y la iniciativa controlada. La instalación de servidores MCP por el propio agente es una capacidad futura que requerirá propuesta y aprobación explícita.
 

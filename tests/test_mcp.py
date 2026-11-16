@@ -182,7 +182,9 @@ def test_stdio_chat_and_permissions():
                 aliases["mark"] = mark
                 transcript = kwargs["messages"]
                 if rounds == 1:
-                    assert len([tool for tool in kwargs["tools"] if callable(tool)]) == 3
+                    assert {tool.__name__ for tool in kwargs["tools"] if callable(tool)} == {
+                        *app.MEMORY_TOOLS, "query_experiences",
+                    }
                     requests = [(echo, {}), (echo, {"text": str(personal)}),
                                 (echo, {"text": "hola"}), (mark, {"text": "rechazado"})]
                 elif rounds == 2:
