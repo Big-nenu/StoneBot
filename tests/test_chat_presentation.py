@@ -18,6 +18,7 @@ from PySide6.QtWidgets import QApplication, QInputDialog, QLabel, QMessageBox, Q
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
 import mcp_client
+from chat_markdown import CodeCard
 from appearance import (
     AppearanceDialog, ColorEditor, ORIGINAL, PRESETS, XCODE, appearance_settings, control_colors,
     custom_themes, link_color, load_appearance, shade,
@@ -156,30 +157,48 @@ with patch.object(mcp_client, "default_root", return_value=Path(sys.argv[1])):
 
 def test_markdown(window):
     source = ("### Título\n\n**Negrita** y *cursiva* con `inline` y [enlace](https://example.test).\n\n"
-              "1. Uno\n2. Dos\n\n- Viñeta\n\n```python\nx = 1\n```\n\n~~~text\ny = 2\n~~~")
-    window.append_message(source)
+              "1. Uno\n2. Dos\n\n- Viñeta\n\nSi hay $N$ elementos, el límite es $N-1$. El precio es $10.\n\n"
+              "```python\ndef ejemplo():\n    return 1 < 2\n```\n\n"
+              "Otra sección con `$N$`.\n\n```python\nprint('segundo')\n```")
+    chat = window.history.append(None, "user", "Prueba Markdown")
+    window.history.append(chat, "assistant", source)
+    window.open_chat(chat)
     body = window.chat.findChild(app.MarkdownText)
-    document = body.document()
+    prose = body.parts[0]
+    document = prose.document()
     assert document.firstBlock().blockFormat().headingLevel() == 3
     assert document.find("Negrita").charFormat().fontWeight() >= 700
     assert document.find("cursiva").charFormat().fontItalic()
     assert document.find("enlace").charFormat().anchorHref() == "https://example.test"
     assert document.find("Uno").block().textList() and document.find("Viñeta").block().textList()
     assert document.find("inline").charFormat().fontFixedPitch() or document.find("inline").charFormat().fontFamilies()
-    assert body.code == ["x = 1", "y = 2"]
-    mixed = app.MarkdownText(window.chat, "    a = 0\n\n```py\nb = 1\n```\n\n```py\nc = 2\n```")
-    assert mixed.code == ["a = 0", "b = 1", "c = 2"]
+    first, second = body.findChildren(CodeCard)
+    assert [part.source for part in (first, second)] == ["def ejemplo():\n    return 1 < 2", "print('segundo')"]
+    assert first.text.document().find("def").charFormat().foreground().color() != first.text.document().find("ejemplo").charFormat().foreground().color()
+    assert first.findChild(QLabel, "codeLanguage").text() == "Python"
+    mixed = app.MarkdownText(window.chat, "    a = 0\n\n```py\nb = 1\n```\n```py\nc = 2\n```", window.appearance)
+    assert [part.source for part in mixed.parts] == ["a = 0", "b = 1", "c = 2"]
     assert "**Negrita**" not in body.toPlainText()
-    buttons = {button.text(): button for button in window.chat.findChildren(QPushButton)}
-    buttons["Copiar código 2"].click()
-    assert QApplication.clipboard().text() == "y = 2"
-    buttons["Copiar"].click()
+    assert "límite es N−1" in prose.toPlainText() and "precio es $10" in prose.toPlainText()
+    assert "$N$" in body.parts[2].toPlainText()
+    first.copy.click()
+    assert QApplication.clipboard().text() == first.source
+    second.copy.click()
+    assert QApplication.clipboard().text() == second.source
+    buttons = window.chat.findChildren(QPushButton)
+    assert not any(button.text().startswith("Copiar código") for button in buttons)
+    next(button for button in buttons if button.text() == "Copiar" and button.parent() is body.parent()).click()
     assert QApplication.clipboard().text() == source
     with patch.object(QDesktopServices, "openUrl") as browser:
-        body.anchorClicked.emit(QUrl("file:///tmp/blocked"))
+        prose.anchorClicked.emit(QUrl("file:///tmp/blocked"))
         browser.assert_not_called()
-        body.anchorClicked.emit(QUrl("https://example.test"))
+        prose.anchorClicked.emit(QUrl("https://example.test"))
         browser.assert_called_once()
+    window.new_chat()
+    QTest.qWait(10)
+    window.open_chat(chat)
+    reopened = window.chat.findChild(app.MarkdownText)
+    assert [card.source for card in reopened.findChildren(CodeCard)] == [part.source for part in (first, second)]
 
 
 def test_regeneration(window):
@@ -275,10 +294,30 @@ def test_button_styles(window):
     copy.setEnabled(False)
     assert sample(copy) == field
     copy.setEnabled(True)
-    window.message.setPlainText("Primera línea\nSegunda línea\nTercera línea")
+    window.message.clear()
     QTest.qWait(50)
-    send, message = window.send.geometry(), window.message.geometry()
-    assert abs(send.center().y() - message.center().y()) <= 1, (send, message)
+    controls = window.attachments.add_button, window.send
+    def positions():
+        return [button.mapTo(window, QPoint()) for button in controls]
+
+    anchors = positions()
+    script = "def prueba():\n" + "".join(f"    print({n})\n" for n in range(300))
+    QApplication.clipboard().setText(script)
+    window.message.paste()
+    QTest.qWait(50)
+    assert window.message.toPlainText() == script and positions() == anchors
+    bar = window.message.verticalScrollBar()
+    assert bar.maximum() > 0
+    assert window.message.viewport().mapTo(window.message, QPoint()).x() + window.message.viewport().width() <= bar.mapTo(window.message, QPoint()).x()
+    collapsed = window.message.height()
+    window.message.expand_button.click()
+    QTest.qWait(50)
+    assert window.message.height() > collapsed and positions() == anchors
+    bar.setValue(0)
+    assert positions() == anchors and window.message.toPlainText() == script
+    window.message.expand_button.click()
+    QTest.qWait(50)
+    assert window.message.height() == collapsed and positions() == anchors
     window.message.clear()
 
 

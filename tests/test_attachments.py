@@ -158,7 +158,10 @@ def test_window(root):
     try:
         menu = window.attachments.add_button.menu()
         attach, mcp, memory, _, skills = menu.actions()
-        assert attach.isEnabled() and mcp.isEnabled() and not skills.isEnabled()
+        assert attach.isEnabled() and mcp.isEnabled() and skills.isEnabled()
+        with patch.object(app.SkillsDialog, "exec") as opened:
+            skills.trigger()
+            opened.assert_called_once_with()
         memory.menu().actions()[0].trigger()
         assert window.message.toPlainText() == "Busca en la memoria: "
         window.message.clear()
@@ -193,7 +196,8 @@ def test_window(root):
                       if button.accessibleName() == "Quitar figura.jpg")
         remove.click()
         assert [file["name"] for file in window.attachments.files] == ["figura.png", "documento.pdf", "notas.txt"]
-        assert window.attachments.add_button.geometry().right() < window.message.geometry().left()
+        assert window.attachments.add_button.geometry().left() == window.message.geometry().left()
+        assert window.attachments.add_button.geometry().top() > window.message.geometry().bottom()
         with (patch.object(app, "Client", return_value=client),
               patch.object(app, "load_servers", side_effect=AssertionError("Los adjuntos no pasan a MCP."))):
             window.message.setPlainText("Revisa los adjuntos")

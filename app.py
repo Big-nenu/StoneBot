@@ -16,16 +16,19 @@ from appearance import (
     secondary_button,
 )
 from attachments import attachment_label, missing_pdf_pages, ollama_messages
-from chat_ui import ActivityPanel, AttachmentTray, ChatText, Composer, MarkdownText, chat_style
+from chat_markdown import MarkdownText
+from chat_ui import ActivityPanel, AttachmentTray, ChatText, Composer, chat_style
 from diagnostics import read_log, record
 from experiences import query_experiences, record_experience
 from history import History
 from history_ui import HistoryPanel, load_history_width, save_history_width
 from identity import INITIAL_IDENTITY, load_identity, update_identity
+import local_skills
 from mcp_client import call_external, connection_error, discover, load_servers, ollama_tool, session_for
 from mcp_permissions import allowed, permission_signature, remember, safe_read
 from mcp_pool import McpPool
 from mcp_ui import McpDialog
+from skills_ui import SkillsDialog
 from stonebot_engine.llm import env_var
 import stonebot_service as memory_service
 from stonebot_service import MEMORY_TOOLS, SCOPES
@@ -142,10 +145,11 @@ class Worker(QObject):
                            json.dumps(identity, ensure_ascii=False)}
         client = Client(host="http://localhost:11434", timeout=180)
         learn = current.get("role") == "user" and command[:1] == ["/aprender"]
+        skills = {} if learn else self.enabled_skills()
         if any(message.get("attachments") for message in messages):
             if learn:
                 raise TurnError("Usa /aprender en un chat sin adjuntos para mantenerlos fuera de MCP.")
-            return await self.chat_with_attachments(client, messages)
+            return await self.chat_with_attachments(client, messages, skills)
         if learn:
             if len(command) == 1:
                 return "Escribe /aprender seguido de la tarea MCP que quieres comprobar."
@@ -153,6 +157,8 @@ class Worker(QObject):
                             "Este turno registra resultados MCP reales. Explica qué se observó y qué queda sin comprobar."}
         external = {}
         specs = [*MEMORY_TOOLS.values(), query_experiences]
+        if skills:
+            specs.append(Tool.model_validate(local_skills.tool_spec(skills)))
         used_mcp = False
         active_servers = False
         try:
@@ -213,7 +219,7 @@ class Worker(QObject):
             ) if external else 0
             for _ in range(6):
                 # Los resultados MCP pueden llenar la ventana antes de que Nemotron redacte.
-                options = {"num_ctx": 8192 if (external and context_chars > 6500) or planning_retried else 4096}
+                options = {"num_ctx": 8192 if skills or (external and context_chars > 6500) or planning_retried else 4096}
                 self.activity.emit("Esperando la respuesta de Ollama…")
                 response = await asyncio.to_thread(client.chat, model=MODEL, messages=messages,
                                                    tools=specs, options=options)
@@ -241,6 +247,8 @@ class Worker(QObject):
                         raise TurnError("Ollama no respondió y ningún servidor MCP aportó herramientas. Consulta el diagnóstico.")
                 if not reply.tool_calls:
                     return reply.content or "(Sin respuesta)"
+                if skill_answer := await self.use_skill(client, messages, reply, skills):
+                    return skill_answer
                 messages.append(reply)
                 if external:
                     context_chars += len(reply.thinking or "") + len(reply.content or "")
@@ -309,7 +317,43 @@ class Worker(QObject):
                         context_chars += len(json.dumps(arguments)) + len(result)
             raise TurnError("StoneBot alcanzó el límite de llamadas a herramientas para este turno.")
 
-    async def chat_with_attachments(self, client, messages):
+    def enabled_skills(self):
+        try:
+            installed, _ = local_skills.discover()
+            return {name: skill for name, skill in installed.items() if local_skills.enabled(name)}
+        except (OSError, ValueError, RuntimeError):
+            self.mcp_notice.emit("No se pudo leer el catálogo de Skills.")
+            return {}
+
+    async def use_skill(self, client, messages, reply, skills):
+        if not skills:
+            return None
+        call = next((item for item in getattr(reply, "tool_calls", None) or []
+                     if item.function.name == local_skills.LOAD_SKILL), None)
+        if call is None:
+            return None
+        name = call.function.arguments.get("name")
+        if not isinstance(name, str) or name not in skills:
+            raise TurnError("Ollama solicitó una Skill que no está disponible.")
+        try:
+            instructions = local_skills.read_body(skills[name])
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise TurnError(f"No se pudo cargar la Skill {name}: {exc}") from exc
+        self.activity.emit(f"Skill cargada · {name}")
+        directive = (f"Para la tarea actual aplica la Skill local {name}. "
+                     f"Responde al usuario sin llamar herramientas.\n\n{instructions}")
+        payload = list(messages)
+        if isinstance(payload[0], dict) and payload[0]["role"] == "system":
+            payload[0] = {**payload[0], "content": payload[0]["content"] + "\n\n" + directive}
+        else:
+            payload.insert(0, {"role": "system", "content": directive})
+        result = await asyncio.to_thread(client.chat, model=MODEL, messages=payload, tools=[], think=False,
+                                         options={"num_ctx": 16384})
+        if not (result.message.content or "").strip() or getattr(result.message, "tool_calls", None):
+            raise TurnError(f"Ollama no dio una respuesta final para la Skill {name}.")
+        return result.message.content
+
+    async def chat_with_attachments(self, client, messages, skills):
         payload, has_images, partial, coverage = ollama_messages(messages)
         available = "\n".join(f"- {name}: {', '.join(map(str, sorted(pages))) or 'ninguna'}"
                               for name, pages in coverage.values())
@@ -336,18 +380,20 @@ class Worker(QObject):
         else:
             payload.insert(0, {"role": "system", "content": instruction})
         try:
+            tools = {"tools": [Tool.model_validate(local_skills.tool_spec(skills))]} if skills else {}
             response = await asyncio.to_thread(client.chat, model=MODEL, messages=payload,
-                                               think=False, options={"num_ctx": 16384})
+                                               think=False, options={"num_ctx": 16384}, **tools)
         except ResponseError as exc:
             raise TurnError(f"Ollama no pudo procesar los adjuntos con {MODEL}: {exc.error}") from exc
-        if not (response.message.content or "").strip():
+        answer = await self.use_skill(client, payload, response.message, skills) or response.message.content
+        if not (answer or "").strip():
             raise TurnError("Ollama no devolvió una respuesta sobre los adjuntos.")
         if partial and coverage:
-            if missing_pdf_pages(response.message.content, coverage):
+            if missing_pdf_pages(answer, coverage):
                 return ("La respuesta de Ollama mencionó páginas fuera del tramo, así que no se muestra. "
                         f"\n\n**Páginas enviadas a Ollama:**\n{available}")
-            return f"**Páginas enviadas a Ollama:**\n{available}\n\n{response.message.content}"
-        return response.message.content
+            return f"**Páginas enviadas a Ollama:**\n{available}\n\n{answer}"
+        return answer
 
     async def confirm_external(self, server, tool, arguments):
         signature = self.permission
@@ -494,15 +540,17 @@ class StoneBot(QMainWindow):
         self.memory_menu.triggered.connect(self.draft_memory_query)
         menu.aboutToShow.connect(self.update_composer_menu)
         menu.addSeparator()
-        menu.addAction("Skills").setEnabled(False)
+        menu.addAction("Skills…", self.open_skills)
         self.send = QPushButton("Enviar")
         self.send.setObjectName("sendMessage")
         self.send.clicked.connect(self.enviar)
         self.message.submitted.connect(self.enviar)
-        row.addWidget(self.attachments.add_button, 0, Qt.AlignmentFlag.AlignVCenter)
-        row.addWidget(self.message, 1)
-        row.addWidget(self.send, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(self.attachments.add_button)
+        row.addStretch()
+        row.addWidget(self.message.expand_button)
+        row.addWidget(self.send)
         composer_layout.addWidget(self.attachments)
+        composer_layout.addWidget(self.message)
         composer_layout.addLayout(row)
 
         footer = QHBoxLayout()
@@ -575,6 +623,11 @@ class StoneBot(QMainWindow):
         self.dream_thread = Thread(target=memory_service.dream_if_due, args=(next(self.dream_scopes),),
                                    name="StoneBot sueño")
         self.dream_thread.start()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "message"):
+            self.message.fit_height(self.message.document().size())
 
     def toggle_history(self, visible):
         self.history_panel.setVisible(visible)
@@ -725,6 +778,8 @@ class StoneBot(QMainWindow):
             artist=True))
         for bubble in self.chat.findChildren(ChatText, "userMessage"):
             self.fit_bubble(bubble)
+        for bubble in self.chat.findChildren(MarkdownText):
+            bubble.set_theme(theme)
         if self.mcp_dialog is not None:
             self.mcp_dialog.set_appearance(theme)
         if QApplication.platformName() == "windows":
@@ -761,6 +816,11 @@ class StoneBot(QMainWindow):
             self.mcp_dialog.reload()
         self.mcp_dialog.exec()
 
+    def open_skills(self):
+        dialog = SkillsDialog(self, self.appearance)
+        dialog.exec()
+        dialog.deleteLater()
+
     def update_composer_menu(self):
         self.memory_menu.setEnabled(not self.attachments.files)
         attached_chat = any(message.get("attachments") for message in self.messages)
@@ -789,7 +849,7 @@ class StoneBot(QMainWindow):
             self.follow_latest = True
         row = QHBoxLayout()
         self.transcript.insertLayout(self.transcript.count() - 1, row)
-        body = ChatText(self.chat) if user else MarkdownText(self.chat, text)
+        body = ChatText(self.chat) if user else MarkdownText(self.chat, text, self.appearance)
         body.setAccessibleName("Tú" if user else "StoneBot")
         body.setObjectName("userMessage" if user else "botMessage")
         if user:
@@ -808,8 +868,8 @@ class StoneBot(QMainWindow):
         else:
             column.addWidget(body)
         body.ensurePolished()
-        body.document().setDocumentMargin(12 if user else 8)
         if user:
+            body.document().setDocumentMargin(12)
             names = ", ".join(map(attachment_label, attachments or []))
             body.setPlainText(f"{text}\n\nAdjuntos: {names}" if names else text)
         actions = QHBoxLayout()
@@ -831,11 +891,6 @@ class StoneBot(QMainWindow):
         column.addLayout(actions)
         if user:
             self.fit_bubble(body)
-        if isinstance(body, MarkdownText):
-            for number, code in enumerate(body.code, start=1):
-                label = "Copiar código" if len(body.code) == 1 else f"Copiar código {number}"
-                column.addWidget(self.message_button(label, lambda value=code: QApplication.clipboard().setText(value)),
-                                 0, Qt.AlignmentFlag.AlignLeft)
         self.scroll_to_latest()
 
     @staticmethod

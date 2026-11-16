@@ -224,7 +224,7 @@ Repositorio base: [StoneWave](https://github.com/Big-nenu/StoneWave).
 
 ## Ejecutar y probar
 
-Con Python 3.14, instala `PySide6`, `ollama`, `requests` y `numpy`. Para usar `python app.py`, inicia Ollama local con los modelos `nemotron-3.5-bolt:e4b` y `embeddinggemma-2:270m` disponibles. `python test_memory.py` permite consultar manualmente la memoria experimental. La aplicación espera que la base de StoneBot ya exista.
+Con Python 3.14, instala `PySide6`, `ollama`, `requests`, `numpy`, `PyYAML`, `markdown-it-py` y `Pygments`. Para usar `python app.py`, inicia Ollama local con los modelos `nemotron-3.5-bolt:e4b` y `embeddinggemma-2:270m` disponibles. `python test_memory.py` permite consultar manualmente la memoria experimental. La aplicación espera que la base de StoneBot ya exista.
 
 ### Abrir desde Windows
 
@@ -298,7 +298,9 @@ Usa **☰** para mostrar u ocultar el panel izquierdo. Arrastra su borde derecho
 
 Las conversaciones se guardan en `%USERPROFILE%\.stonebot\conversations.sqlite3`. El historial almacena los mensajes del usuario y las respuestas visibles. Los permisos MCP se guardan en `mcp_permissions.sqlite3` y el diagnóstico en `diagnostics.log`. La memoria seleccionada de StoneBot continúa en `memoria.db` y se usa mediante sus herramientas existentes.
 
-Los mensajes con hora registrada la muestran en formato local. Los mensajes antiguos sin hora siguen visibles con su contenido original. Las respuestas muestran Markdown con títulos, énfasis, listas, enlaces HTTP(S) y bloques de código. **Copiar código** copia el contenido del bloque.
+Los mensajes con hora registrada la muestran en formato local. Las respuestas muestran Markdown con títulos, listas, enlaces HTTP(S) y expresiones matemáticas sencillas en línea. Cada bloque de código tiene su lenguaje, resaltado cuando el lenguaje es compatible y un botón **Copiar** que copia solo ese bloque.
+
+En el cuadro de mensaje, **Ampliar editor** y **Reducir editor** ajustan la altura. El texto largo se desplaza dentro del editor y deja **+** y **Enviar** en la fila inferior.
 
 Al pasar el cursor sobre una conversación, **⋯** abre las acciones **Renombrar** y **Eliminar**. También puedes abrir ese menú con clic derecho o con **Mayús + F10** sobre la fila seleccionada.
 
@@ -306,7 +308,7 @@ En un mensaje del usuario, **Editar → Regenerar** vuelve a usar el historial a
 
 ### Adjuntos del chat
 
-Pulsa **+ → Adjuntar archivos** junto al cuadro de mensaje y selecciona hasta cuatro archivos de hasta 10 MiB cada uno. La lista muestra sus nombres antes de enviar y permite quitarlos. El menú también abre el panel de servidores MCP y prepara consultas de memoria en el cuadro de mensaje. **Skills** aparece deshabilitado. Se admiten imágenes PNG, JPG/JPEG y WebP, PDF y archivos TXT, MD, CSV, TSV, LOG y JSON en UTF-8 o UTF-16 con BOM.
+Pulsa **+ → Adjuntar archivos** junto al cuadro de mensaje y selecciona hasta cuatro archivos de hasta 10 MiB cada uno. La lista muestra sus nombres antes de enviar y permite quitarlos. El menú también abre MCP, Memoria y Skills. Se admiten imágenes PNG, JPG/JPEG y WebP, PDF y archivos TXT, MD, CSV, TSV, LOG y JSON en UTF-8 o UTF-16 con BOM.
 
 Las imágenes de hasta 16 megapíxeles se redimensionan para Ollama y se envían al modelo local `nemotron-3.5-bolt:e4b`. StoneBot comprueba que Ollama anuncie capacidad visual y avisa si el modelo carece de ella. En un PDF mixto extrae el texto disponible por página y renderiza las páginas sin texto como imágenes para ese mismo modelo.
 
@@ -315,6 +317,14 @@ Cada tramo de un PDF admite hasta 40 páginas, cuatro páginas visuales y 12 000
 El historial local conserva el nombre, una copia de la imagen redimensionada o el texto extraído. Al reabrir o regenerar el chat, los adjuntos siguen disponibles aunque se mueva el original. Las rutas de origen quedan fuera del historial. Mientras el chat incluya adjuntos, los turnos de conversación usan Ollama local sin herramientas MCP ni de memoria permanente.
 
 Al elegir una consulta de **Memoria** desde una conversación con adjuntos ya enviados, StoneBot la prepara en un chat nuevo. Si hay adjuntos pendientes de enviar, primero puedes enviarlos o quitarlos.
+
+### Agent Skills locales
+
+Abre **+ → Skills** para ver las Skills y marcar las que quieres habilitar. **Agregar desde carpeta** importa el `SKILL.md` a `%USERPROFILE%\.stonebot\skills\<nombre>\SKILL.md`. La carpeta de origen debe llamarse igual que el campo `name`. El archivo lleva `name` y `description` en el encabezado YAML, seguidos por las instrucciones en Markdown. Las Skills importadas quedan desactivadas hasta que las marques. [Formato Agent Skills](https://agentskills.io/specification)
+
+Ollama recibe solo los nombres y descripciones de las Skills habilitadas. Cuando Nemotron elige una, StoneBot lee su cuerpo para ese turno y muestra **Skill cargada** en **Actividad**. Esta versión importa únicamente `SKILL.md`. Las carpetas auxiliares y los scripts quedan fuera del flujo, y la respuesta guiada por la Skill se genera sin herramientas MCP ni de memoria.
+
+Para probarlo, habilita **faro-de-prueba** y escribe «Genera una ficha Faro SB sobre astronomía». La primera línea debe incluir `FARO SB · LINTERNA-742`. Una pregunta general, como «¿Cuánto es 7 por 8?», no debería mostrar la carga. La prueba automatizada con Nemotron local se ejecuta con `python -B tests/test_skills.py --live`.
 
 La fila **Actividad** aparece en la conversación junto a la respuesta en curso. Se puede desplegar para ver el estado del turno, las operaciones MCP y sus resultados o errores. **Mostrar razonamiento de Ollama** aparece solo cuando la API entrega el campo separado `message.thinking`. Con la integración actual ese campo llega al terminar cada respuesta de Ollama. La actividad y el razonamiento se conservan en la vista actual del chat y se descartan al cambiar de conversación. Los detalles técnicos siguen en **Diagnóstico**. [Campo de razonamiento en Ollama](https://docs.ollama.com/capabilities/thinking)
 

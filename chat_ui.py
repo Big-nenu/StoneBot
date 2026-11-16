@@ -1,14 +1,13 @@
 """Vista del chat y estilo basado en las preferencias de apariencia."""
 import re
-from collections import deque
 from math import ceil
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QDesktopServices, QTextCursor, QTextDocument, QTextFormat, QTextOption
+from PySide6.QtGui import QTextOption
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMenu, QPlainTextEdit, QPushButton,
-    QSizePolicy, QTextBrowser, QTextEdit, QToolButton, QVBoxLayout, QWidget,
+    QSizePolicy, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
 from appearance import button_style, control_colors, link_color, readable_text, secondary_button, shade
@@ -50,6 +49,29 @@ class Composer(ChatText):
         self.setPlaceholderText("Escribe un mensaje…")
         self.setAccessibleName("Mensaje para StoneBot")
         self.document().setDocumentMargin(12)
+        self.setViewportMargins(0, 0, 4, 0)
+        self.verticalScrollBar().setObjectName("composerScroll")
+        self.expand_button = secondary_button(QPushButton())
+        self.expand_button.setObjectName("composerExpand")
+        self.expand_button.setCheckable(True)
+        self.expand_button.toggled.connect(self.expand_editor)
+        self.expand_editor(False)
+
+    def expand_editor(self, expanded):
+        self.expand_button.setText("⤡" if expanded else "⤢")
+        label = "Reducir editor" if expanded else "Ampliar editor"
+        self.expand_button.setAccessibleName(label)
+        self.expand_button.setToolTip(label)
+        self.fit_height(self.document().size())
+        self.ensureCursorVisible()
+
+    def fit_height(self, size):
+        available = self.window().height()
+        if hasattr(self, "expand_button") and self.expand_button.isChecked():
+            height = max(85, min(600, available * 3 // 5))
+        else:
+            height = min(160, max(46, available // 3), max(46, ceil(size.height()) + 2 * self.frameWidth()))
+        self.setFixedHeight(height)
 
     def keyPressEvent(self, event):
         if (event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
@@ -138,85 +160,6 @@ class AttachmentTray(QWidget):
     def clear(self):
         while self.rows.count():
             self.remove_row(self.rows.itemAt(0).widget())
-
-
-FENCE = re.compile(r"^( {0,3})(`{3,}|~{3,})(.*)$")
-
-
-def fenced_code(source):
-    fence = ""
-    lines = []
-    indent = 0
-    for line in source.splitlines():
-        match = FENCE.match(line)
-        if not fence:
-            if match and not (match[2][0] == "`" and "`" in match[3]):
-                indent, fence = len(match[1]), match[2]
-        elif match and match[2].startswith(fence) and not match[3].strip():
-            yield "\n".join(lines)
-            fence, lines = "", []
-        else:
-            trim = min(indent, len(line) - len(line.lstrip(" ")))
-            lines.append(line[trim:])
-    if fence:
-        yield "\n".join(lines)
-
-
-class MarkdownText(QTextBrowser):
-    def __init__(self, scroll_area, source):
-        super().__init__()
-        self.scroll_area = scroll_area
-        self.setOpenLinks(False)
-        self.anchorClicked.connect(self.open_link)
-        self.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        features = QTextDocument.MarkdownFeature
-        self.document().setMarkdown(source, features.MarkdownDialectGitHub | features.MarkdownNoHTML)
-        groups = []
-        group = None
-        block = self.document().begin()
-        while block.isValid():
-            fmt = block.blockFormat()
-            if fmt.hasProperty(QTextFormat.Property.BlockCodeLanguage):
-                kind = (fmt.stringProperty(QTextFormat.Property.BlockCodeFence),
-                        fmt.stringProperty(QTextFormat.Property.BlockCodeLanguage))
-                if group is None or group[0] != kind:
-                    group = kind, []
-                    groups.append(group)
-                group[1].append(block.text())
-                fmt.setNonBreakableLines(False)
-                QTextCursor(block).setBlockFormat(fmt)
-            else:
-                group = None
-            block = block.next()
-        # Qt agrupa cercas contiguas iguales; el original conserva sus límites.
-        candidates = deque(filter(None, fenced_code(source)))
-        self.code = []
-        for (fence, _), lines in groups:
-            text = "\n".join(lines)
-            while fence and candidates and (text == candidates[0] or text.startswith(candidates[0] + "\n")):
-                original = candidates.popleft()
-                self.code.append(original)
-                text = text[len(original) + 1:]
-            if text:
-                self.code.append(text)
-        self.document().documentLayout().documentSizeChanged.connect(self.fit_height)
-        self.fit_height(self.document().size())
-
-    def loadResource(self, kind, url):
-        return None
-
-    def open_link(self, url):
-        if url.scheme() in ("http", "https") and url.host():
-            QDesktopServices.openUrl(url)
-
-    def fit_height(self, size):
-        self.setFixedHeight(ceil(size.height()) + 2 * self.frameWidth())
-
-    def wheelEvent(self, event):
-        QApplication.sendEvent(self.scroll_area.viewport(), event)
 
 
 class ActivityPanel(QWidget):
@@ -357,10 +300,19 @@ def chat_style(theme):
                 background: {user}; color: {readable_text(user)}; border-radius: 14px;
                 border-bottom-right-radius: 5px;
             }}
-            QTextEdit#botMessage {{
+            QWidget#botMessage {{
                 background: {bot}; color: {readable_text(bot)}; border-radius: 14px;
                 border-bottom-left-radius: 5px;
+                font-family: "Segoe UI"; font-size: {theme['font_size']}px;
             }}
+            QTextBrowser#responseProse, QTextBrowser#codeText {{ color: {readable_text(bot)}; }}
+            QWidget#codeCard {{ background: {shade(bot, .08)}; border: 1px solid {shade(bot, .20)}; border-radius: 9px; }}
+            QLabel#codeLanguage {{ font-size: 13px; font-weight: 600; color: {readable_text(bot)}; }}
+            QTextBrowser#codeText QScrollBar:horizontal {{ height: 9px; background: transparent; }}
+            QTextBrowser#codeText QScrollBar::handle:horizontal {{
+                min-width: 25px; background: {shade(bot, .28)}; border-radius: 4px;
+            }}
+            QTextBrowser#codeText QScrollBar::add-line:horizontal, QTextBrowser#codeText QScrollBar::sub-line:horizontal {{ width: 0; }}
             QWidget#composerPanel {{
                 background: {surface}; border: 1px solid {subtle_edge}; border-radius: 16px;
             }}
@@ -371,5 +323,8 @@ def chat_style(theme):
             QMenu#chatMenu::item:selected {{ background: {accent}; color: {accent_text}; }}
             QMenu#chatMenu::item:disabled {{ color: {muted}; }}
             QPushButton#sendMessage {{ padding: 5px 13px; font-size: 14px; }}
+            QPushButton#composerExpand {{ padding: 2px 7px; }}
             QTextEdit#messageInput {{ color: {text}; placeholder-text-color: {shade(surface, .7)}; }}
+            QScrollBar#composerScroll:vertical {{ width: 10px; background: transparent; }}
+            QScrollBar#composerScroll::handle:vertical {{ margin: 2px; }}
         """
