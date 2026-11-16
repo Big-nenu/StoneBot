@@ -336,9 +336,9 @@ Los experimentos de autoconocimiento usarán el motor local y bases desechables.
 
 ## Próxima acción
 
-**Probar un cliente MCP mínimo con Context7** sin alterar las herramientas actuales de memoria. Confirmar descubrimiento, ejecución de una consulta y manejo de errores desde StoneBot. Después, diseñar los permisos necesarios para conectar servicios personales como Gmail y Obsidian.
+**Etapa 2: experiencias y autoevaluación de capacidades.** Probar primero en una base temporal un ciclo concreto: StoneBot intenta una acción autorizada; registra la herramienta, el resultado observable y los errores; distingue observaciones de inferencias; y recupera ese episodio para evaluar qué puede hacer y qué le falta comprobar. Después integrar gradualmente esa capacidad al chat sin alterar el motor personal de StoneWave ni romper las herramientas actuales.
 
-En paralelo quedan pendientes la bandeja del sistema y la representación de experiencias e hipótesis para el autoconocimiento funcional.
+Siguen pendientes la bandeja del sistema, la validación en vivo de integraciones MCP aún no probadas, el trabajo con hipótesis y la iniciativa controlada. La instalación de servidores MCP por el propio agente es una capacidad futura que requerirá propuesta y aprobación explícita.
 
 ---
 
