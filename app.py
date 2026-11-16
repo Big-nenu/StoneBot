@@ -2,12 +2,16 @@ import asyncio
 import json
 import sqlite3
 import sys
+import time
 from contextlib import AsyncExitStack
+from datetime import datetime
 from pathlib import Path
 
 from ollama import Client, Tool
-from appearance import AppearanceDialog, dialog_style, load_appearance, save_appearance
-from chat_ui import ChatText, Composer, chat_style
+from appearance import (
+    AppearanceDialog, apply_palette, dialog_style, load_appearance, palette_icon, readable_text, save_appearance,
+)
+from chat_ui import ActivityPanel, ChatText, Composer, MarkdownText, chat_style
 from diagnostics import read_log, record
 from history import History
 from history_ui import HistoryPanel
@@ -16,9 +20,9 @@ from mcp_permissions import allowed, permission_signature, remember, safe_read
 from mcp_pool import McpPool
 from mcp_ui import McpDialog
 from stonebot_engine import StoneBotEngine, check_db_path, default_root
-from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QSize, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPlainTextEdit,
+    QApplication, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPlainTextEdit,
     QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
@@ -94,6 +98,8 @@ class Worker(QObject):
     error = Signal(str)
     mcp_notice = Signal(str)
     operation_error = Signal(str)
+    activity = Signal(str)
+    reasoning = Signal(str)
     mcp_confirmation = Signal(object)
 
     def __init__(self, messages, pool=None):
@@ -125,6 +131,8 @@ class Worker(QObject):
             servers = {}
             self.mcp_notice.emit("No se pudo leer la configuración MCP.")
         cached = {}
+        if any(server["enabled"] for server in servers.values()):
+            self.activity.emit("Preparando herramientas MCP disponibles…")
         if self.pool is not None:
             try:
                 await self.pool.prepare(servers)
@@ -176,9 +184,12 @@ class Worker(QObject):
             for _ in range(6):
                 # Los resultados MCP pueden llenar la ventana antes de que Nemotron redacte.
                 options = {"num_ctx": 8192 if (external and context_chars > 6500) or planning_retried else 4096}
+                self.activity.emit("Esperando la respuesta de Ollama…")
                 response = await asyncio.to_thread(client.chat, model=MODEL, messages=messages,
                                                    tools=specs, options=options)
                 reply = response.message
+                if thinking := getattr(reply, "thinking", None):
+                    self.reasoning.emit(thinking)
                 if not reply.tool_calls and not (reply.content or "").strip():
                     if used_mcp or (external and not planning_retried):
                         if not used_mcp:
@@ -190,6 +201,8 @@ class Worker(QObject):
                                                         tools=[] if used_mcp else specs, think=False,
                                                         options={"num_ctx": 8192})
                         reply = retry.message
+                        if thinking := getattr(reply, "thinking", None):
+                            self.reasoning.emit(thinking)
                         if used_mcp and (reply.tool_calls or not (reply.content or "").strip()):
                             raise TurnError("Ollama no generó una respuesta final tras recibir los resultados MCP.")
                     if not reply.tool_calls and not (reply.content or "").strip() and active_servers:
@@ -207,6 +220,7 @@ class Worker(QObject):
                         used_mcp = True
                         _, server_name, tool, _ = external[name]
                         self.mcp_notice.emit(f"MCP {server_name}. Nemotron solicitó {tool.name}.")
+                        self.activity.emit(f"Solicitando {tool.name} en {server_name}…")
                         try:
                             self.permission = (permission_signature(servers[server_name], tool)
                                                if safe_read(tool, arguments) else None)
@@ -216,6 +230,7 @@ class Worker(QObject):
                             self.mcp_notice.emit(f"MCP {server_name}. {result}")
                             self.operation_error.emit(f"No se pudo completar una operación en {server_name}. Consulta el diagnóstico.")
                         else:
+                            self.activity.emit(f"Procesando el resultado de {tool.name}.")
                             if result.startswith("Error MCP:"):
                                 self.mcp_notice.emit(f"MCP {server_name}. La herramienta devolvió un error.")
                                 self.operation_error.emit(f"Una herramienta de {server_name} devolvió un error.")
@@ -237,6 +252,7 @@ class Worker(QObject):
             return True
         request = {"server": server, "tool": tool, "arguments": arguments, "approved": False,
                    "can_remember": bool(signature), "remember": False}
+        self.activity.emit(f"Esperando autorización para {tool}…")
         await asyncio.to_thread(self.mcp_confirmation.emit, request)
         if request["approved"] and request["remember"] and signature:
             remember(server, tool, signature)
@@ -257,6 +273,7 @@ class StoneBot(QMainWindow):
         self.pool = McpPool()
         self.chat_id = None
         self.history_write_ok = True
+        self.pending_edit = None
         try:
             self.history = History()
         except (OSError, ValueError, RuntimeError, sqlite3.Error):
@@ -305,7 +322,8 @@ class StoneBot(QMainWindow):
         self.mcp_button.setAccessibleName("Administrar servidores MCP")
         self.mcp_button.clicked.connect(self.open_mcp)
         header_layout.addWidget(self.mcp_button)
-        self.settings_button = QPushButton("⚙")
+        self.settings_button = QPushButton()
+        self.settings_button.setIconSize(QSize(26, 20))
         self.settings_button.setAccessibleName("Configuración de apariencia")
         self.settings_button.setToolTip("Apariencia")
         self.settings_button.clicked.connect(self.open_appearance)
@@ -335,6 +353,18 @@ class StoneBot(QMainWindow):
         canvas_layout.addStretch(1)
         self.chat.setWidget(canvas)
         layout.addWidget(self.chat, 1)
+
+        self.activity_panel = ActivityPanel()
+        self.activity_button = QPushButton("Actividad")
+        self.activity_button.setObjectName("messageAction")
+        self.activity_button.setCheckable(True)
+        self.activity_button.toggled.connect(self.activity_panel.setVisible)
+        activity_row = QHBoxLayout()
+        activity_row.setContentsMargins(16, 0, 16, 4)
+        activity_row.addStretch()
+        activity_row.addWidget(self.activity_button)
+        layout.addLayout(activity_row)
+        layout.addWidget(self.activity_panel)
 
         composer = QWidget()
         composer.setObjectName("composerPanel")
@@ -397,9 +427,13 @@ class StoneBot(QMainWindow):
         except (OSError, ValueError, RuntimeError, sqlite3.Error):
             self.show_problem("No se pudo abrir la conversación.")
             return
+        self.render_chat(chat_id, saved)
+
+    def render_chat(self, chat_id, saved):
         self.chat_id = chat_id
         self.messages = [{"role": "system", "content": SYSTEM}, *saved]
         self.message.clear()
+        self.activity_panel.reset()
         self.problem.hide()
         self.follow_latest = True
         for _ in range(self.transcript.count() - 1):
@@ -410,8 +444,9 @@ class StoneBot(QMainWindow):
                     widget.hide()
                     widget.deleteLater()
             row.deleteLater()
-        for message in saved:
-            self.append_message(message["content"], user=message["role"] == "user")
+        for index, message in enumerate(saved):
+            self.append_message(message["content"], user=message["role"] == "user",
+                                created=message["created"], index=index)
         self.refresh_history()
         self.message.setFocus()
 
@@ -431,13 +466,13 @@ class StoneBot(QMainWindow):
         except (OSError, ValueError, RuntimeError, sqlite3.Error):
             self.show_problem("No se pudo eliminar la conversación.")
 
-    def save_message(self, role, text):
-        self.messages.append({"role": role, "content": text})
+    def save_message(self, role, text, created):
+        self.messages.append({"role": role, "content": text, "created": created})
         if role == "user":
             self.history_write_ok = True
         if self.history is not None and self.history_write_ok:
             try:
-                self.chat_id = self.history.append(self.chat_id, role, text)
+                self.chat_id = self.history.append(self.chat_id, role, text, created=created)
                 self.refresh_history()
             except (OSError, ValueError, RuntimeError, sqlite3.Error):
                 self.history_write_ok = False
@@ -473,7 +508,10 @@ class StoneBot(QMainWindow):
 
     def refresh_appearance(self):
         theme = self.appearance
+        apply_palette(theme)
         self.centralWidget().setStyleSheet(chat_style(theme))
+        self.settings_button.setIcon(palette_icon(
+            [readable_text(theme["accent"]), theme["accent"], "#94c6ff", "#d4a2e8"], artist=True))
         for bubble in self.chat.findChildren(ChatText, "userMessage"):
             self.fit_bubble(bubble)
         if self.mcp_dialog is not None:
@@ -488,27 +526,67 @@ class StoneBot(QMainWindow):
             self.mcp_dialog.reload()
         self.mcp_dialog.exec()
 
-    def append_message(self, text, *, user=False):
+    def append_message(self, text, *, user=False, created=None, index=None):
         if user:
             self.follow_latest = True
         row = QHBoxLayout()
         self.transcript.insertLayout(self.transcript.count() - 1, row)
-        body = ChatText(self.chat)
+        body = ChatText(self.chat) if user else MarkdownText(self.chat, text)
         body.setAccessibleName("Tú" if user else "StoneBot")
         body.setObjectName("userMessage" if user else "botMessage")
         if user:
             row.addStretch(1)
-        row.addWidget(body, 4)
+        card = QWidget()
+        column = QVBoxLayout(card)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(3)
+        row.addWidget(card, 4)
+        if user:
+            bubble_row = QHBoxLayout()
+            bubble_row.setContentsMargins(0, 0, 0, 0)
+            bubble_row.addStretch()
+            bubble_row.addWidget(body, 1)
+            column.addLayout(bubble_row)
+        else:
+            column.addWidget(body)
         body.ensurePolished()
         body.document().setDocumentMargin(12 if user else 8)
-        body.setPlainText(text)
+        if user:
+            body.setPlainText(text)
+        actions = QHBoxLayout()
+        actions.setContentsMargins(4, 0, 4, 0)
+        stamp = datetime.fromtimestamp(created / 1_000_000_000) if created is not None else None
+        time_label = QLabel(stamp.strftime("%H:%M") if stamp else "Hora no registrada")
+        time_label.setObjectName("messageTime")
+        if stamp:
+            time_label.setToolTip(stamp.strftime("%d/%m/%Y %H:%M:%S"))
+        actions.addWidget(time_label)
+        actions.addStretch()
+        actions.addWidget(self.message_button("Copiar", lambda: QApplication.clipboard().setText(text)))
+        if user and index is not None and self.chat_id is not None:
+            actions.addWidget(self.message_button("Editar", lambda: self.edit_message(index)))
+        column.addLayout(actions)
         if user:
             self.fit_bubble(body)
+        if isinstance(body, MarkdownText):
+            for number, code in enumerate(body.code, start=1):
+                label = "Copiar código" if len(body.code) == 1 else f"Copiar código {number}"
+                column.addWidget(self.message_button(label, lambda value=code: QApplication.clipboard().setText(value)),
+                                 0, Qt.AlignmentFlag.AlignLeft)
         self.scroll_to_latest()
+
+    @staticmethod
+    def message_button(title, action):
+        button = QPushButton(title)
+        button.setObjectName("messageAction")
+        button.clicked.connect(lambda checked=False: action())
+        return button
 
     def fit_bubble(self, body):
         width = max(map(body.fontMetrics().horizontalAdvance, body.toPlainText().split("\n")))
         body.setMaximumWidth(width + 26)
+        card = body.parentWidget()
+        card.setMaximumWidth(max(width + 26, card.layout().minimumSize().width()))
 
     def scroll_to_latest(self):
         if self.follow_latest:
@@ -524,20 +602,67 @@ class StoneBot(QMainWindow):
         if not texto or self.thread is not None:
             return
 
-        self.append_message(texto, user=True)
         self.message.clear()
+        created = time.time_ns()
+        self.problem.hide()
+        self.save_message("user", texto, created)
+        self.append_message(texto, user=True, created=created, index=len(self.messages) - 2)
+        self.start_turn()
+
+    def edit_message(self, index):
+        if self.thread is not None or self.chat_id is None or self.history is None:
+            return
+        original = self.messages[index + 1]["content"]
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Editar mensaje")
+        dialog.setStyleSheet(dialog_style(self.appearance))
+        layout = QVBoxLayout(dialog)
+        note = QLabel("Al generar una respuesta nueva, se reemplazarán este mensaje y los posteriores de esta conversación.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        editor = QPlainTextEdit(original)
+        layout.addWidget(editor)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        save = buttons.button(QDialogButtonBox.StandardButton.Save)
+        save.setText("Regenerar")
+        save.setEnabled(False)
+        editor.textChanged.connect(lambda: save.setEnabled(
+            bool(editor.toPlainText().strip()) and editor.toPlainText().strip() != original.strip()))
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.resize(520, 280)
+        try:
+            if dialog.exec():
+                self.regenerate(index, editor.toPlainText().strip())
+        finally:
+            dialog.deleteLater()
+
+    def regenerate(self, index, text):
+        text = text.strip()
+        if self.thread is not None or not text or self.chat_id is None or self.history is None:
+            return
+        saved = self.messages[1:]
+        if (not 0 <= index < len(saved) or saved[index]["role"] != "user"
+                or text == saved[index]["content"].strip()):
+            return
+        edited = {"role": "user", "content": text, "created": time.time_ns()}
+        self.pending_edit = (self.chat_id, index, saved, edited)
+        self.render_chat(self.chat_id, [*saved[:index], edited])
+        self.start_turn()
+
+    def start_turn(self):
         self.message.setEnabled(False)
         self.send.setEnabled(False)
         self.mcp_button.setEnabled(False)
         self.history_panel.setEnabled(False)
-        self.problem.hide()
+        self.activity_panel.reset()
+        self.activity_panel.events.appendPlainText("Procesando el mensaje…")
         self.status.setText("StoneBot está trabajando…")
         self.status.show()
 
-        self.save_message("user", texto)
-
         self.thread = QThread()
-        self.worker = Worker([m.copy() for m in self.messages], self.pool)
+        self.worker = Worker([{"role": m["role"], "content": m["content"]} for m in self.messages], self.pool)
         self.worker.moveToThread(self.thread)
 
         self.thread.started.connect(self.worker.run)
@@ -545,6 +670,8 @@ class StoneBot(QMainWindow):
         self.worker.error.connect(self.error)
         self.worker.mcp_notice.connect(record)
         self.worker.operation_error.connect(self.show_problem)
+        self.worker.activity.connect(self.activity_panel.events.appendPlainText)
+        self.worker.reasoning.connect(self.activity_panel.reasoning.appendPlainText)
         self.worker.mcp_confirmation.connect(self.confirmar_mcp, Qt.ConnectionType.BlockingQueuedConnection)
         self.worker.finished.connect(self.thread.quit)
         self.worker.error.connect(self.thread.quit)
@@ -555,6 +682,7 @@ class StoneBot(QMainWindow):
     def confirmar_mcp(self, request):
         dialog = QMessageBox(self)
         dialog.setWindowTitle("Confirmar operación MCP")
+        dialog.setStyleSheet(dialog_style(self.appearance))
         dialog.setIcon(QMessageBox.Icon.Question)
         dialog.setTextFormat(Qt.TextFormat.PlainText)
         dialog.setText(f"¿Autorizar {request['tool']} en {request['server']}?")
@@ -583,10 +711,34 @@ class StoneBot(QMainWindow):
             super().closeEvent(event)
 
     def respuesta(self, texto):
-        self.save_message("assistant", texto)
-        self.append_message(texto)
+        created = time.time_ns()
+        if self.pending_edit is None:
+            self.save_message("assistant", texto, created)
+        else:
+            chat_id, index, saved, edited = self.pending_edit
+            if not texto.strip() or texto.strip() == "(Sin respuesta)":
+                self.error("Ollama no generó una respuesta nueva. Se conservó la conversación original.")
+                return
+            answer = {"role": "assistant", "content": texto, "created": created}
+            try:
+                self.history.replace_from(chat_id, index, saved, edited, answer)
+            except (OSError, ValueError, RuntimeError, sqlite3.Error):
+                self.error("No se pudo guardar la regeneración. Se conservó el historial guardado.")
+                return
+            self.pending_edit = None
+            self.messages.append(answer)
+            self.refresh_history()
+        self.append_message(texto, created=created)
 
     def error(self, detalle):
+        if self.pending_edit is not None:
+            chat_id, _, saved, _ = self.pending_edit
+            self.pending_edit = None
+            try:
+                saved = self.history.messages(chat_id)
+            except (OSError, ValueError, RuntimeError, sqlite3.Error):
+                pass
+            self.render_chat(chat_id, saved)
         self.show_problem(detalle)
 
     def limpiar(self):
@@ -595,6 +747,7 @@ class StoneBot(QMainWindow):
         self.worker = None
         self.thread = None
         self.status.hide()
+        self.activity_panel.events.appendPlainText("Turno finalizado.")
         self.message.setEnabled(True)
         self.send.setEnabled(True)
         self.mcp_button.setEnabled(True)
@@ -604,6 +757,7 @@ class StoneBot(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app.setStyle("Fusion")
     window = StoneBot()
     window.show()
     sys.exit(app.exec())

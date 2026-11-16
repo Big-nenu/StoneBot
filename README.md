@@ -249,6 +249,7 @@ Con el ejemplo activado, pide en el chat «Usa echo del servidor ejemplo con el 
 python -B tests/test_mcp.py
 python -B tests/test_mcp_ui.py
 python -B tests/test_workspace_features.py
+python -B tests/test_chat_presentation.py
 ```
 
 El panel se probó con servidores de ejemplo mediante STDIO y Streamable HTTP en loopback. En el mismo chat, Nemotron y Ollama ejecutaron una herramienta MCP y recuperaron un recuerdo de una base temporal.
@@ -259,9 +260,17 @@ Usa **☰** para mostrar u ocultar el panel izquierdo. **Nuevo chat** inicia una
 
 Las conversaciones se guardan en `%USERPROFILE%\.stonebot\conversations.sqlite3`. El historial almacena los mensajes del usuario y las respuestas visibles. Los permisos MCP se guardan en `mcp_permissions.sqlite3` y el diagnóstico en `diagnostics.log`. La memoria seleccionada de StoneBot continúa en `memoria.db` y se usa mediante sus herramientas existentes.
 
+Cada mensaje nuevo muestra su hora local y permite copiar el original. El chat conserva los mensajes antiguos aunque su hora no estuviera registrada. Las respuestas renderizan Markdown con títulos, énfasis, listas, enlaces HTTP(S) y código; **Copiar código** copia el contenido del bloque.
+
+En un mensaje del usuario, **Editar → Regenerar** vuelve a usar el historial anterior a ese punto. Si Ollama entrega una respuesta nueva y se guarda correctamente, se reemplaza el tramo posterior solo en esa conversación. Si la regeneración falla, se restaura el historial guardado.
+
+**Actividad** muestra los pasos del turno. Dentro del panel, **Mostrar razonamiento de Ollama** revela el texto del campo de razonamiento cuando el modelo lo devuelve. Este texto está separado de los avisos técnicos y se conserva solo mientras se visualiza ese turno.
+
 ## Apariencia
 
-Abre **⚙ → Apariencia** para elegir el acento, el fondo de la ventana y los fondos de los mensajes de cada participante. El tamaño de letra del chat se puede ajustar entre 12 y 28 px. Los cambios se aplican al instante y se guardan en `%USERPROFILE%\.stonebot\appearance.ini`.
+Abre el botón de **paleta → Apariencia**. El selector muestra una muestra de cada tema. Puedes usar el tema original de StoneBot, elegir un tema inspirado en un editor o ajustar el acento y los fondos manualmente. Los temas cambian también las ventanas y los diálogos. La selección, los colores y el tamaño de letra de 12 a 28 px se guardan en `%USERPROFILE%\.stonebot\appearance.ini`. Inspiración de las paletas [GitHub Dark Dimmed](https://github.com/primer/github-vscode-theme), [One Dark Pro](https://github.com/Binaryify/OneDark-Pro) y [SynthWave '84](https://github.com/robb0wen/synthwave-vscode).
+
+En un selector de color, pulsa **Elegir color…**, selecciona una casilla y pulsa **Guardar en casilla** para guardar el color en edición. **Usar favorito** carga el color de esa casilla. Las casillas vacías llevan la etiqueta **Vacío**, y el blanco puede guardarse como cualquier otro color.
 
 La primera vez se usa el tema oscuro de StoneBot. El botón **Restaurar** junto a cada selector recupera solo ese color. **Restaurar colores predeterminados** recupera todos los colores. Ambas opciones conservan el tamaño de letra elegido.
 

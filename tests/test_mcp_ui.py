@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QApplication, QColorDialog, QDialog, QLabel, QLine
 from test_mcp import example_stdio
 import app
 import mcp_client
-from appearance import AppearanceDialog, COLORS, DEFAULT_FONT_SIZE
+from appearance import AppearanceDialog, COLORS, ColorEditor, DEFAULT_FONT_SIZE
 from mcp_ui import McpDialog, ServerForm, Toggle
 
 
@@ -256,13 +256,18 @@ def test_appearance():
             window.append_message("Una respuesta")
             assert window.appearance == dict(COLORS, font_size=DEFAULT_FONT_SIZE)
             user = window.findChild(app.ChatText, "userMessage")
-            bot = window.findChild(app.ChatText, "botMessage")
+            bot = window.findChild(app.MarkdownText, "botMessage")
             original_width = user.maximumWidth()
             colors = dict(accent="#00bb99", background="#eeeeee", user_message="#333366", bot_message="#e7e7f2")
 
             def customize(dialog):
+                def choose(editor):
+                    editor.pick.click()
+                    return 1
+
                 for key, color in colors.items():
-                    with patch.object(QColorDialog, "getColor", return_value=QColor(color)) as picker:
+                    with (patch.object(QColorDialog, "getColor", return_value=QColor(color)) as picker,
+                          patch.object(ColorEditor, "exec", choose)):
                         dialog.swatches[key].click()
                     picker.assert_called_once()
                     assert window.appearance[key] == color

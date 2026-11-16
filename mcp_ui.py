@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from appearance import COLORS, dialog_style, readable_text
+from appearance import COLORS, dialog_style, readable_text, shade
 from mcp_client import connection_error, load_servers, probe_server, save_servers, validate_server
 from mcp_credentials import credential_target, delete_key, read_key, store_key
 from mcp_permissions import list_permissions, revoke
@@ -220,7 +220,7 @@ class McpDialog(QDialog):
         layout.addWidget(switch)
         if show_state:
             state = QLabel("Activo" if checked else "Inactivo")
-            state.setStyleSheet("background: #25252d;")
+            state.setStyleSheet(f"background: {shade(self.theme['background'], .06)};")
             layout.addWidget(state)
         tree.setItemWidget(item, column, holder)
         if show_state:
@@ -255,7 +255,10 @@ class McpDialog(QDialog):
             label = QLabel(f"●  {status}")
             label.setToolTip(detail)
             color = STATUS_COLORS.get(status, "#b8b2c4")
-            label.setStyleSheet(f"color: {color}; background: #25252d; padding-left: 5px;")
+            background = shade(self.theme["background"], .06)
+            if readable_text(background) == "#000000":
+                color = {"Correcta": "#126133", "Falló": "#a32929"}.get(status, "#52525b")
+            label.setStyleSheet(f"color: {color}; background: {background}; padding-left: 5px;")
             self.table.setItemWidget(item, 3, label)
             label.ensurePolished()
             status_width = max(label.fontMetrics().horizontalAdvance(f"●  {text}")

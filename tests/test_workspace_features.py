@@ -84,7 +84,8 @@ def test_history_and_gui(qt):
     assert saved[-2]["content"] == "Usa QVBoxLayout para la distribución."
     assert History().messages(first)[-1]["content"] == "Seguimos con el layout."
     assert "Diagnóstico sintético" in read_log()
-    assert all("Diagnóstico sintético" not in w.toPlainText() for w in window.chat.findChildren(app.ChatText))
+    bubbles = window.chat.findChildren(app.ChatText) + window.chat.findChildren(app.MarkdownText)
+    assert all("Diagnóstico sintético" not in w.toPlainText() for w in bubbles)
 
     window.rename_chat(first, "Nuevo título")
     assert History().find("nuevo título") == [(first, "Nuevo título")]

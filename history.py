@@ -18,10 +18,13 @@ class History:
                 );
                 CREATE TABLE IF NOT EXISTS message (
                     id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL REFERENCES chat(id) ON DELETE CASCADE,
-                    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')), content TEXT NOT NULL
+                    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')), content TEXT NOT NULL,
+                    created INTEGER
                 );
                 CREATE INDEX IF NOT EXISTS messages_by_chat ON message(chat_id, id);
             """)
+            if "created" not in {row[1] for row in conn.execute("PRAGMA table_info(message)")}:
+                conn.execute("ALTER TABLE message ADD COLUMN created INTEGER")
 
     @contextmanager
     def connect(self):
@@ -30,15 +33,16 @@ class History:
             conn.execute("PRAGMA foreign_keys = ON")
             yield conn
 
-    def append(self, chat_id, role, content):
-        now = time.time_ns()
+    def append(self, chat_id, role, content, *, created=None):
+        now = time.time_ns() if created is None else created
         with self.connect() as conn:
             if chat_id is None:
                 title = " ".join(content.split())
                 title = title if len(title) <= 60 else title[:59].rstrip() + "…"
                 chat_id = conn.execute("INSERT INTO chat(title, updated) VALUES (?, ?)",
                                        (title, now)).lastrowid
-            conn.execute("INSERT INTO message(chat_id, role, content) VALUES (?, ?, ?)", (chat_id, role, content))
+            conn.execute("INSERT INTO message(chat_id, role, content, created) VALUES (?, ?, ?, ?)",
+                         (chat_id, role, content, now))
             conn.execute("UPDATE chat SET updated=? WHERE id=?", (now, chat_id))
         return chat_id
 
@@ -56,8 +60,25 @@ class History:
 
     def messages(self, chat_id):
         with self.connect() as conn:
-            rows = conn.execute("SELECT role, content FROM message WHERE chat_id=? ORDER BY id", (chat_id,))
-            return [{"role": role, "content": content} for role, content in rows]
+            return [dict(role=role, content=content, created=created)
+                    for _, role, content, created in self.message_rows(conn, chat_id)]
+
+    @staticmethod
+    def message_rows(conn, chat_id):
+        return conn.execute("SELECT id, role, content, created FROM message WHERE chat_id=? ORDER BY id",
+                            (chat_id,)).fetchall()
+
+    def replace_from(self, chat_id, index, expected, edited, answer):
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = self.message_rows(conn, chat_id)
+            current = [dict(role=role, content=content, created=created) for _, role, content, created in rows]
+            if current != expected or not 0 <= index < len(rows) or rows[index][1] != "user":
+                raise ValueError("La conversación cambió durante la regeneración.")
+            conn.execute("DELETE FROM message WHERE chat_id=? AND id>=?", (chat_id, rows[index][0]))
+            conn.executemany("INSERT INTO message(chat_id, role, content, created) VALUES (?, ?, ?, ?)",
+                             [(chat_id, item["role"], item["content"], item["created"]) for item in (edited, answer)])
+            conn.execute("UPDATE chat SET updated=? WHERE id=?", (answer["created"], chat_id))
 
     def rename(self, chat_id, title):
         title = title.strip()
