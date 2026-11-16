@@ -30,8 +30,8 @@ Las etapas son orientativas, no fechas prometidas. Cada etapa debe tener una dem
 | Etapa | Objetivo | Entregable comprobable | Estado |
 |---|---|---|---|
 | 0. Base segura | Definir alcance y separar la memoria | Motor local y base SQLite exclusiva | Completada. Lectura, escritura y rutas protegidas verificadas con bases de prueba. |
-| 1. Núcleo conversacional | Aplicación Windows con chat, Ollama y motor local | Conversa, recuerda y permanece en segundo plano al cerrar la ventana | Parcial. Chat rediseñado y herramientas de memoria operativas; falta la bandeja. |
-| 1B. Herramientas externas (MCP) | Cliente MCP reutilizable y primeras integraciones | Consulta documentación con Context7 desde StoneBot | Propuesto; aún no implementado | 
+| 1. Núcleo conversacional | Aplicación Windows con chat, Ollama y motor local | Conversa y recuerda; pendiente permanecer en segundo plano al cerrar la ventana | Parcial. Chat, historial, temas y herramientas de memoria operativos; falta la bandeja del sistema. |
+| 1B. Herramientas externas (MCP) | Cliente MCP reutilizable y primeras integraciones | Descubre e invoca herramientas desde el chat con controles de permiso | Implementada en prototipo. Cliente STDIO/HTTP, panel y permisos; Context7 y Exa comprobados en pruebas, Tavily pendiente de prueba en vivo según última revisión. | 
 | 2. Razonamiento | Formular preguntas e hipótesis | Explica una hipótesis, su evidencia y qué falta comprobar | Pendiente |
 | 3. Sueño y aprendizaje | Revisar experiencias, contradicciones y conclusiones | Ciclo programado que produce conclusiones trazables | Pendiente |
 | 4. Iniciativa controlada | Elegir tareas de una cola y proponer experimentos | Ejecuta tareas permitidas, con pausa y registro | Pendiente |
@@ -108,9 +108,9 @@ Primero percepción digital autorizada; después un prototipo con ESP32-S3, sens
 
 Además de su memoria y de sus experimentos de autoconocimiento, StoneBot busca ser **un asistente personal local** capaz de realizar tareas reales a petición del usuario. El objetivo es reutilizar integraciones existentes siempre que sea posible, sin reprogramar cada servicio desde cero.
 
-**MCP (Model Context Protocol)** es un protocolo para descubrir e invocar herramientas proporcionadas por servidores externos. La propuesta es incorporar a StoneBot un **cliente MCP** que permita conectarse a distintos servidores, presentar sus herramientas al modelo mediante el mecanismo de llamadas a herramientas de Ollama y ejecutar las llamadas autorizadas. La compatibilidad de cada servidor, sus credenciales y su transporte deberán verificarse durante la implementación.
+**MCP (Model Context Protocol)** es un protocolo para descubrir e invocar herramientas proporcionadas por servidores externos. StoneBot ya incorpora un **cliente MCP** que permita conectarse a distintos servidores, presentar sus herramientas al modelo mediante el mecanismo de llamadas a herramientas de Ollama y ejecutar las llamadas autorizadas. La compatibilidad de cada servidor, sus credenciales y su transporte deberán verificarse durante la implementación.
 
-Primeras integraciones candidatas (ninguna está conectada todavía):
+Integraciones previstas y ejemplos (algunas ya están conectadas; consultar «Servidores MCP externos» para el estado actual):
 
 | Integración | Uso previsto | Precaución |
 |---|---|---|
@@ -161,7 +161,7 @@ Ventana PySide6  <-->  StoneBot Core  <-->  Ollama local
 
 Bandeja del sistema <--> StoneBot Core
 Ventana cerrada: proceso activo / «Salir»: proceso detenido
-Futuro: cliente MCP, sueños, iniciativa, mascota y sensores
+Cliente MCP actual; futuros: sueños, iniciativa, mascota y sensores
 ```
 
 **No se necesita implementar toda la arquitectura al inicio.** La primera versión puede ser un único proceso y pocas herramientas.
@@ -174,7 +174,7 @@ Futuro: cliente MCP, sueños, iniciativa, mascota y sensores
 - **Configuración.** El motor requiere una ruta explícita y usa el prefijo `STONEBOT_` para configurar los modelos y las notas.
 - **Segundo plano:** inicialmente proceso en espera, sin razonamiento continuo; ciclos autónomos se incorporarán después.
 - **Interfaz actual:** chat PySide6 de tema oscuro, mensajes separados, tipografía más legible y cuadro de escritura multilínea (Enter para enviar, Shift+Enter para salto de línea).
-- **Herramientas externas:** cliente MCP propuesto, todavía no implementado; el motor de memoria continúa integrado por Python.
+- **Herramientas externas:** cliente MCP STDIO/Streamable HTTP implementado con panel, permisos y registro de actividad; la memoria continúa integrada por Python.
 
 ## Relación con StoneWave
 
