@@ -30,10 +30,10 @@ Las etapas son orientativas, no fechas prometidas. Cada etapa debe tener una dem
 | Etapa | Objetivo | Entregable comprobable | Estado |
 |---|---|---|---|
 | 0. Base segura | Definir alcance y separar la memoria | Motor local y base SQLite exclusiva | Completada. Lectura, escritura y rutas protegidas verificadas con bases de prueba. |
-| 1. Núcleo conversacional | Aplicación Windows con chat, Ollama y motor local | Conversa y recuerda; pendiente permanecer en segundo plano al cerrar la ventana | Parcial. Chat, historial, temas y herramientas de memoria operativos; falta la bandeja del sistema. |
+| 1. Núcleo conversacional | Aplicación Windows con chat, Ollama y motor local | Conversa, recuerda y permanece en la bandeja al cerrar la ventana | Chat, historial, temas, memoria y bandeja operativos. |
 | 1B. Herramientas externas (MCP) | Cliente MCP reutilizable y primeras integraciones | Descubre e invoca herramientas desde el chat con controles de permiso | Implementada en prototipo. Cliente STDIO/HTTP, panel y permisos; Context7 y Exa comprobados en pruebas, Tavily pendiente de prueba en vivo según última revisión. | 
 | 2. Aprendizaje de experiencias | Evaluar capacidades a partir de resultados observados | Registra una ejecución MCP, la recupera tras reiniciar y revisa su conclusión con evidencia nueva | Primera implementación. Hipótesis causales y otras fuentes de evidencia pendientes. |
-| 3. Sueño y aprendizaje | Revisar experiencias, contradicciones y conclusiones | Ciclo programado que intenta producir conclusiones trazables | Sueño automático implementado mientras la ventana está abierta. Validado con modelos de prueba y bases temporales. |
+| 3. Sueño y aprendizaje | Revisar experiencias, contradicciones y conclusiones | Ciclo programado que intenta producir conclusiones trazables | Sueño automático disponible con la ventana visible u oculta en la bandeja. |
 | 4. Iniciativa controlada | Elegir tareas de una cola y proponer experimentos | Ejecuta tareas permitidas, con pausa y registro | Pendiente |
 | 5. Compañero de escritorio | Presencia visual opcional en Windows | Mascota movible, silenciosa, activable/desactivable | Pendiente |
 | 6. Percepción digital | Comprender eventos autorizados del equipo | Reacciona a eventos concretos sin espiar continuamente | Futuro |
@@ -160,8 +160,8 @@ Ventana PySide6  <-->  StoneBot Core  <-->  Ollama local
                            |
              ~/.stonebot/memoria.db
 
-Actual: cliente MCP y sueño automático mientras la ventana está abierta
-Futuro: bandeja del sistema, iniciativa, mascota y sensores
+Actual: cliente MCP, bandeja del sistema y sueño automático
+Futuro: iniciativa, mascota y sensores
 ```
 
 **No se necesita implementar toda la arquitectura al inicio.** La primera versión puede ser un único proceso y pocas herramientas.
@@ -172,7 +172,7 @@ Futuro: bandeja del sistema, iniciativa, mascota y sensores
 - **Primera interfaz:** Python + PySide6 (Qt), sujeta a prueba de prototipo.
 - **Persistencia.** La aplicación abre `%USERPROFILE%\.stonebot\memoria.db` con el motor local y consulta el namespace `default`.
 - **Configuración.** El motor requiere una ruta explícita y usa el prefijo `STONEBOT_` para configurar los modelos y las notas.
-- **Segundo plano.** El sueño automático se programa mientras la ventana está abierta. La bandeja del sistema queda pendiente.
+- **Segundo plano.** El sueño automático continúa mientras StoneBot está en la bandeja.
 - **Interfaz actual:** chat PySide6 de tema oscuro, mensajes separados, tipografía más legible y cuadro de escritura multilínea (Enter para enviar, Shift+Enter para salto de línea).
 - **Herramientas externas:** cliente MCP STDIO/Streamable HTTP implementado con panel, permisos y registro de actividad; la memoria continúa integrada por Python.
 
@@ -200,13 +200,13 @@ El motor restringe SQLite a la carpeta de StoneBot. El validador bloquea las car
 
 ### Sueño automático
 
-Mientras la ventana está abierta, StoneBot comprueba cada 30 segundos si toca soñar y alterna los ámbitos `memoria` y `experiencias`. Por defecto requiere 10 minutos sin interacción en la ventana y 12 horas desde el último sueño del ámbito, incluido el manual. Si el ámbito nunca ha soñado, basta con que tenga recuerdos y se cumpla la inactividad.
+Mientras StoneBot está en ejecución, también con la ventana oculta en la bandeja, comprueba cada 30 segundos si toca soñar y alterna los ámbitos `memoria` y `experiencias`. Por defecto requiere 10 minutos sin interacción y 12 horas desde el último sueño del ámbito, incluido el manual. Si el ámbito nunca ha soñado, basta con que tenga recuerdos y se cumpla la inactividad.
 
-El sueño usa el mismo motor que `/sueno` para clasificar recuerdos, enlazarlos, revisar contradicciones e intentar generar conclusiones. Un turno activo aplaza el sueño. Si envías un mensaje durante un sueño, el turno espera a que el motor quede libre antes de usar Ollama. Al cerrar la ventana se detienen las comprobaciones y se deja terminar cualquier sueño en curso.
+El sueño usa el mismo motor que `/sueno` para clasificar recuerdos, enlazarlos, revisar contradicciones e intentar generar conclusiones. Un turno activo aplaza el sueño. Si envías un mensaje durante un sueño, el turno espera a que el motor quede libre antes de usar Ollama. **Salir** detiene las comprobaciones y deja terminar el trabajo en curso antes de liberar el candado de memoria.
 
 En **Diagnóstico** y en `%USERPROFILE%\.stonebot\diagnostics.log` quedan la hora de inicio, el resumen del motor y los errores detectados. La generación usa `STONEBOT_CONCLUSION_MODEL` (por defecto el modelo de síntesis, `qwen2.5:0.5b`). Las decisiones usan `STONEBOT_LLM_MODEL` (por defecto `d1:3b` mediante `/v1/systemone`). Un sueño puede terminar sin producir conclusiones.
 
-**Probar sin esperar 12 horas.** Cierra la instancia habitual de StoneBot y abre una sesión aparte de PowerShell en el repositorio, con Ollama activo. Los comandos usan un perfil temporal. Al cerrar esa sesión también dejarán de aplicarse estas variables.
+**Probar sin esperar 12 horas.** Selecciona **Salir** en la bandeja de la instancia habitual y abre una sesión aparte de PowerShell en el repositorio, con Ollama activo. Los comandos usan un perfil temporal. Al cerrar esa sesión también dejarán de aplicarse estas variables.
 
 ```powershell
 $perfilPrueba = Join-Path ([System.IO.Path]::GetTempPath()) ("stonebot-sueno-" + [guid]::NewGuid())
@@ -218,13 +218,19 @@ python -B stonebot_memory.py conclusiones memoria
 if ($LASTEXITCODE -eq 0) { python -B app.py }
 ```
 
-Pide a StoneBot que guarde dos recuerdos sintéticos relacionados. Tras el turno, deja la ventana sin interacción durante un minuto y abre **Diagnóstico**. Busca `Sueño automático (memoria) iniciado` y vuelve a abrir el diagnóstico cuando termine para ver el resumen. Con esos valores, el mínimo de inactividad es de seis segundos y el intervalo entre sueños de un mismo ámbito es de 90 segundos.
+Pide a StoneBot que guarde dos recuerdos sintéticos relacionados. Tras el turno, oculta la ventana con la **X**, espera un minuto y vuelve a abrir StoneBot desde la bandeja. En **Diagnóstico**, busca `Sueño automático (memoria) iniciado` y el resumen. Con esos valores, el mínimo de inactividad es de seis segundos y el intervalo entre sueños de un mismo ámbito es de 90 segundos.
 
 Repositorio base: [StoneWave](https://github.com/Big-nenu/StoneWave).
 
 ## Ejecutar y probar
 
 Con Python 3.14, instala `PySide6`, `ollama`, `requests` y `numpy`. Para usar `python app.py`, inicia Ollama local con los modelos `nemotron-3.5-bolt:e4b` y `embeddinggemma-2:270m` disponibles. `python test_memory.py` permite consultar manualmente la memoria experimental. La aplicación espera que la base de StoneBot ya exista.
+
+### Abrir desde Windows
+
+Para instalar o volver a crear el acceso directo, ejecuta una vez `powershell -NoProfile -ExecutionPolicy Bypass -File .\crear_acceso_directo.ps1` desde el repositorio con el entorno Python habitual. El acceso **StoneBot** del Escritorio usa `pythonw.exe` y abre la aplicación sin consola. El icono de la bandeja y del acceso se puede reemplazar en `assets/stonebot.ico`.
+
+La **X** oculta StoneBot. Haz clic en el icono **SB** de la bandeja o usa **Abrir StoneBot**. Para cerrarlo del todo, abre el menú de la bandeja y elige **Salir**. Usa **Salir** antes de ejecutar los comandos de memoria desde una terminal, porque el proceso oculto conserva el candado. Si la bandeja de Windows no está disponible, la X cierra la aplicación.
 
 Las suites usan bases temporales y modelos simulados. Comprueban las tres herramientas desde el trabajador del chat, la recuperación tras reabrir la base y el bloqueo de rutas protegidas.
 En Windows, las pruebas de redirección requieren permiso para crear enlaces simbólicos.
@@ -233,6 +239,7 @@ En Windows, las pruebas de redirección requieren permiso para crear enlaces sim
 python -B tests/test_motor.py
 python -B tests/test_aislamiento.py
 python -B tests/test_servicio.py
+python -B tests/test_tray.py
 ```
 
 También se verificaron las tres herramientas con Nemotron y Ollama local desde la interfaz Qt. Se guardó un recuerdo sintético, se reinició la aplicación y se comprobó que el chat podía recuperarlo y encontrar su relación con dos temas.
@@ -354,7 +361,6 @@ El núcleo y la GUI todavía comparten un archivo. La estructura futura se decid
 - Nemotron puede invocar tres herramientas Python de memoria desde el chat: consultar, guardar y buscar conexiones semánticas; las pruebas automatizadas y manuales de persistencia se documentan arriba.
 - Base SQLite independiente: `~/.stonebot/memoria.db`.
 - La prueba anterior al aislamiento confirmó que el primer recuerdo se conservó en el namespace `default` tras reiniciar la GUI. La suite actual verifica la reapertura y recuperación con el motor local y una base desechable.
-- Cerrar la ventana actualmente termina el proceso; la bandeja del sistema sigue pendiente.
 
 ## Aprendizaje a partir de experiencias MCP
 
@@ -383,7 +389,7 @@ python -B stonebot_memory.py conclusiones experiencias
 
 `integrar` importa únicamente los resultados observados de los IDs elegidos al ámbito `experiencias_mcp` de `memoria.db`. Cada observación se identifica por su procedencia y puede importarse una sola vez. Los recibos conservan la fecha y no incluyen argumentos ni respuestas brutas. Para revisar la memoria conversacional propia de StoneBot, usa `sonar memoria`. El sueño no exporta notas, incluso si está definida la antigua variable `STONEBOT_NOTES`.
 
-Para publicar en tu clon local de **Big-vault**, cierra la ventana de StoneBot e indica la raíz de la bóveda. Revisa la previsualización de cada ámbito y autoriza únicamente esa versión con el valor `aprobacion` que imprime el comando.
+Para publicar en tu clon local de **Big-vault**, selecciona **Salir** en la bandeja de StoneBot e indica la raíz de la bóveda. Revisa la previsualización de cada ámbito y autoriza únicamente esa versión con el valor `aprobacion` que imprime el comando.
 
 ```powershell
 $boveda = 'C:\ruta\a\Big-vault'
@@ -419,7 +425,7 @@ Para ideas, observaciones y aprendizajes, pide al chat un borrador Markdown. Rev
 
 **Etapa 2: experiencias y autoevaluación de capacidades.** Ampliar la evaluación a otras fuentes de evidencia verificable después de probar el registro de ejecuciones MCP.
 
-Siguen pendientes la bandeja del sistema, la validación en vivo de integraciones MCP aún no probadas, el trabajo con hipótesis y la iniciativa controlada. La instalación de servidores MCP por el propio agente es una capacidad futura que requerirá propuesta y aprobación explícita.
+Siguen pendientes la validación en vivo de integraciones MCP aún no probadas, el trabajo con hipótesis y la iniciativa controlada. La instalación de servidores MCP por el propio agente es una capacidad futura que requerirá propuesta y aprobación explícita.
 
 ---
 

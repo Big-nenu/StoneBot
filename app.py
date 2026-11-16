@@ -31,13 +31,14 @@ import stonebot_service as memory_service
 from stonebot_service import MEMORY_TOOLS, SCOPES
 from win_caption import apply_native_caption
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QTextCursor
+from PySide6.QtGui import QIcon, QTextCursor
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPlainTextEdit,
-    QPushButton, QScrollArea, QSplitter, QVBoxLayout, QWidget,
+    QApplication, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
+    QPushButton, QScrollArea, QSplitter, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
 MODEL = "nemotron-3.5-bolt:e4b"
+ICON_PATH = Path(__file__).resolve().parent / "assets" / "stonebot.ico"
 COMMANDS = {"/identidad", "/sueno", "/integrar", "/aprender"}
 
 SYSTEM = """
@@ -362,9 +363,10 @@ class Worker(QObject):
 
 
 class StoneBot(QMainWindow):
-    def __init__(self):
+    def __init__(self, *, use_tray=False):
         super().__init__()
         self.setWindowTitle("StoneBot")
+        self.setWindowIcon(QIcon(str(ICON_PATH)))
         self.resize(1000, 680)
         self.setMinimumSize(340, 360)
 
@@ -374,6 +376,8 @@ class StoneBot(QMainWindow):
         self.dream_thread = None
         self.dream_scopes = cycle(SCOPES)
         self.last_activity = time.monotonic()
+        self.tray = None
+        self.exit_requested = False
         self.mcp_dialog = None
         self.pool = McpPool()
         self.chat_id = None
@@ -532,9 +536,39 @@ class StoneBot(QMainWindow):
             record("STONEBOT_DREAM_IDLE_MIN inválido. Se usan 10 minutos.")
         self.dream_timer = QTimer(self)
         self.dream_timer.timeout.connect(self.check_automatic_dream)
+        if use_tray:
+            self.tray = QSystemTrayIcon(self.windowIcon(), self)
+            self.tray.setToolTip("StoneBot")
+            menu = QMenu(self)
+            menu.setObjectName("chatMenu")
+            menu.addAction("Abrir StoneBot", self.restore_window)
+            menu.addAction("Salir", self.request_exit)
+            self.tray.setContextMenu(menu)
+            self.tray.activated.connect(self.tray_activated)
+            self.tray.show()
+
+    def tray_activated(self, reason):
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
+            self.restore_window()
+
+    def restore_window(self):
+        self.last_activity = time.monotonic()
+        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def request_exit(self):
+        self.exit_requested = True
+        self.dream_timer.stop()
+        if self.thread is not None:
+            self.tray.setToolTip("StoneBot · esperando a que termine el turno")
+            self.restore_window()
+        else:
+            self.close()
 
     def check_automatic_dream(self):
-        if (not self.isVisible() or self.thread is not None
+        if (self.exit_requested or (self.tray is None and not self.isVisible()) or self.thread is not None
                 or time.monotonic() - self.last_activity < self.dream_idle_seconds
                 or (self.dream_thread is not None and self.dream_thread.is_alive())):
             return
@@ -560,7 +594,7 @@ class StoneBot(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        if not self.dream_timer.isActive():
+        if not self.exit_requested and not self.dream_timer.isActive():
             QApplication.instance().installEventFilter(self)
             self.last_activity = time.monotonic()
             self.dream_timer.start(30_000)
@@ -943,7 +977,11 @@ class StoneBot(QMainWindow):
         request["remember"] = bool(always is not None and clicked is always)
 
     def closeEvent(self, event):
-        if self.thread is not None:
+        if self.tray is not None and not self.exit_requested:
+            self.last_activity = time.monotonic()
+            self.hide()
+            event.ignore()
+        elif self.thread is not None:
             event.ignore()
         else:
             self.dream_timer.stop()
@@ -955,6 +993,9 @@ class StoneBot(QMainWindow):
                 except (OSError, RuntimeError, ValueError):
                     record("No se pudo guardar el ancho del historial.")
             self.pool.close()
+            if self.tray is not None:
+                self.tray.hide()
+                QTimer.singleShot(0, QApplication.instance().quit)
             super().closeEvent(event)
 
     def respuesta(self, texto):
@@ -1004,23 +1045,35 @@ class StoneBot(QMainWindow):
         self.mcp_button.setEnabled(True)
         self.history_panel.setEnabled(True)
         self.message.setFocus()
+        if self.exit_requested:
+            self.close()
 
 
-if __name__ == "__main__":
+def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     try:
         memory_service.acquire_owner()
+    except memory_service.AlreadyRunning:
+        QMessageBox.information(None, "StoneBot", "StoneBot u otro comando ya está usando la memoria. "
+                                "Si StoneBot está en segundo plano, ábrelo desde el icono SB de la bandeja.")
+        return 1
     except (OSError, RuntimeError) as exc:
         QMessageBox.warning(None, "StoneBot", str(exc))
-        sys.exit(1)
+        return 1
     window = None
     try:
-        window = StoneBot()
+        use_tray = sys.platform == "win32" and QSystemTrayIcon.isSystemTrayAvailable()
+        app.setQuitOnLastWindowClosed(not use_tray)
+        window = StoneBot(use_tray=use_tray)
         window.show()
         code = app.exec()
     finally:
         if window is not None and window.dream_thread is not None:
             window.dream_thread.join()
         memory_service.close()
-    sys.exit(code)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
