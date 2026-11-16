@@ -1578,26 +1578,36 @@ class StoneBotEngine:
         scored.sort(key=lambda d: d["sim"], reverse=True)
         return scored[:limit]
 
-    def notes_data(self, namespace="default"):
+    def notes_data(self, namespace="default", *, include_all_facts=False):
         """Datos para las notas de Obsidian: las conclusiones (con los IDs de sus recuerdos de origen), esos recuerdos, las relaciones entre
         conclusiones ('comparten' recuerdos o 'parecida' en significado), de cuales DERIVAN otras (parent_refs / child_refs) y el HISTORIAL de
-        las que caducaron o se reemplazaron (con 'replaced_by' y, en las vivas, 'replaced': las que reemplazaron). Solo lee."""
+        las que caducaron o se reemplazaron (con 'replaced_by' y, en las vivas, 'replaced': las que reemplazaron). Solo lee.
+        include_all_facts incluye todos los recuerdos activos del ámbito y sus enlaces persistentes."""
         concs = self.list_conclusions(namespace)
         hist = self.list_conclusion_history(namespace)
+        fact_links = []
         with closing(sqlite3.connect(self.db_path)) as conn:
             created = {r[0]: r[1] for r in conn.execute("SELECT id, created_at FROM conclusions WHERE namespace=?", (namespace,))}
             ids = sorted({f for c in concs for f in c["sources"]} | {f for h in hist for f in h["sources"]})
             facts = {}
-            if ids:
-                q = ",".join("?" * len(ids))
-                for fid, content, pinned, ts in conn.execute(
-                        f"SELECT id, content, COALESCE(pinned, 0), COALESCE(created_at, last_used) FROM facts WHERE namespace=? AND id IN ({q})",
-                        [namespace] + ids):
-                    facts[fid] = {"content": content, "pinned": bool(pinned), "created": ts, "topics": []}
-                for fid, topic in conn.execute(
-                        f"SELECT ft.fact_id, t.topic_name FROM fact_topics ft JOIN topics t ON t.id=ft.topic_id WHERE ft.fact_id IN ({q})", ids):
-                    if fid in facts:
-                        facts[fid]["topics"].append(topic)
+            if include_all_facts or ids:
+                query = """SELECT f.id, f.content, COALESCE(f.pinned, 0), COALESCE(f.created_at, f.last_used), t.topic_name
+                           FROM facts f LEFT JOIN fact_topics ft ON ft.fact_id=f.id
+                           LEFT JOIN topics t ON t.id=ft.topic_id WHERE f.namespace=?"""
+                params = [namespace]
+                if not include_all_facts:
+                    query += f" AND f.id IN ({','.join('?' * len(ids))})"
+                    params.extend(ids)
+                for fid, content, pinned, ts, topic in conn.execute(query + " ORDER BY f.id, t.topic_name", params):
+                    fact = facts.setdefault(fid, {"content": content, "pinned": bool(pinned), "created": ts, "topics": []})
+                    if topic is not None:
+                        fact["topics"].append(topic)
+            if include_all_facts:
+                fact_links = conn.execute(
+                    """SELECT l.fact_a, l.fact_b, l.kind FROM links l
+                       JOIN facts a ON a.id=l.fact_a JOIN facts b ON b.id=l.fact_b
+                       WHERE a.namespace=? AND b.namespace=? ORDER BY l.fact_a, l.fact_b""",
+                    (namespace, namespace)).fetchall()
             vec_rows = conn.execute("SELECT id, embedding FROM conclusions WHERE namespace=?", (namespace,)).fetchall()
             parent_rows = conn.execute("SELECT child_id, parent_id FROM conclusion_parents").fetchall()
         by_id = {c["id"]: c for c in concs}
@@ -1669,7 +1679,8 @@ class StoneBotEngine:
                 print(f"StoneBot: no se pudo calcular la similitud entre conclusiones: {ex!r}", file=sys.stderr)
         for lst in rel.values():
             lst.sort(key=lambda r: (r["kind"] != "comparten", -(r.get("n") or 0), -(r.get("sim") or 0)))
-        return {"namespace": namespace, "conclusions": concs, "facts": facts, "relations": rel, "history": hist}
+        return {"namespace": namespace, "conclusions": concs, "facts": facts, "relations": rel,
+                "history": hist, "fact_links": fact_links}
 
     def export_notes(self, namespace="default", base_dir=None):
         """Escribe las conclusiones como notas de Obsidian con wikilinks (ver notes.py). Solo escribe una COPIA para ver: la memoria

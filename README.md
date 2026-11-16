@@ -371,20 +371,21 @@ python -B stonebot_memory.py conclusiones experiencias
 
 `integrar` importa únicamente los resultados observados de los IDs elegidos al ámbito `experiencias_mcp` de `memoria.db`. Cada observación se identifica por su procedencia y puede importarse una sola vez. Los recibos conservan la fecha y no incluyen argumentos ni respuestas brutas. Para revisar la memoria conversacional propia de StoneBot, usa `sonar memoria`. El sueño no exporta notas, incluso si está definida la antigua variable `STONEBOT_NOTES`.
 
-Para publicar en tu clon local de **Big-vault**, indica la raíz de la bóveda. Revisa la previsualización, incluidos el texto de las conclusiones inferidas y las evidencias. Autoriza únicamente esa versión con el valor `aprobacion` que imprime el comando.
+Para publicar en tu clon local de **Big-vault**, cierra la ventana de StoneBot e indica la raíz de la bóveda. Revisa la previsualización de cada ámbito y autoriza únicamente esa versión con el valor `aprobacion` que imprime el comando.
 
 ```powershell
 $boveda = 'C:\ruta\a\Big-vault'
-python -B stonebot_memory.py preparar $boveda
-python -B stonebot_memory.py previsualizar
-python -B stonebot_memory.py exportar $boveda --aprobar VALOR_DE_APROBACION
+python -B stonebot_memory.py previsualizar --ambito memoria
+python -B stonebot_memory.py exportar $boveda --ambito memoria --aprobar VALOR_DE_APROBACION
 ```
 
-Sustituye `VALOR_DE_APROBACION` por el valor completo de `aprobacion`. Las copias se escriben en `stonebot/generadas/` y sus `[[wikilinks]]` apuntan a rutas de la bóveda. La exportación se limita al ámbito de experiencias. Las notas generadas que se editaron manualmente se conservan. SQLite es la fuente de verdad.
+Sustituye `VALOR_DE_APROBACION` por el valor completo de `aprobacion`. Repite ambos comandos con `--ambito experiencias` para publicar las experiencias previamente integradas. Cada aprobación corresponde a un solo ámbito. Los comandos sin `--ambito` siguen seleccionando experiencias.
+
+La memoria conversacional (`default`) se escribe en `stonebot/generadas/default/`. Las experiencias (`experiencias_mcp`) conservan sus carpetas en `stonebot/generadas/`. Se incluyen los recuerdos activos aunque todavía no tengan conclusiones. Los `[[wikilinks]]` conectan los recuerdos relacionados por el motor y las conclusiones con sus fuentes. Abre **Graph View** en Obsidian y usa `path:stonebot/generadas` para ver estas notas. Las notas generadas que se editaron manualmente se conservan. SQLite es la fuente de verdad.
 
 Para ideas, observaciones y aprendizajes, pide al chat un borrador Markdown. Revísalo en un archivo y guárdalo como nota editable con `python -B stonebot_memory.py nota $boveda --titulo "Mi idea" --archivo-revisado .\borrador.md`. StoneBot crea la nota una sola vez en `stonebot/editables/` y preserva el contenido existente. Puedes sincronizar las notas con el complemento Git que ya usa la bóveda.
 
-`python -B tests/test_memory_integration.py` prueba la recuperación de identidad tras un reinicio, el sueño con modelos de prueba, la aprobación por versión, la resolución de wikilinks y la protección de notas ajenas y de ediciones manuales. En una bóveda temporal generó una conclusión con tres evidencias enlazadas. En una prueba separada, Nemotron recuperó la identidad de un perfil temporal inicializado desde otro proceso y reconoció la separación entre StoneBot y StoneWave.
+`python -B tests/test_memory_integration.py` prueba la recuperación de identidad tras un reinicio y el sueño con modelos de prueba. También verifica en una bóveda temporal la exportación de ambos ámbitos, la aprobación por versión, la resolución de wikilinks y la protección de notas existentes.
 
 ## Ideas en exploración
 

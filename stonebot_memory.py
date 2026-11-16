@@ -26,18 +26,20 @@ def vault_folders(vault):
     return generated, editable
 
 
-def preview(engine):
-    data = engine.notes_data(EXPERIENCES)
+def preview(engine, scope="experiencias"):
+    data = engine.notes_data(SCOPES[scope], include_all_facts=True)
     encoded = json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return data, hashlib.sha256(encoded).hexdigest()
 
 
-def publish(engine, vault, approval):
-    data, digest = preview(engine)
+def publish(engine, vault, approval, scope="experiencias"):
+    data, digest = preview(engine, scope)
     if digest != approval:
         raise ValueError("La aprobación no coincide. Revisa de nuevo la previsualización.")
     generated, _ = vault_folders(vault)
-    return write_notes(data, generated, link_prefix="stonebot/generadas")
+    if scope == "memoria":
+        generated = checked_child(generated, SCOPES[scope])
+    return write_notes(data, generated, link_prefix=generated.relative_to(Path(vault).absolute()).as_posix())
 
 
 def write_editable(vault, title, markdown):
@@ -62,10 +64,11 @@ def main():
     add.add_argument("ids", type=int, nargs="+")
     for action in ("sonar", "conclusiones"):
         actions.add_parser(action).add_argument("ambito", choices=SCOPES)
-    actions.add_parser("previsualizar")
+    actions.add_parser("previsualizar").add_argument("--ambito", choices=SCOPES, default="experiencias")
     actions.add_parser("preparar").add_argument("boveda", type=Path)
     export = actions.add_parser("exportar")
     export.add_argument("boveda", type=Path)
+    export.add_argument("--ambito", choices=SCOPES, default="experiencias")
     export.add_argument("--aprobar", required=True)
     note = actions.add_parser("nota")
     note.add_argument("boveda", type=Path)
@@ -93,10 +96,10 @@ def main():
                     scope = SCOPES[args.ambito]
                     result = {"vigentes": engine.list_conclusions(scope), "historial": engine.list_conclusion_history(scope)}
                 elif args.action == "previsualizar":
-                    data, digest = preview(engine)
+                    data, digest = preview(engine, args.ambito)
                     result = {"evidencia_y_conclusiones": data, "aprobacion": digest}
                 else:
-                    result = publish(engine, args.boveda, args.aprobar)
+                    result = publish(engine, args.boveda, args.aprobar, args.ambito)
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
         parser.exit(1, f"{exc}\n")
     print(json.dumps(result, ensure_ascii=False, indent=2))

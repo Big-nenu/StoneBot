@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from ollama import Message
 
-from test_motor import make_engine
+from test_motor import CONC, F1, F2, make_engine
 import app
 import mcp_client
 import stonebot_service as memory_service
@@ -65,9 +65,24 @@ def test_notes_and_dream(root):
     sibling = vault / "sin-cambios.md"
     private.write_bytes(b"no tocar StoneWave")
     sibling.write_bytes(b"no tocar otras notas")
-    engine = make_engine(str(root / "memoria.db"))
+    engine = make_engine(str(root / ".stonebot" / "memoria.db"))
+
+    def cli(*args):
+        env = dict(os.environ, USERPROFILE=str(root), HOME=str(root), PYTHONUTF8="1")
+        command = Path(__file__).resolve().parents[1] / "stonebot_memory.py"
+        return json.loads(subprocess.check_output(
+            [sys.executable, "-B", str(command), *map(str, args)], env=env, text=True, encoding="utf-8", timeout=60))
+
     try:
-        engine.inject("Texto privado experimental que no debe publicarse.")
+        engine.inject("Recuerdo suelto de astronomía sin conclusiones.")
+        engine.inject(F1)
+        engine.inject(F2)
+        data, _ = preview(engine, "memoria")
+        assert not data["conclusions"] and len(data["facts"]) == 3
+        engine._ask_llm_conclusion = lambda facts: CONC
+        engine._ask_llm_support = lambda fact, conclusion: "RESPALDA"
+        engine.dream()
+        assert engine.list_conclusions()[0]["content"] == CONC
         ids = [record_experience("demo", "echo", "response") for _ in range(3)]
         assert "NUEVA" in integrate_experience(engine, ids[0])
         with patch.object(memory_service, "get_memory", return_value=engine):
@@ -91,33 +106,53 @@ def test_notes_and_dream(root):
         _, old_digest = preview(engine)
         integrate_experience(engine, ids[2])
         engine.dream(EXPERIENCES)
+        loose = record_experience("otro", "listar", "timeout")
+        integrate_experience(engine, loose)
         data, digest = preview(engine)
         assert digest != old_digest
+        evidence_id = next(fid for fid, fact in data["facts"].items() if fact["content"].startswith(f"Evidencia MCP #{loose},"))
+        assert len(data["facts"]) == 4 and all(evidence_id not in c["sources"] for c in data["conclusions"])
         reject(lambda: publish(engine, vault, old_digest), ValueError)
+        reject(lambda: publish(engine, vault, digest, "memoria"), ValueError)
         assert not (vault / "stonebot").exists()
         edited_name = write_editable(vault, "Idea de prueba", "Una observación revisada.")
         generated, editable = vault_folders(vault)
         user_edit = editable / edited_name
         user_edit.write_text("Mi edición", encoding="utf-8")
         reject(lambda: write_editable(vault, "Idea de prueba", "Otro contenido"), FileExistsError)
-        result = publish(engine, vault, digest)
-        assert result["conclusions"] == len(data["conclusions"]) and result["written"] >= 3
-        for note in generated.rglob("*.md"):
-            text = note.read_text(encoding="utf-8")
-            assert "Texto privado" not in text
-            for link in re.findall(r"\[\[([^|\]]+)\|", text):
-                assert link.startswith("stonebot/generadas/")
-                assert (vault / f"{link}.md").is_file(), link
+        reviewed = cli("previsualizar", "--ambito", "experiencias")
+        assert reviewed["aprobacion"] == digest
+        result = cli("exportar", vault, "--ambito", "experiencias", "--aprobar", digest)
+        assert result["conclusions"] == len(data["conclusions"]) and result["memories"] == 4
+        experience_notes = {note: note.read_bytes() for note in generated.rglob("*.md")}
+        assert any(b"tiempo de espera" in text for text in experience_notes.values())
+        assert all(b"Recuerdo suelto" not in text for text in experience_notes.values())
+
+        reviewed = cli("previsualizar", "--ambito", "memoria")
+        assert reviewed["evidencia_y_conclusiones"]["namespace"] == "default"
+        default_result = cli("exportar", vault, "--ambito", "memoria", "--aprobar", reviewed["aprobacion"])
+        assert default_result["memories"] == 3 and default_result["conclusions"] == 1
+        assert all(note.read_bytes() == original for note, original in experience_notes.items())
+        default_notes = list((generated / "default").rglob("*.md"))
+        assert any("Recuerdo suelto" in note.name for note in default_notes)
+        assert any("## Recuerdos relacionados" in note.read_text(encoding="utf-8") for note in default_notes)
+        for notes, prefix in ((experience_notes, "stonebot/generadas/"), (default_notes, "stonebot/generadas/default/")):
+            for note in notes:
+                for link in re.findall(r"\[\[([^|\]]+)\|", note.read_text(encoding="utf-8")):
+                    target = vault / f"{link}.md"
+                    assert link.startswith(prefix) and target in notes, link
+                    assert target.is_file(), link
         conclusion = next((generated / "conclusiones").glob("*.md"))
         conclusion.write_text(conclusion.read_text(encoding="utf-8") + "\nEdición manual\n", encoding="utf-8")
         assert conclusion.name in publish(engine, vault, digest)["skipped"]
+        assert all(note.is_file() for note in default_notes)
         assert "Edición manual" in conclusion.read_text(encoding="utf-8")
         assert user_edit.read_text(encoding="utf-8") == "Mi edición"
         target = generated / "recuerdos" / "hardlink.md"
         os.link(sibling, target)
         reject(lambda: publish(engine, vault, digest), IsolationError)
         assert private.read_bytes() == b"no tocar StoneWave" and sibling.read_bytes() == b"no tocar otras notas"
-        print(f"Demostración: {result['conclusions']} conclusión(es), {result['memories']} evidencias enlazadas.")
+        print(f"Demostración: {default_result['memories']} recuerdos y {result['memories']} experiencias exportadas.")
     finally:
         engine.close()
 

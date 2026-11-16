@@ -11,7 +11,7 @@ Reglas:
     ("Relacionada con"); cada recuerdo enlaza de vuelta a las conclusiones que ayudo a formar ("Sirvio para").
   - Solo se tocan archivos que StoneBot genero (llevan `generado_por: "stonebot"` y el `equipo` que los escribio): nunca se pisa ni se
     borra una nota tuya, ni las que escribio otra computadora que comparta la misma carpeta.
-  - Solo se exportan los recuerdos que originaron alguna conclusion (los demas no salen de la memoria).
+  - La publicación revisada incluye recuerdos activos aunque todavía no tengan conclusiones y enlaza las relaciones guardadas.
 """
 import hashlib
 import json
@@ -132,7 +132,7 @@ def render_conclusion(c, memories, relations, names, host, namespace, extra=None
     return out + "\n"
 
 
-def render_memory(m, using, names, host, namespace):
+def render_memory(m, using, related, names, host, namespace):
     """m: recuerdo; using: conclusiones que salieron de el."""
     out = _front([
         ("tipo", "recuerdo"), ("fijo", bool(m["pinned"])), ("temas", m["topics"]), ("creado", _date(m.get("created"))),
@@ -142,6 +142,11 @@ def render_memory(m, using, names, host, namespace):
     body = m["content"].strip()
     out += f"# {title}\n\n" + ("" if body == title else f"{body}\n\n") + f"{_WARNING}\n\n## Sirvió para\n"
     out += "\n".join(f"- {link(names[c.get('_key', ('c', c['id']))], c['content'])} ({_item_state(c)})" for c in using)
+    if not using:
+        out += "_Todavía no es origen de una conclusión._"
+    if related:
+        out += "\n\n## Recuerdos relacionados\n" + "\n".join(
+            f"- {link(names[('m', fid)], content)} ({kind})" for fid, content, kind in related)
     return out + "\n"
 
 
@@ -224,8 +229,14 @@ def write_notes(data, base_dir, host=None, *, link_prefix=""):
     for h in data.get("history", []):  # el mismo texto puede caducar mas de una vez: la fecha entra en la huella
         hist.setdefault(note_name(f"historial{int(h.get('ended') or 0)}", h["content"]), h)
     memories = data["facts"]
-    used = sorted({f for c in list(by_id.values()) + list(hist.values()) for f in c["sources"] if f in memories})
-    memory_names = {f: note_name("recuerdo", memories[f]["content"]) for f in used}
+    memory_names = {}
+    used_names = set()
+    for fid, memory in sorted(memories.items()):
+        name = note_name("recuerdo", memory["content"])
+        if name.casefold() in used_names:
+            name = f"{name} - {fid}"
+        used_names.add(name.casefold())
+        memory_names[fid] = name
 
     def target(folder, name):
         return f"{link_prefix}/{folder}/{name}" if link_prefix else name
@@ -235,6 +246,10 @@ def write_notes(data, base_dir, host=None, *, link_prefix=""):
     names.update({("m", f): target(FOLDER_MEMORIES, n) for f, n in memory_names.items()})
 
     using = {}
+    related = {}
+    for a, b, kind in data.get("fact_links", []):
+        related.setdefault(a, []).append((b, memories[b]["content"], kind))
+        related.setdefault(b, []).append((a, memories[a]["content"], kind))
     for c in by_id.values():
         for f in c["sources"]:
             if f in memories:
@@ -258,12 +273,14 @@ def write_notes(data, base_dir, host=None, *, link_prefix=""):
     for name, c in concs.items():
         rels = [{"other": by_id[r["id"]], **r} for r in data["relations"].get(c["id"], []) if r["id"] in by_id]
         wanted[conc_dir / f"{name}.md"] = render_conclusion(c, memories, rels, names, host, data["namespace"], extra(c))
-    for f in used:
-        wanted[mem_dir / f"{memory_names[f]}.md"] = render_memory(memories[f], using[f], names, host, data["namespace"])
+    for f, name in memory_names.items():
+        wanted[mem_dir / f"{name}.md"] = render_memory(
+            memories[f], using.get(f, []), related.get(f, []), names, host, data["namespace"])
     for name, h in hist.items():
         wanted[hist_dir / f"{name}.md"] = render_history(h, memories, names, host, data["namespace"], pick)
 
-    res = {"written": 0, "unchanged": 0, "deleted": 0, "skipped": [], "conclusions": len(concs), "memories": len(used), "history": len(hist)}
+    res = {"written": 0, "unchanged": 0, "deleted": 0, "skipped": [], "conclusions": len(concs),
+           "memories": len(memory_names), "history": len(hist)}
     for path, text in wanted.items():
         path = checked_child(path.parent, path.name)
         text = seal(text)
