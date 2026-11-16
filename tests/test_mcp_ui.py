@@ -1,14 +1,16 @@
 """Prueba la administración gráfica con Qt y una conexión STDIO real."""
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
+import httpx
 from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QColorDialog, QLabel, QLineEdit, QMessageBox, QPushButton
+from PySide6.QtWidgets import QApplication, QColorDialog, QDialog, QLabel, QLineEdit, QMessageBox, QPushButton
 
 from test_mcp import example_stdio
 import app
@@ -50,7 +52,8 @@ def test_manager():
     qt = QApplication([])
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        with patch.object(mcp_client, "default_root", return_value=root):
+        with (patch.object(mcp_client, "default_root", return_value=root),
+              patch.object(mcp_client, "read_key", return_value=None)):
             window = app.StoneBot()
             with patch.object(McpDialog, "exec", return_value=0) as open_dialog:
                 window.mcp_button.click()
@@ -99,7 +102,7 @@ def test_manager():
                 dialog.resize(width, 460)
                 qt.processEvents()
                 widths.append([tree.columnWidth(0) for tree in (dialog.table, dialog.tools)])
-                assert_controls_fit(dialog, (dialog.add, dialog.edit, dialog.remove, dialog.probe))
+                assert_controls_fit(dialog, (dialog.add, dialog.edit, dialog.remove, dialog.api_key, dialog.probe))
                 for tree in (dialog.table, dialog.tools):
                     assert tree.horizontalScrollBar().maximum() == 0
                     for row in range(tree.topLevelItemCount()):
@@ -148,16 +151,95 @@ def test_manager():
             assert not server["read_tools"] and not server["enabled"]
             assert dialog.tools.topLevelItemCount() == 0
             assert "Sin probar" in status().text()
-            with patch("mcp_ui.probe_server", AsyncMock(side_effect=OSError)):
+            variable = server["token_env"]
+            with patch.dict(os.environ, {variable: ""}):
                 dialog.probe.click()
                 wait_for_probe()
-            assert "#fca5a5" in dialog.table.itemWidget(dialog.table.currentItem(), 3).styleSheet()
+            assert "variable de entorno" in dialog.notice.text()
+
+            secret = "synthetic-tavily-key"
+            client = httpx.AsyncClient
+
+            def probe_http(handler, env_value=secret):
+                def mock_client(**kwargs):
+                    return client(transport=httpx.MockTransport(handler), **kwargs)
+
+                with (patch.dict(os.environ, {variable: env_value}),
+                      patch.object(httpx, "AsyncClient", side_effect=mock_client)):
+                    dialog.probe.click()
+                    wait_for_probe()
+                assert secret not in dialog.notice.text()
+                assert secret not in status().toolTip()
+
+            def fail_http(code):
+                def handler(request):
+                    assert request.headers["Authorization"] == f"Bearer {secret}"
+                    return httpx.Response(code, text=secret)
+
+                return handler
+
+            for code in (401, 403, 404):
+                probe_http(fail_http(code))
+                assert f"HTTP {code}" in dialog.notice.text(), dialog.notice.text()
+                assert f"HTTP {code}" in status().toolTip()
+                assert "#fca5a5" in status().styleSheet()
+
+            def timeout(request):
+                raise httpx.ReadTimeout(secret, request=request)
+
+            probe_http(timeout)
+            assert "Tiempo de espera" in dialog.notice.text()
+
+            def authenticated(request):
+                assert request.headers["Authorization"] == f"Bearer {secret}"
+                body = json.loads(request.content)
+                if "id" not in body:
+                    return httpx.Response(202)
+                if body["method"] == "initialize":
+                    result = {"protocolVersion": body["params"]["protocolVersion"], "capabilities": {"tools": {}},
+                              "serverInfo": {"name": "fixture", "version": "1"}}
+                else:
+                    assert body["method"] == "tools/list"
+                    result = {"tools": [{"name": "search", "inputSchema": {"type": "object"}}]}
+                return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+            probe_http(authenticated)
+            assert "Correcta" in status().text()
+            assert dialog.tools.topLevelItem(0).text(0) == "search"
+            with patch.object(mcp_client, "read_key", side_effect=mcp_client.CredentialAccessError):
+                probe_http(authenticated)
+            assert "Correcta" in status().text()
+
+            target = mcp_client.credential_target("ejemplo", server)
+            vault = {}
+
+            def save_masked(popup):
+                entry = popup.findChild(QLineEdit)
+                assert not entry.text() and entry.echoMode() == QLineEdit.EchoMode.Password
+                entry.setText(secret)
+                assert secret not in entry.displayText()
+                next(button for button in popup.findChildren(QPushButton) if button.text() == "Guardar").click()
+                return 1
+
+            with (patch("mcp_ui.read_key", side_effect=vault.get),
+                  patch("mcp_ui.store_key", side_effect=vault.__setitem__),
+                  patch.object(QDialog, "exec", save_masked)):
+                dialog.api_key.click()
+            assert vault == {target: secret}
+            assert secret not in (root / "mcp_servers.json").read_text(encoding="utf-8")
+            assert secret not in dialog.notice.text()
+            with patch.object(mcp_client, "read_key", side_effect=vault.get):
+                probe_http(authenticated, env_value="")
+            assert "Correcta" in status().text()
+            assert mcp_client.credential_target("ejemplo", dict(server, url="https://other.test/mcp")) != target
             with patch.object(McpDialog, "exec", return_value=0):
                 window.mcp_button.click()
             assert window.mcp_dialog is dialog and dialog.selected() == "ejemplo"
-            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            with (patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes),
+                  patch("mcp_ui.delete_key", side_effect=lambda key: vault.pop(key, None))):
                 dialog.remove.click()
             assert mcp_client.load_servers() == {}
+            assert not vault
             dialog.close()
             window.close()
             qt.processEvents()

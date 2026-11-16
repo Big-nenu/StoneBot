@@ -1,17 +1,20 @@
 """Administrador gráfico de las configuraciones MCP."""
 import asyncio
 import json
+import sqlite3
 
 from PySide6.QtCore import QSize, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QTreeWidget, QTreeWidgetItem,
+    QLabel, QLineEdit, QListWidget, QMessageBox, QPlainTextEdit, QPushButton, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
 
 from appearance import COLORS, dialog_style, readable_text
-from mcp_client import load_servers, probe_server, save_servers, validate_server
+from mcp_client import connection_error, load_servers, probe_server, save_servers, validate_server
+from mcp_credentials import credential_target, delete_key, read_key, store_key
+from mcp_permissions import list_permissions, revoke
 
 
 TRANSPORTS = {"stdio": "STDIO", "http": "Streamable HTTP"}
@@ -138,12 +141,15 @@ class ConnectionTest(QThread):
     def run(self):
         try:
             tools = asyncio.run(self.probe())
-        except Exception:
-            tools = None
-        self.result.emit(tools)
+        except Exception as exc:
+            self.result.emit(([], connection_error(exc)))
+        else:
+            self.result.emit((tools, ""))
 
 
 class McpDialog(QDialog):
+    connection_changed = Signal(str)
+
     def __init__(self, parent):
         super().__init__(parent)
         self.setWindowTitle("Servidores MCP")
@@ -175,9 +181,11 @@ class McpDialog(QDialog):
         self.add = QPushButton("Agregar")
         self.edit = QPushButton("Editar")
         self.remove = QPushButton("Eliminar")
+        self.api_key = QPushButton("Clave API…")
         self.probe = QPushButton("Probar conexión")
         for button, callback in ((self.add, self.add_server), (self.edit, self.edit_server),
                                  (self.remove, self.remove_server),
+                                 (self.api_key, self.manage_credential),
                                  (self.probe, self.test_connection)):
             button.clicked.connect(callback)
             controls.addWidget(button)
@@ -185,7 +193,13 @@ class McpDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(self.table, 2)
         layout.addLayout(controls)
-        layout.addWidget(QLabel("Herramientas descubiertas"))
+        tools_header = QHBoxLayout()
+        tools_header.addWidget(QLabel("Herramientas descubiertas"))
+        tools_header.addStretch()
+        self.permissions = QPushButton("Permisos…")
+        self.permissions.clicked.connect(self.review_permissions)
+        tools_header.addWidget(self.permissions)
+        layout.addLayout(tools_header)
         layout.addWidget(self.tools, 1)
         layout.addWidget(self.notice)
         self.reload()
@@ -232,13 +246,14 @@ class McpDialog(QDialog):
     def refresh(self, selected=None):
         self.table.clear()
         for name, server in sorted(self.servers.items()):
-            status, _ = self.results.get(name, ("Sin probar", []))
+            status, _, detail = self.results.get(name, ("Sin probar", [], ""))
             item = QTreeWidgetItem([name, TRANSPORTS[server["transport"]]])
             item.setToolTip(0, name)
             self.table.addTopLevelItem(item)
             self.add_toggle(self.table, item, 2, server["enabled"], f"Servidor {name}",
                             lambda checked, name=name: self.toggle_server(name, checked), show_state=True)
             label = QLabel(f"●  {status}")
+            label.setToolTip(detail)
             color = STATUS_COLORS.get(status, "#b8b2c4")
             label.setStyleSheet(f"color: {color}; background: #25252d; padding-left: 5px;")
             self.table.setItemWidget(item, 3, label)
@@ -258,8 +273,10 @@ class McpDialog(QDialog):
         self.add.setEnabled(idle)
         for button in (self.edit, self.remove, self.probe):
             button.setEnabled(idle and name is not None)
+        self.api_key.setEnabled(idle and name is not None and bool(credential_target(name, self.servers[name])))
+        self.permissions.setEnabled(idle and name is not None)
         self.tools.clear()
-        _, tools = self.results.get(name, ("", []))
+        _, tools, _ = self.results.get(name, ("", [], ""))
         for tool, auto in tools:
             permission = "Lectura automática" if auto else "Requiere confirmación"
             checked = tool not in self.servers[name].get("disabled_tools", [])
@@ -295,6 +312,107 @@ class McpDialog(QDialog):
             self.results.pop(name, None)
         self.refresh(name)
         self.notice.setText("Cambios guardados. Se aplican al siguiente turno del chat.")
+        old_target = credential_target(name, old)
+        if old_target != credential_target(name, server):
+            try:
+                delete_key(old_target)
+            except (OSError, ImportError):
+                self.notice.setText("Cambios guardados. Windows no pudo quitar la clave de la URL anterior.")
+        if old and server is None:
+            try:
+                revoke(name)
+            except (OSError, ValueError, RuntimeError, sqlite3.Error):
+                self.notice.setText("Servidor eliminado. No se pudieron limpiar sus permisos guardados.")
+
+    def review_permissions(self):
+        name = self.selected()
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Permisos de {name}")
+        tools = QListWidget()
+        remove = QPushButton("Revocar permiso")
+        notice = QLabel("Los permisos guardados solo se aplican a herramientas de lectura que sigan siendo válidas.")
+        notice.setWordWrap(True)
+
+        def refresh():
+            tools.clear()
+            remove.setEnabled(False)
+            try:
+                tools.addItems(list_permissions(name))
+            except (OSError, ValueError, RuntimeError, sqlite3.Error):
+                notice.setText("No se pudieron leer los permisos guardados.")
+
+        def remove_selected():
+            try:
+                revoke(name, tools.currentItem().text())
+                refresh()
+            except (OSError, ValueError, RuntimeError, sqlite3.Error):
+                notice.setText("No se pudo revocar el permiso.")
+
+        tools.currentItemChanged.connect(lambda current, previous: remove.setEnabled(current is not None))
+        remove.clicked.connect(remove_selected)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(notice)
+        layout.addWidget(tools)
+        layout.addWidget(remove)
+        dialog.resize(430, 290)
+        refresh()
+        dialog.exec()
+        dialog.deleteLater()
+
+    def manage_credential(self):
+        name = self.selected()
+        target = credential_target(name, self.servers[name])
+        try:
+            saved = bool(read_key(target))
+        except (OSError, ValueError, ImportError):
+            self.notice.setText("No se pudo abrir el Administrador de credenciales de Windows.")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Clave API de {name}")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Hay una clave guardada." if saved else "Aún no hay una clave guardada."))
+        entry = QLineEdit()
+        entry.setEchoMode(QLineEdit.EchoMode.Password)
+        entry.setAccessibleName("Nueva clave API")
+        entry.setPlaceholderText("Nueva clave API")
+        layout.addWidget(entry)
+        buttons = QDialogButtonBox()
+        save = buttons.addButton("Guardar", QDialogButtonBox.ButtonRole.AcceptRole)
+        remove = buttons.addButton("Quitar clave", QDialogButtonBox.ButtonRole.DestructiveRole)
+        remove.setEnabled(saved)
+        buttons.addButton("Cancelar", QDialogButtonBox.ButtonRole.RejectRole)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        def change(button):
+            if button not in (save, remove):
+                return
+            try:
+                if load_servers().get(name) != self.servers[name]:
+                    raise ValueError("La configuración cambió. Vuelve a abrir el panel MCP.")
+                revoke(name)
+                if button == save:
+                    store_key(target, entry.text())
+                else:
+                    delete_key(target)
+            except ValueError as exc:
+                QMessageBox.warning(dialog, "Clave API", str(exc))
+                return
+            except (OSError, ImportError, RuntimeError, sqlite3.Error):
+                QMessageBox.warning(dialog, "Clave API", "Windows no pudo actualizar la clave.")
+                return
+            self.results.pop(name, None)
+            self.connection_changed.emit(name)
+            self.refresh(name)
+            self.notice.setText("Clave guardada en Windows." if button == save else "Clave quitada de Windows.")
+            dialog.accept()
+
+        buttons.clicked.connect(change)
+        try:
+            dialog.exec()
+        finally:
+            entry.clear()
+            dialog.deleteLater()
 
     def add_server(self):
         form = ServerForm(self)
@@ -334,17 +452,19 @@ class McpDialog(QDialog):
         self.test = ConnectionTest(self, name, self.servers[name])
         self.test.result.connect(self.show_result)
         self.test.finished.connect(self.finish_test)
-        self.results[name] = ("Probando…", [])
+        self.results[name] = ("Probando…", [], "")
         self.refresh(name)
         self.notice.setText(f"Probando conexión con {name}…")
         self.test.start()
 
-    def show_result(self, tools):
+    def show_result(self, result):
         name = self.test.name
-        status = "Falló" if tools is None else "Correcta"
-        self.results[name] = (status, tools or [])
+        self.connection_changed.emit(name)
+        tools, detail = result
+        status = "Falló" if detail else "Correcta"
+        self.results[name] = (status, tools, detail)
         self.refresh(self.selected())
-        self.notice.setText(f"No se pudo conectar con {name}." if tools is None
+        self.notice.setText(f"{name}. {detail}" if detail
                             else f"Conexión correcta con {name}. Herramientas: {len(tools)}.")
 
     def finish_test(self):

@@ -61,10 +61,10 @@ def dialog_style(theme):
     ink = readable_text(accent)
     return f"""
         QDialog {{ background: #19191e; }}
-        QLabel, QTreeWidget, QLineEdit, QPlainTextEdit, QComboBox, QPushButton, QSpinBox {{
+        QLabel, QListWidget, QTreeWidget, QLineEdit, QPlainTextEdit, QComboBox, QPushButton, QSpinBox {{
             color: #f3f0f7; font-family: "Segoe UI"; font-size: 14px;
         }}
-        QTreeWidget, QLineEdit, QPlainTextEdit, QComboBox, QSpinBox, QComboBox QAbstractItemView {{
+        QListWidget, QTreeWidget, QLineEdit, QPlainTextEdit, QComboBox, QSpinBox, QComboBox QAbstractItemView {{
             background: #25252d; color: #f3f0f7; border: 1px solid #41404f;
             selection-background-color: {accent}; selection-color: {ink};
         }}

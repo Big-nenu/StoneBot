@@ -4,6 +4,9 @@ import hashlib
 import json
 import os
 import re
+import socket
+import ssl
+import sqlite3
 import tempfile
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -12,6 +15,12 @@ from urllib.parse import urlsplit
 
 from stonebot_engine import default_root
 from stonebot_engine.safety import check_path
+from mcp_credentials import CredentialAccessError, credential_target, delete_key, read_key
+from mcp_permissions import revoke, safe_read
+
+
+class MissingTokenError(ValueError):
+    pass
 
 
 def data_path(*parts):
@@ -97,7 +106,7 @@ def save_servers(servers):
 
 
 @asynccontextmanager
-async def session_for(name, server):
+async def session_for(name, server, *, message_handler=None):
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
     from mcp.client.streamable_http import streamable_http_client
@@ -111,19 +120,28 @@ async def session_for(name, server):
         env.update(HOMEDRIVE=drive, HOMEPATH=home)
         params = StdioServerParameters(command=server["command"], args=server["args"], cwd=folder, env=env)
         async with stdio_client(params) as streams:
-            async with ClientSession(*streams, read_timeout_seconds=timedelta(seconds=20)) as session:
+            async with ClientSession(*streams, read_timeout_seconds=timedelta(seconds=20),
+                                     message_handler=message_handler) as session:
                 await session.initialize()
                 yield session
     else:
         headers = {}
-        if variable := server["token_env"]:
-            token = os.getenv(variable)
-            if not token:
-                raise ValueError("Falta la variable del token MCP.")
+        variable = server["token_env"]
+        env_token = os.getenv(variable) if variable else None
+        try:
+            token = read_key(credential_target(name, server)) or env_token
+        except CredentialAccessError:
+            if not env_token:
+                raise
+            token = env_token
+        if variable and not token:
+            raise MissingTokenError("Falta la variable del token MCP.")
+        if token:
             headers["Authorization"] = f"Bearer {token}"
         async with httpx.AsyncClient(headers=headers, timeout=20, trust_env=False) as client:
             async with streamable_http_client(server["url"], http_client=client) as (reader, writer, _):
-                async with ClientSession(reader, writer, read_timeout_seconds=timedelta(seconds=20)) as session:
+                async with ClientSession(reader, writer, read_timeout_seconds=timedelta(seconds=20),
+                                         message_handler=message_handler) as session:
                     await session.initialize()
                     yield session
 
@@ -141,9 +159,7 @@ async def discover(session, name, server, *, include_disabled=False):
             slug = re.sub(r"[^a-zA-Z0-9_]", "_", tool.name)[:23]
             suffix = hashlib.sha256(tool.name.encode()).hexdigest()[:12]
             alias = f"mcp_{name}_{slug}_{suffix}"
-            annotations = tool.annotations
-            auto = (tool.name in server["read_tools"] and annotations is not None
-                    and annotations.readOnlyHint is True and annotations.destructiveHint is not True)
+            auto = tool.name in server["read_tools"] and safe_read(tool)
             tools[alias] = (session, name, tool, auto)
         cursor = page.nextCursor
         if not cursor:
@@ -157,6 +173,79 @@ async def probe_server(name, server):
     async with session_for(name, server) as session:
         entries = await discover(session, name, server, include_disabled=True)
         return sorted((tool.name, auto) for _, _, tool, auto in entries.values())
+
+
+def connection_error(error):
+    """Describe fallos de la prueba sin publicar URLs, cabeceras ni mensajes del servidor."""
+    import httpx
+
+    try:
+        from mcp.shared.exceptions import McpError
+    except ImportError:
+        McpError = ()
+
+    def causes(exc):
+        if isinstance(exc, BaseExceptionGroup):
+            yield from exc.exceptions
+        if cause := (exc.__cause__ or exc.__context__):
+            yield cause
+
+    pending = [error]
+    errors = []
+    while pending:
+        exc = pending.pop(0)
+        if exc not in errors:
+            errors.append(exc)
+            pending.extend(causes(exc))
+
+    statuses = {
+        400: "Solicitud HTTP rechazada. Revisa que la URL corresponda al endpoint MCP.",
+        401: "Autenticación requerida o credencial rechazada. Revisa la variable del token y su valor.",
+        403: "Acceso denegado. Revisa los permisos de la credencial y del servidor.",
+        404: "No se encontró la ruta MCP. Revisa la URL exacta del endpoint.",
+        405: "La URL rechaza el método HTTP. Revisa el endpoint Streamable HTTP.",
+        408: "Tiempo de espera agotado al esperar la respuesta del servidor.",
+        429: "El servidor limitó las solicitudes. Intenta de nuevo más tarde.",
+    }
+    for exc in errors:
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            if 300 <= status < 400:
+                detail = "El servidor redirige la solicitud. Configura la URL final del endpoint MCP."
+            elif status >= 500:
+                detail = "El servidor remoto devolvió un error interno o no está disponible."
+            else:
+                detail = statuses.get(status, "El servidor rechazó la solicitud.")
+            return f"HTTP {status}. {detail}"
+        if isinstance(exc, McpError):
+            code = exc.error.code
+            # El SDK 1.x transforma un POST 404 en este error de sesión.
+            if code == 32600 and exc.error.message == "Session terminated":
+                return "HTTP 404. La ruta MCP no existe o la sesión terminó. Revisa la URL del endpoint."
+            if code in statuses:
+                return f"MCP {code}. {statuses[code]}"
+
+    for kind, detail in (
+        (MissingTokenError, "Falta la variable de entorno del token. Configura la variable o guarda la clave API en el panel MCP."),
+        (CredentialAccessError, "No se pudo leer la clave en el Administrador de credenciales de Windows."),
+        (ssl.SSLCertVerificationError, "No se pudo verificar el certificado TLS del servidor."),
+        (ssl.SSLError, "Falló la conexión TLS con el servidor."),
+        (socket.gaierror, "No se pudo resolver el nombre del servidor (DNS)."),
+        ((TimeoutError, httpx.TimeoutException), "Tiempo de espera agotado al conectar o esperar la respuesta."),
+        ((httpx.InvalidURL, httpx.UnsupportedProtocol), "URL inválida o protocolo incompatible. Revisa el endpoint MCP."),
+        (ConnectionRefusedError, "El servidor rechazó la conexión. Revisa que esté en ejecución y el puerto sea correcto."),
+        (httpx.ConnectError, "No se pudo establecer la conexión. Revisa el dominio, el puerto y la red."),
+        (FileNotFoundError, "No se encontró el ejecutable STDIO o su directorio de trabajo."),
+        (PermissionError, "Permiso denegado al intentar iniciar el proceso o abrir la conexión."),
+        (ImportError, "Falta el SDK de MCP o una de sus dependencias."),
+    ):
+        if any(isinstance(exc, kind) for exc in errors):
+            return detail
+    for exc in errors:
+        if isinstance(exc, McpError):
+            return f"El servidor devolvió un error de protocolo MCP (código {exc.error.code})."
+    leaf = next((exc for exc in errors if not isinstance(exc, BaseExceptionGroup)), error)
+    return f"La conexión falló por un error de tipo {type(leaf).__name__}."
 
 
 def ollama_tool(entry):
@@ -186,7 +275,7 @@ async def call_external(entry, arguments, confirm):
         check_tool_paths(arguments)
     except (OSError, RuntimeError, ValueError):
         return "La herramienta MCP recibió una ruta local bloqueada."
-    if not auto and not await confirm(name, tool.name, arguments):
+    if not (auto and safe_read(tool, arguments)) and not await confirm(name, tool.name, arguments):
         return "El usuario no autorizó esta operación MCP."
     reply = await session.call_tool(tool.name, arguments)
     result = "\n".join(item.text for item in reply.content if item.type == "text")
@@ -218,6 +307,7 @@ def main():
         action_parser.add_argument("tool")
 
     args = parser.parse_args()
+    removed_target = None
     try:
         servers = load_servers()
         if args.action == "list":
@@ -237,7 +327,7 @@ def main():
         elif args.name not in servers:
             raise ValueError("No existe ese servidor.")
         elif args.action == "remove":
-            del servers[args.name]
+            removed_target = credential_target(args.name, servers.pop(args.name))
         elif args.action in ("allow-read", "revoke-read"):
             reads = set(servers[args.name]["read_tools"])
             (reads.add if args.action == "allow-read" else reads.discard)(args.tool)
@@ -245,7 +335,10 @@ def main():
         else:
             servers[args.name]["enabled"] = args.action == "enable"
         save_servers(servers)
-    except (ValueError, OSError, RuntimeError) as exc:
+        delete_key(removed_target)
+        if args.action == "remove":
+            revoke(args.name)
+    except (ValueError, OSError, RuntimeError, sqlite3.Error) as exc:
         parser.exit(1, f"Error: {exc}\n")
 
 

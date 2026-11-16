@@ -50,7 +50,7 @@ def test_context7_results_are_used_to_finish_after_empty_ollama_response():
     def chat(**kwargs):
         nonlocal rounds
         rounds += 1
-        assert kwargs["options"]["num_ctx"] == (4096 if rounds == 1 else 8192)
+        assert kwargs["options"]["num_ctx"] == (4096 if rounds <= 2 else 8192)
         transcript = kwargs["messages"]
         if rounds == 4:
             assert kwargs["tools"] == [] and kwargs["think"] is False
@@ -81,6 +81,62 @@ def test_context7_results_are_used_to_finish_after_empty_ollama_response():
     assert outputs == ["Usa QVBoxLayout.addWidget()."] and rounds == 4
     assert [call.args[1] for call in confirm.await_args_list] == names
     assert [call.args[0] for call in session.call_tool.await_args_list] == names
+
+
+def test_empty_reply_retries_selection_across_active_servers():
+    fixtures = {
+        name: SimpleNamespace(
+            list_tools=AsyncMock(return_value=ListToolsResult(tools=[
+                Tool(name="search", inputSchema={"type": "object"}),
+            ])),
+            call_tool=AsyncMock(return_value=CallToolResult(content=[TextContent(type="text", text="Fuente web")])),
+        )
+        for name in ("docs", "web")
+    }
+
+    @contextlib.asynccontextmanager
+    async def connected(name, server):
+        if name == "offline":
+            raise mcp_client.MissingTokenError()
+        yield fixtures[name]
+
+    rounds = 0
+
+    def chat(**kwargs):
+        nonlocal rounds
+        tools = {tool.function.description.split(" / ")[0]: tool.function.name
+                 for tool in kwargs["tools"] if not callable(tool)}
+        assert set(tools) == {"docs", "web"} and tools["docs"] != tools["web"]
+        rounds += 1
+        if rounds == 1:
+            assert kwargs["options"]["num_ctx"] == 8192
+            return SimpleNamespace(message=Message(role="assistant", content="", thinking="Buscando una herramienta."))
+        if rounds == 2:
+            assert kwargs["think"] is False and kwargs["options"]["num_ctx"] == 8192
+            call = Message.ToolCall(function=Message.ToolCall.Function(name=tools["web"], arguments={}))
+            return SimpleNamespace(message=Message(role="assistant", tool_calls=[call]))
+        assert kwargs["messages"][-1]["content"] == "Fuente web"
+        return SimpleNamespace(message=Message(role="assistant", content="Encontré una fuente."))
+
+    worker = app.Worker([{"role": "user", "content": "Busca en la web. " + "Referencia previa. " * 400}])
+    outputs, errors, notices = [], [], []
+    worker.finished.connect(outputs.append)
+    worker.error.connect(errors.append)
+    worker.mcp_notice.connect(notices.append)
+    confirm = AsyncMock(return_value=True)
+    servers = {name: {"enabled": name != "disabled", "read_tools": []}
+               for name in ("docs", "offline", "web", "disabled")}
+    with (patch.object(app, "load_servers", return_value=servers),
+          patch.object(app, "session_for", connected),
+          patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)),
+          patch.object(worker, "confirm_external", confirm)):
+        worker.run()
+    assert not errors and outputs == ["Encontré una fuente."], errors
+    confirm.assert_awaited_once_with("web", "search", {})
+    fixtures["web"].call_tool.assert_awaited_once_with("search", {})
+    fixtures["docs"].call_tool.assert_not_awaited()
+    assert any("offline" in notice and "variable de entorno" in notice for notice in notices)
+    assert any("web" in notice and "solicitó search" in notice for notice in notices)
 
 
 def test_stdio_chat_and_permissions():
@@ -185,5 +241,7 @@ def test_stdio_chat_and_permissions():
 if __name__ == "__main__":
     test_context7_results_are_used_to_finish_after_empty_ollama_response()
     print("PASS: Context7 entrega ambos resultados y Ollama sintetiza tras una respuesta vacía.")
+    test_empty_reply_retries_selection_across_active_servers()
+    print("PASS: descubrimiento multiservidor y autorización tras reintentar una respuesta vacía.")
     test_stdio_chat_and_permissions()
     print("PASS: configuración, chat MCP STDIO, lectura autorizada, validación y confirmación de escritura.")

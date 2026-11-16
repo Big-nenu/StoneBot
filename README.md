@@ -208,13 +208,13 @@ También se verificaron las tres herramientas con Nemotron y Ollama local desde 
 
 ## Servidores MCP externos
 
-Instala el cliente con `python -m pip install "mcp>=1.28,<2"`. La memoria interna sigue usando llamadas directas al motor de StoneBot. El chat descubre las herramientas de los servidores activados al empezar cada turno y entrega sus resultados de texto a Nemotron.
+Instala el cliente con `python -m pip install "mcp>=1.28,<2"`. La memoria interna sigue usando llamadas directas al motor de StoneBot. El chat reutiliza las conexiones y los catálogos MCP entre turnos. Vuelve a descubrir un servidor cuando cambia su configuración, se cambia su clave desde el panel, se usa **Probar conexión**, se interrumpe la sesión o el servidor notifica que cambió su catálogo. Un fallo de conexión se conserva 30 segundos para evitar repetir la espera en turnos consecutivos.
 
 Abre **MCP** en la cabecera del chat para agregar, editar o eliminar servidores y cambiar su activación con el interruptor de cada fila. **Probar conexión** abre una sesión temporal. El indicador es verde si conecta, rojo si falla y gris antes de probar.
 
 Cada herramienta descubierta tiene su propio interruptor. Los servidores y herramientas deshabilitados quedan fuera de las herramientas que recibe Nemotron. Estas preferencias se conservan al reiniciar. Vuelve a probar la conexión para cargar el catálogo en la nueva sesión. Al habilitar una herramienta se vuelven a aplicar sus permisos de lectura o confirmación.
 
-Los servidores se agregan desactivados. El nombre identifica la configuración y se mantiene al editarla. Cambiar el transporte, el ejecutable, los argumentos, la URL o la referencia al token desactiva el servidor y revoca sus lecturas automáticas. Los cambios aplican al siguiente turno. En STDIO, escribe los argumentos como una lista JSON, por ejemplo `["-B", "C:\\ruta\\servidor.py"]`. En HTTP solo se muestra y guarda el nombre de la variable del token.
+Los servidores se agregan desactivados. El nombre identifica la configuración y se mantiene al editarla. Cambiar el transporte, el ejecutable, los argumentos, la URL o la referencia al token desactiva el servidor y revoca sus lecturas automáticas. Los cambios aplican al siguiente turno. En STDIO, escribe los argumentos como una lista JSON, por ejemplo `["-B", "C:\\ruta\\servidor.py"]`. En HTTP, el archivo de configuración guarda el nombre de la variable del token si se configuró.
 
 También puedes administrar la misma configuración desde la terminal.
 
@@ -231,18 +231,33 @@ python mcp_client.py remove ejemplo
 
 Para un servidor remoto, usa `python mcp_client.py add remoto --url https://servidor.example/mcp --token-env STONEBOT_MCP_REMOTO_TOKEN` y luego actívalo. El nombre de la variable es opcional. Carga su valor en el entorno de StoneBot desde tu gestor de secretos antes de iniciar la app. HTTP sin TLS se admite para pruebas locales sin token. [Transportes del SDK MCP](https://github.com/modelcontextprotocol/python-sdk/blob/main/docs/client/transports.md)
 
+**Probar conexión** muestra el motivo del fallo y, cuando está disponible, el código HTTP o MCP. Por ejemplo, HTTP 401 indica un problema de autenticación, HTTP 403 indica acceso denegado y HTTP 404 indica que conviene revisar la ruta del endpoint. El motivo queda disponible al pasar el cursor por el indicador rojo. La prueba inicializa la sesión y lista las herramientas sin ejecutarlas.
+
+Para **Tavily**, agrega un servidor **Streamable HTTP** con URL `https://mcp.tavily.com/mcp/`. Selecciona el servidor guardado, abre **Clave API…**, introduce la clave y elige **Guardar**. Después pulsa **Probar conexión** y activa el servidor. La clave se guarda en el Administrador de credenciales de Windows para ese servidor y esa URL. StoneBot la envía como `Authorization: Bearer` por HTTPS. Deja la URL sin parámetros de credenciales. [Configuración oficial de Tavily MCP](https://github.com/tavily-ai/tavily-mcp#remote-mcp-server)
+
+También puedes usar **Nombre de variable del token**, por ejemplo `STONEBOT_MCP_TAVILY_TOKEN`, y cargar la variable antes de abrir StoneBot. La variable se usa cuando el servidor no tiene una clave guardada en Windows. **Quitar clave** elimina la copia guardada. Al cambiar la URL o eliminar el servidor se retira la clave asociada a la configuración anterior.
+
+En el panel lateral, **Diagnóstico** abre el registro técnico local. Incluye el descubrimiento MCP, la selección de herramientas y el motivo de término y los tokens que Ollama comunica cuando responde vacío durante la selección. El chat muestra el indicador de trabajo y avisa de errores definitivos. La reproducción previa mostró que un contexto de 4096 tokens puede agotarse antes de emitir contenido visible. Los turnos MCP largos reservan 8192 tokens desde el inicio y el reintento de selección se limita a uno.
+
 La configuración se guarda en `%USERPROFILE%\.stonebot\mcp_servers.json`. Usa los argumentos de lanzamiento STDIO únicamente para opciones que no contengan credenciales. Cada servidor STDIO arranca en su propio directorio bajo `%USERPROFILE%\.stonebot\mcp\`, con las variables de perfil redirigidas. Activar STDIO autoriza iniciar ese programa con los permisos de la cuenta actual. Ejecuta servidores locales de terceros bajo una cuenta o un entorno aislado por el sistema si necesitas impedirles el acceso a archivos de tu cuenta.
 
-Una lectura automática requiere autorización por nombre y que el servidor la declare de solo lectura. Las demás llamadas MCP muestran el servidor, la operación y sus argumentos para confirmar cada vez. El servidor recibe los argumentos de las llamadas que se ejecutan. Habilita solo servidores y lecturas que hayas revisado.
+Cuando se solicita confirmación, **Permitir una vez** autoriza esa llamada y **Denegar** la cancela. **Permitir siempre** está disponible solo para herramientas declaradas de solo lectura que pasan las comprobaciones de seguridad. El permiso queda asociado al servidor y a la definición de la herramienta. Puedes revisarlo y revocarlo en **MCP → Permisos…**. Las lecturas automáticas configuradas por nombre pasan por la misma comprobación. Las herramientas peligrosas o sin declaración de lectura piden confirmación en cada llamada. Los permisos automáticos requieren confiar en que el servidor describe sus herramientas con veracidad.
 
 Con el ejemplo activado, pide en el chat «Usa echo del servidor ejemplo con el texto hola». Las pruebas usan configuraciones temporales.
 
 ```powershell
 python -B tests/test_mcp.py
 python -B tests/test_mcp_ui.py
+python -B tests/test_workspace_features.py
 ```
 
 El panel se probó con servidores de ejemplo mediante STDIO y Streamable HTTP en loopback. En el mismo chat, Nemotron y Ollama ejecutaron una herramienta MCP y recuperaron un recuerdo de una base temporal.
+
+## Historial de conversaciones
+
+Usa **☰** para mostrar u ocultar el panel izquierdo. **Nuevo chat** inicia una conversación vacía. Al enviar el primer mensaje se genera un título a partir de su texto. Haz clic en una conversación para retomarla. El buscador filtra por título o contenido y los botones **Renombrar** y **Eliminar** actúan sobre la conversación seleccionada.
+
+Las conversaciones se guardan en `%USERPROFILE%\.stonebot\conversations.sqlite3`. El historial almacena los mensajes del usuario y las respuestas visibles. Los permisos MCP se guardan en `mcp_permissions.sqlite3` y el diagnóstico en `diagnostics.log`. La memoria seleccionada de StoneBot continúa en `memoria.db` y se usa mediante sus herramientas existentes.
 
 ## Apariencia
 
