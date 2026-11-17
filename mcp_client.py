@@ -295,7 +295,7 @@ def check_tool_paths(value):
             check_tool_paths(item)
 
 
-async def call_external(entry, arguments, confirm, *, on_start=None, on_result=None):
+async def call_external(entry, arguments, confirm, *, on_start=None, on_result=None, on_partial=None):
     from jsonschema import ValidationError, validators
     from referencing import Registry
 
@@ -317,6 +317,17 @@ async def call_external(entry, arguments, confirm, *, on_start=None, on_result=N
     result = "\n".join(item.text for item in reply.content if item.type == "text")
     if reply.structuredContent is not None and not result:
         result = json.dumps(reply.structuredContent, ensure_ascii=False)
+    if on_partial is not None:
+        metadata = reply.structuredContent or {}
+        lines = result.splitlines()
+        if len(result) > 8000:
+            on_partial("StoneBot recortó la respuesta de la herramienta.")
+        elif (any(metadata.get(key) for key in ("nextCursor", "next_cursor", "nextPageToken", "next_page_token"))
+              or any(metadata.get(key) is True for key in ("hasMore", "has_more", "truncated", "partial", "isPartial"))):
+            on_partial("La herramienta indicó que hay datos o páginas pendientes.")
+        elif any(line.startswith(("[DENIED]", "[NOT_FOUND]"))
+                 or (line.startswith("[WARNING]") and "items hidden" in line) for line in lines):
+            on_partial("La herramienta indicó elementos ocultos o inaccesibles.")
     if on_result is not None:
         on_result("tool_error" if reply.isError else "response" if result else "no_text")
     if not result:

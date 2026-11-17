@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
 import mcp_client
 from history import History
-from tasks import REPORT, new_task
+from tasks import COVERAGE_STATUS, REPORT, new_task
 from test_mcp import example_stdio
 
 
@@ -55,6 +55,9 @@ def stage(root, phase, live):
 
     def mock_chat(**call):
         transcript = call["messages"]
+        if call.get("format") == COVERAGE_STATUS:
+            assert phase == "answer" and "Eco MCP" in transcript[-1]["content"]
+            return SimpleNamespace(message=Message(role="assistant", content='{"verificada":true,"faltante":""}'))
         if call.get("format"):
             assert phase == "recover" and "Resultado de prueba verificado." in transcript[-1]["content"]
             return SimpleNamespace(message=Message(role="assistant", content='{"estado":"completada"}'))
@@ -92,8 +95,6 @@ def stage(root, phase, live):
             if phase in {"ask", "pause"}:
                 text = f"/tarea {OBJECTIVE}"
                 expected = "paused" if phase == "pause" else "waiting"
-                if phase == "pause":
-                    window.open_chat(window.history.find()[0][0])
             else:
                 window.open_chat(window.history.find()[0][0])
                 assert window.task["status"] == ("interrupted" if phase == "recover" else "waiting")
@@ -102,7 +103,7 @@ def stage(root, phase, live):
                     assert "Resultado guardado" in window.task_panel.events.toPlainText()
                     assert "Resultado incierto" in window.task_panel.events.toPlainText()
                 text = "/reanudar" if phase == "recover" else str(folder)
-                expected = "completed"
+                expected = "paused" if phase == "recover" else "completed"
             window.message.setPlainText(text)
             window.send.click()
             assert not window.activity_panel.pause_button.isHidden()
@@ -125,6 +126,7 @@ def stage(root, phase, live):
                 assert "ruta" in task["message"].casefold() and not approvals
             elif phase == "recover":
                 assert [step["status"] for step in task["steps"]] == ["response", "exception"] and not approvals
+                assert "Falta una lectura verificable" in task["message"]
             elif phase == "pause":
                 assert not approvals and "/reanudar" in task["message"]
                 window.message.setPlainText("/cancelar")
