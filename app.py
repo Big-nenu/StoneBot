@@ -27,6 +27,7 @@ import local_skills
 from mcp_client import call_external, connection_error, discover, load_servers, ollama_tool, session_for
 from mcp_permissions import allowed, permission_signature, remember, safe_read
 from mcp_pool import McpPool
+from mcp_setup import is_setup_request
 from mcp_ui import McpDialog
 from skills_ui import SkillsDialog
 from stonebot_engine.llm import env_var
@@ -526,13 +527,15 @@ class StoneBot(QMainWindow):
         composer.setObjectName("composerPanel")
         composer.setMaximumWidth(760)
         composer_layout = QVBoxLayout(composer)
-        composer_layout.setContentsMargins(6, 4, 8, 4)
+        composer_layout.setContentsMargins(8, 4, 8, 4)
         row = QHBoxLayout()
         self.attachments = AttachmentTray()
         self.attachments.problem.connect(self.show_problem)
         self.message = Composer()
         menu = self.attachments.menu
-        menu.addAction("Administrar servidores MCP…", self.open_mcp)
+        self.mcp_menu = menu.addMenu("MCP")
+        self.mcp_menu.setObjectName("chatMenu")
+        self.mcp_menu.aboutToShow.connect(self.refresh_mcp_menu)
         self.memory_menu = menu.addMenu("Memoria")
         self.memory_menu.setObjectName("chatMenu")
         self.memory_menu.addAction("Consultar recuerdos…").setData("Busca en la memoria: ")
@@ -807,14 +810,20 @@ class StoneBot(QMainWindow):
             apply_native_caption(watched, self.appearance["background"])
         return super().eventFilter(watched, event)
 
-    def open_mcp(self):
+    def mcp_manager(self):
         if self.mcp_dialog is None:
             self.mcp_dialog = McpDialog(self)
             self.mcp_dialog.connection_changed.connect(self.pool.invalidate)
             self.mcp_dialog.set_appearance(self.appearance)
-        else:
-            self.mcp_dialog.reload()
-        self.mcp_dialog.exec()
+        return self.mcp_dialog
+
+    def open_mcp(self):
+        manager = self.mcp_manager()
+        manager.reload()
+        manager.exec()
+
+    def refresh_mcp_menu(self):
+        self.mcp_manager().quick_switches(self.mcp_menu, self.show_problem, idle=self.thread is None)
 
     def open_skills(self):
         dialog = SkillsDialog(self, self.appearance)
@@ -920,11 +929,20 @@ class StoneBot(QMainWindow):
         files = self.attachments.files.copy()
         if (not texto and not files) or self.thread is not None:
             return
+        if is_setup_request(texto):
+            if files:
+                self.show_problem("Envía la configuración MCP por separado, sin adjuntos.")
+                return
+            self.message.clear()
+            self.message.expand_button.setChecked(False)
+            self.show_problem(self.mcp_manager().install_from_chat(texto))
+            return
         if files and texto and texto.split(maxsplit=1)[0] in COMMANDS:
             self.show_problem("Envía ese comando por separado, sin adjuntos.")
             return
 
         self.message.clear()
+        self.message.expand_button.setChecked(False)
         self.attachments.clear()
         texto = texto or "Revisa los archivos adjuntos."
         created = time.time_ns()
@@ -965,6 +983,9 @@ class StoneBot(QMainWindow):
     def regenerate(self, index, text):
         text = text.strip()
         if self.thread is not None or not text or self.chat_id is None or self.history is None:
+            return
+        if is_setup_request(text):
+            self.show_problem("Envía la configuración MCP desde el cuadro de mensaje.")
             return
         saved = self.messages[1:]
         if (not 0 <= index < len(saved) or saved[index]["role"] != "user"

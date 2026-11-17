@@ -1,20 +1,22 @@
 """Administrador gráfico de las configuraciones MCP."""
 import asyncio
 import json
+import os
 import sqlite3
 
-from PySide6.QtCore import QSize, Qt, QThread, Signal
+from PySide6.QtCore import QSize, QSignalBlocker, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QListWidget, QMessageBox, QPlainTextEdit, QPushButton, QTreeWidget, QTreeWidgetItem,
-    QVBoxLayout, QWidget,
+    QVBoxLayout, QWidget, QWidgetAction,
 )
 
 from appearance import COLORS, control_colors, dialog_style, link_color, readable_text, shade
 from mcp_client import connection_error, load_servers, probe_server, save_servers, validate_server
 from mcp_credentials import credential_target, delete_key, read_key, store_key
 from mcp_permissions import list_permissions, revoke
+from mcp_setup import ensure_new, prepare
 
 
 TRANSPORTS = {"stdio": "STDIO", "http": "Streamable HTTP"}
@@ -263,7 +265,10 @@ class McpDialog(QDialog):
             self.servers = current
         except (ValueError, OSError, RuntimeError):
             self.notice.setText("No se pudo leer la configuración MCP.")
+            self.refresh(selected)
+            return False
         self.refresh(selected)
+        return True
 
     def selected(self):
         item = self.table.currentItem()
@@ -324,7 +329,7 @@ class McpDialog(QDialog):
                 self.results.clear()
                 self.refresh(name)
                 self.notice.setText("La configuración cambió fuera de esta ventana. Intenta de nuevo.")
-                return
+                return False
             if server is None:
                 del current[name]
             else:
@@ -333,7 +338,7 @@ class McpDialog(QDialog):
         except (ValueError, OSError, RuntimeError):
             self.notice.setText("No se pudo guardar la configuración MCP.")
             self.refresh(name)
-            return
+            return False
         old = self.servers.get(name)
         self.servers = current
         transient = {"enabled", "disabled_tools"}
@@ -353,6 +358,7 @@ class McpDialog(QDialog):
                 revoke(name)
             except (OSError, ValueError, RuntimeError, sqlite3.Error):
                 self.notice.setText("Servidor eliminado. No se pudieron limpiar sus permisos guardados.")
+        return True
 
     def review_permissions(self):
         name = self.selected()
@@ -460,7 +466,96 @@ class McpDialog(QDialog):
             self.commit(*form.configuration)
 
     def toggle_server(self, name, checked):
-        self.commit(name, dict(self.servers[name], enabled=checked))
+        return self.commit(name, dict(self.servers[name], enabled=checked))
+
+    def quick_switches(self, menu, on_error, *, idle):
+        menu.clear()
+        if not self.reload():
+            menu.addAction("No se pudo leer la configuración").setEnabled(False)
+            return
+        if not self.servers:
+            menu.addAction("No hay servidores configurados").setEnabled(False)
+            return
+        surface, _, _, color = control_colors(self.theme["background"])
+        for name, server in sorted(self.servers.items()):
+            row = QWidget()
+            layout = QHBoxLayout(row)
+            layout.setContentsMargins(9, 1, 6, 1)
+            label = QLabel(name)
+            label.setStyleSheet(f"color: {color};")
+            layout.addWidget(label, 1)
+            switch = Toggle(server["enabled"], f"Servidor {name}", self.theme["accent"], surface)
+            switch.setEnabled(idle and self.test is None)
+            switch.toggled.connect(lambda active, name=name, switch=switch:
+                                   self.change_quick_switch(name, switch, active, on_error))
+            layout.addWidget(switch)
+            action = QWidgetAction(menu)
+            action.setDefaultWidget(row)
+            menu.addAction(action)
+
+    def change_quick_switch(self, name, switch, active, on_error):
+        if self.test is None and self.toggle_server(name, active):
+            return
+        with QSignalBlocker(switch):
+            switch.setChecked(self.servers.get(name, {}).get("enabled", False))
+        on_error(self.notice.text())
+
+    def install_from_chat(self, text):
+        try:
+            name, server, download = prepare(text)
+            ensure_new(load_servers(), name, server)
+            if server.get("token_env") and not os.environ.get(server["token_env"]):
+                raise ValueError(f"Falta la variable {server['token_env']}. Configúrala fuera del chat y reinicia StoneBot.")
+        except (ValueError, RuntimeError, OSError) as exc:
+            return str(exc) if isinstance(exc, ValueError) else "No se pudo preparar la configuración MCP."
+
+        if server["transport"] == "http":
+            review = f"Conectar por Streamable HTTP a {server['url']} para listar herramientas."
+            if server["token_env"]:
+                review += f"\nUsar la variable {server['token_env']} para autenticación."
+        else:
+            review = "Iniciar este ejecutable con los argumentos indicados para listar herramientas:\n"
+            review += server["command"] + "\n" + json.dumps(server["args"], ensure_ascii=False)
+            if download:
+                review += "\nEl lanzador puede descargar e instalar el paquete en su caché antes de iniciarlo."
+        review += "\n\nSi la prueba funciona, guardar el servidor desactivado y sin permisos automáticos."
+        dialog = QMessageBox(QMessageBox.Icon.Question, f"Revisar MCP · {name}", review,
+                             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, self.parentWidget())
+        dialog.setTextFormat(Qt.TextFormat.PlainText)
+        dialog.setDefaultButton(QMessageBox.StandardButton.No)
+        dialog.button(QMessageBox.StandardButton.Yes).setText("Autorizar y probar")
+        dialog.button(QMessageBox.StandardButton.No).setText("Cancelar")
+        approved = dialog.exec() == QMessageBox.StandardButton.Yes
+        dialog.deleteLater()
+        if not approved:
+            return "Configuración MCP cancelada."
+
+        results = []
+        test = self.test = ConnectionTest(self, name, server)
+        test.result.connect(results.append)
+        test.finished.connect(self.accept)
+        self.refresh(self.selected())
+        self.notice.setText(f"Verificando la conexión de {name} antes de guardarlo…")
+        test.start()
+        self.exec()
+        test.wait()
+        self.test = None
+        test.deleteLater()
+        self.refresh(self.selected())
+        tools, error = results[0] if results else ([], "La prueba no devolvió un resultado.")
+        if error:
+            return f"No se guardó {name}. {error}"
+        try:
+            if not self.reload():
+                return self.notice.text()
+            ensure_new(self.servers, name, server)
+        except ValueError as exc:
+            return str(exc)
+        if not self.commit(name, server):
+            return self.notice.text()
+        self.results[name] = ("Correcta", tools, "")
+        self.refresh(name)
+        return f"{name} verificado y guardado desactivado. Herramientas encontradas: {len(tools)}."
 
     def toggle_tool(self, name, tool, enabled):
         server = self.servers[name]

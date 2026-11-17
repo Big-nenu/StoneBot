@@ -92,6 +92,22 @@ def test_manager():
 
             QTest.mouseClick(switch(dialog.table), Qt.MouseButton.LeftButton)
             assert mcp_client.load_servers()["ejemplo"]["enabled"]
+            dialog.hide()
+            window.show()
+            menu = window.mcp_menu
+            menu.popup(window.attachments.add_button.mapToGlobal(QPoint()))
+            QTest.qWait(50)
+            quick = menu.actions()[0].defaultWidget().findChild(Toggle)
+            assert menu.isVisible() and quick.accessibleName() == "Servidor ejemplo" and quick.isChecked()
+            QTest.mouseClick(quick, Qt.MouseButton.LeftButton)
+            assert not mcp_client.load_servers()["ejemplo"]["enabled"]
+            assert not switch(dialog.table).isChecked()
+            menu.close()
+            dialog.show()
+            QTest.mouseClick(switch(dialog.table), Qt.MouseButton.LeftButton)
+            menu.aboutToShow.emit()
+            assert menu.actions()[0].defaultWidget().findChild(Toggle).isChecked()
+            assert mcp_client.load_servers()["ejemplo"]["enabled"]
             dialog.probe.click()
             assert not dialog.edit.isEnabled()
             assert not dialog.close()

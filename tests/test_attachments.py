@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from PySide6.QtCore import QEvent, QTimer
+from PySide6.QtCore import QEvent, QPoint, QTimer
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox, QPushButton
@@ -165,8 +165,10 @@ def test_window(root):
         memory.menu().actions()[0].trigger()
         assert window.message.toPlainText() == "Busca en la memoria: "
         window.message.clear()
+        mcp.menu().aboutToShow.emit()
+        assert not mcp.menu().actions()[0].isEnabled()
         with patch.object(app.McpDialog, "exec") as opened:
-            mcp.trigger()
+            window.mcp_button.click()
             opened.assert_called_once_with()
 
         with (patch.object(QFileDialog, "getOpenFileNames", return_value=([str(root / "escaneado.pdf")], "")),
@@ -200,10 +202,18 @@ def test_window(root):
         assert window.attachments.add_button.geometry().top() > window.message.geometry().bottom()
         with (patch.object(app, "Client", return_value=client),
               patch.object(app, "load_servers", side_effect=AssertionError("Los adjuntos no pasan a MCP."))):
+            compact = window.message.height()
+            window.message.expand_button.click()
+            QTest.qWait(20)
+            assert window.message.height() > compact
+            controls = window.attachments.add_button, window.send
+            anchors = [button.mapTo(window, QPoint()) for button in controls]
             window.message.setPlainText("Revisa los adjuntos")
             window.enviar()
             assert not window.attachments.add_button.isEnabled() and not window.history_panel.isEnabled()
             wait_for_turn(window)
+            assert window.message.height() == compact and not window.message.expand_button.isChecked()
+            assert [button.mapTo(window, QPoint()) for button in controls] == anchors
             chat_id = window.chat_id
             saved = History().messages(chat_id)
             assert len(saved[0]["attachments"]) == 3 and not window.attachments.files

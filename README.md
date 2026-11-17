@@ -250,6 +250,10 @@ Instala el cliente con `python -m pip install "mcp>=1.28,<2"`. La memoria intern
 
 Abre **MCP** en la cabecera del chat para agregar, editar o eliminar servidores y cambiar su activación con el interruptor de cada fila. **Probar conexión** abre una sesión temporal. El indicador es verde si conecta, rojo si falla y gris antes de probar.
 
+Para agregar un servidor desde el chat, escribe **Instala este MCP** y pega el bloque JSON oficial `mcpServers` de un solo servidor. También puedes usar `/mcp instalar NOMBRE URL` para un endpoint Streamable HTTP o pegar una línea simple `npx -y PAQUETE` o `uvx PAQUETE` después de `/mcp instalar`. Las instrucciones de alta quedan fuera del historial. Si se necesita autenticación Bearer, indica el nombre de una variable `STONEBOT_MCP_…`, o usa un marcador `Bearer ${VARIABLE}` en el ejemplo oficial. Configura el valor fuera del chat antes de probar.
+
+Revisa la URL, el ejecutable y los argumentos antes de pulsar **Autorizar y probar**. En STDIO se inicia el ejecutable para comprobar la conexión. `npx` y `uvx` pueden descargar y ejecutar el paquete en su caché. El alta no ejecuta bloques de comandos de shell ni instaladores independientes. Si la prueba funciona, el servidor aparece desactivado y sin permisos automáticos. Actívalo desde **+ → MCP** o desde el panel de la cabecera.
+
 Cada herramienta descubierta tiene su propio interruptor. Los servidores y herramientas deshabilitados quedan fuera de las herramientas que recibe Nemotron. Estas preferencias se conservan al reiniciar. Vuelve a probar la conexión para cargar el catálogo en la nueva sesión. Al habilitar una herramienta se vuelven a aplicar sus permisos de lectura o confirmación.
 
 Los servidores se agregan desactivados. El nombre identifica la configuración y se mantiene al editarla. Cambiar el transporte, el ejecutable, los argumentos, la URL o la referencia al token desactiva el servidor y revoca sus lecturas automáticas. Los cambios aplican al siguiente turno. En STDIO, escribe los argumentos como una lista JSON, por ejemplo `["-B", "C:\\ruta\\servidor.py"]`. En HTTP, el archivo de configuración guarda el nombre de la variable del token si se configuró.
@@ -300,7 +304,7 @@ Las conversaciones se guardan en `%USERPROFILE%\.stonebot\conversations.sqlite3`
 
 Los mensajes con hora registrada la muestran en formato local. Las respuestas muestran Markdown con títulos, listas, enlaces HTTP(S) y expresiones matemáticas sencillas en línea. Cada bloque de código tiene su lenguaje, resaltado cuando el lenguaje es compatible y un botón **Copiar** que copia solo ese bloque.
 
-En el cuadro de mensaje, **Ampliar editor** y **Reducir editor** ajustan la altura. El texto largo se desplaza dentro del editor y deja **+** y **Enviar** en la fila inferior.
+En el cuadro de mensaje, **Ampliar editor** y **Reducir editor** ajustan la altura. El texto largo se desplaza dentro del editor y deja **+** y **Enviar** en la fila inferior. Al enviar, el editor vuelve al tamaño compacto.
 
 Al pasar el cursor sobre una conversación, **⋯** abre las acciones **Renombrar** y **Eliminar**. También puedes abrir ese menú con clic derecho o con **Mayús + F10** sobre la fila seleccionada.
 
@@ -308,7 +312,7 @@ En un mensaje del usuario, **Editar → Regenerar** vuelve a usar el historial a
 
 ### Adjuntos del chat
 
-Pulsa **+ → Adjuntar archivos** junto al cuadro de mensaje y selecciona hasta cuatro archivos de hasta 10 MiB cada uno. La lista muestra sus nombres antes de enviar y permite quitarlos. El menú también abre MCP, Memoria y Skills. Se admiten imágenes PNG, JPG/JPEG y WebP, PDF y archivos TXT, MD, CSV, TSV, LOG y JSON en UTF-8 o UTF-16 con BOM.
+Pulsa **+ → Adjuntar archivos** junto al cuadro de mensaje y selecciona hasta cuatro archivos de hasta 10 MiB cada uno. La lista muestra sus nombres antes de enviar y permite quitarlos. El submenú **+ → MCP** permite activar o desactivar servidores configurados usando la misma configuración que el panel **MCP** de la cabecera. El menú también contiene Memoria y Skills. Se admiten imágenes PNG, JPG/JPEG y WebP, PDF y archivos TXT, MD, CSV, TSV, LOG y JSON en UTF-8 o UTF-16 con BOM.
 
 Las imágenes de hasta 16 megapíxeles se redimensionan para Ollama y se envían al modelo local `nemotron-3.5-bolt:e4b`. StoneBot comprueba que Ollama anuncie capacidad visual y avisa si el modelo carece de ella. En un PDF mixto extrae el texto disponible por página y renderiza las páginas sin texto como imágenes para ese mismo modelo.
 
@@ -435,7 +439,7 @@ Para ideas, observaciones y aprendizajes, pide al chat un borrador Markdown. Rev
 
 **Etapa 2: experiencias y autoevaluación de capacidades.** Ampliar la evaluación a otras fuentes de evidencia verificable después de probar el registro de ejecuciones MCP.
 
-Siguen pendientes la validación en vivo de integraciones MCP aún no probadas, el trabajo con hipótesis y la iniciativa controlada. La instalación de servidores MCP por el propio agente es una capacidad futura que requerirá propuesta y aprobación explícita.
+Siguen pendientes la validación en vivo de integraciones MCP aún no probadas, el trabajo con hipótesis y la iniciativa controlada.
 
 ---
 
