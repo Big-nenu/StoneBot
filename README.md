@@ -34,7 +34,7 @@ Las etapas son orientativas, no fechas prometidas. Cada etapa debe tener una dem
 | 1B. Herramientas externas (MCP) | Cliente MCP reutilizable y primeras integraciones | Descubre e invoca herramientas desde el chat con controles de permiso | Implementada en prototipo. Cliente STDIO/HTTP, panel y permisos; Context7 y Exa comprobados en pruebas, Tavily pendiente de prueba en vivo según última revisión. | 
 | 2. Aprendizaje de experiencias | Evaluar capacidades a partir de resultados observados | Registra una ejecución MCP, la recupera tras reiniciar y revisa su conclusión con evidencia nueva | Primera implementación. Hipótesis causales y otras fuentes de evidencia pendientes. |
 | 3. Sueño y aprendizaje | Revisar experiencias, contradicciones y conclusiones | Ciclo programado que intenta producir conclusiones trazables | Sueño automático disponible con la ventana visible u oculta en la bandeja. |
-| 4. Iniciativa controlada | Elegir tareas de una cola y proponer experimentos | Ejecuta tareas permitidas, con pausa y registro | Pendiente |
+| 4. Iniciativa controlada | Elegir tareas de una cola y proponer experimentos | Ejecuta tareas permitidas, con pausa y registro | Primer alcance en el chat: plan, ejecución de lecturas y revisión de evidencia. Cola y ejecución desatendida pendientes. |
 | 5. Compañero de escritorio | Presencia visual opcional en Windows | Mascota movible, silenciosa, activable/desactivable | Pendiente |
 | 6. Percepción digital | Comprender eventos autorizados del equipo | Reacciona a eventos concretos sin espiar continuamente | Futuro |
 | 7. Sensores y mundo físico | Explorar cámara, luz, distancia y actuadores | Experimento seguro con ESP32-S3 y servo | Futuro |
@@ -320,6 +320,8 @@ En un mensaje del usuario, **Editar → Regenerar** vuelve a usar el historial a
 
 En un chat sin adjuntos, envía `/tarea` seguido del objetivo. Por ejemplo, `/tarea Encuentra los cinco archivos más grandes de una carpeta con Desktop Commander. Pídeme la ruta y devuelve los nombres y tamaños en bytes.` Activa Desktop Commander y sus herramientas `list_directory` y `get_file_info` desde el panel MCP. Los permisos actuales se aplican a cada lectura nueva.
 
+- StoneBot divide el objetivo en un plan, lo guarda y ejecuta sus pasos en el mismo turno. Puedes verlo en **Actividad**. Para ejecutar sin confirmaciones por lectura, usa **Permitir siempre** en las herramientas de lectura que quieras autorizar. StoneBot pregunta si le falta un dato indispensable que no puede obtener.
+- Si la revisión final detecta evidencia faltante y queda presupuesto, StoneBot hace hasta dos intentos de resolverla en el mismo turno antes de entregar el resultado o explicar qué falta.
 - Si la tarea espera un dato, reabre el mismo chat y responde con el dato, por ejemplo la ruta absoluta. La tarea recupera su objetivo y los resultados guardados.
 - **Actividad** muestra el estado y los pasos registrados. **Pausar** deja terminar la operación actual y detiene el siguiente paso. Usa `/reanudar` para retomar una tarea pausada o interrumpida, o `/cancelar` para cerrarla. Tras un cierre inesperado, un paso sin resultado queda marcado como incierto.
 - El historial local conserva el objetivo, el estado y los resultados acotados de las lecturas de la tarea más reciente de cada chat. Se reutiliza una lectura idéntica durante la tarea. Para volver a consultar datos que hayan cambiado, inicia otra. Los mensajes anteriores siguen en la conversación. Usa conversaciones sin tarea para editar y regenerar.

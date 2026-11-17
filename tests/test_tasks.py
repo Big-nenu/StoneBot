@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
 import mcp_client
 from history import History
-from tasks import COVERAGE_STATUS, REPORT, new_task
+from tasks import COVERAGE_STATUS, PLAN_STATUS, REPORT, new_task
 from test_mcp import example_stdio
 
 
@@ -55,6 +55,10 @@ def stage(root, phase, live):
 
     def mock_chat(**call):
         transcript = call["messages"]
+        if call.get("format") == PLAN_STATUS:
+            assert phase in {"ask", "pause"}
+            return SimpleNamespace(message=Message(role="assistant", content=json.dumps(
+                {"pasos": ["Obtener la ruta", "Revisar los tamaños", "Ordenar los resultados"]})))
         if call.get("format") == COVERAGE_STATUS:
             assert phase == "answer" and "Eco MCP" in transcript[-1]["content"]
             return SimpleNamespace(message=Message(role="assistant", content='{"verificada":true,"faltante":""}'))
@@ -99,6 +103,8 @@ def stage(root, phase, live):
                 window.open_chat(window.history.find()[0][0])
                 assert window.task["status"] == ("interrupted" if phase == "recover" else "waiting")
                 assert OBJECTIVE == window.task["objective"]
+                assert window.task["plan"]
+                assert f"Plan · {window.task['plan'][-1]}" in window.task_panel.events.toPlainText()
                 if phase == "recover":
                     assert "Resultado guardado" in window.task_panel.events.toPlainText()
                     assert "Resultado incierto" in window.task_panel.events.toPlainText()

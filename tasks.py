@@ -25,6 +25,10 @@ COVERAGE_STATUS = {"type": "object", "required": ["verificada", "faltante"], "pr
     "verificada": {"type": "boolean"},
     "faltante": {"type": "string"},
 }}
+PLAN_STATUS = {"type": "object", "required": ["pasos"], "properties": {
+    "pasos": {"type": "array", "minItems": 1, "maxItems": 6,
+              "items": {"type": "string", "maxLength": 300}},
+}}
 LIMIT_REASON = ("Se agotó el presupuesto de herramientas antes de verificar la cobertura. "
                 "Falta demostrar qué universo debía revisarse y que no quedaron elementos pendientes.")
 REPORT = Tool.model_validate({
@@ -83,6 +87,7 @@ def task_context(task):
         recent.append(entry)
         remaining -= len(json.dumps(entry, ensure_ascii=False))
     return json.dumps({"objetivo": task["objective"], "mensaje_anterior": task["message"],
+                       "plan": task.get("plan", []),
                        "observaciones_de_cobertura": task.get("coverage_notes", []),
                        "pasos_fuera_del_contexto": len(task["steps"]) - len(recent),
                        "pasos_recientes": list(reversed(recent))}, ensure_ascii=False)

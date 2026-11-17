@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
 import mcp_client
 from history import History
-from tasks import COVERAGE_STATUS, LIMIT_REASON, new_task, upgrade_task
+from tasks import COVERAGE_STATUS, LIMIT_REASON, PLAN_STATUS, new_task, upgrade_task
 from test_tasks import report
 
 
@@ -63,11 +63,21 @@ async def check(root, desktop):
         approvals.append(Path(arguments["path"]))
         return approvals[-1] in [folder, *files]
 
-    def model_for(paths, *, audit=False):
+    def model_for(paths, *, audit=False, repair=False):
         def chat(**call):
+            if call.get("format") == PLAN_STATUS:
+                return SimpleNamespace(message=Message(role="assistant", content=json.dumps(
+                    {"pasos": ["Reunir los tamaños", "Comprobar y comparar los resultados"]})))
             if call.get("format") == COVERAGE_STATUS:
                 assert audit
                 evidence = json.loads(call["messages"][-1]["content"])["lecturas"]
+                if repair:
+                    assert len(evidence) in {1, 2}
+                    if len(evidence) == 1:
+                        paths.append(files[1])
+                        return SimpleNamespace(message=Message(role="assistant", content=json.dumps(
+                            {"verificada": False, "faltante": "Falta comprobar archivo-01.txt."})))
+                    return SimpleNamespace(message=Message(role="assistant", content='{"verificada":true,"faltante":""}'))
                 assert len(evidence) == 6
                 assert "archivo-15.txt" in evidence[0]["result"]
                 if real_audit is not None:
@@ -76,19 +86,23 @@ async def check(root, desktop):
                     {"verificada": False, "faltante": "Quedan once archivos sin comprobar."})))
             if paths:
                 path = paths.pop(0)
+                if repair and path == files[1]:
+                    assert "Falta comprobar archivo-01.txt" in call["messages"][-1]["content"]
                 tool_name = "list_directory" if path == folder else "get_file_info"
                 alias, = [tool.function.name for tool in call["tools"] if tool_name in tool.function.name]
                 return SimpleNamespace(message=Message(role="assistant", tool_calls=[
                     {"function": {"name": alias, "arguments": {"path": str(path)}}}
                 ]))
-            return SimpleNamespace(message=report("completada", "Los cinco están verificados; archivo-04.txt es el mayor."))
+            result = ("archivo-01.txt es el mayor (4096 bytes)." if repair else
+                      "Los cinco están verificados; archivo-04.txt es el mayor.")
+            return SimpleNamespace(message=report("completada", result))
         return chat
 
-    async def run_turn(snapshot, text, paths, *, audit=False):
+    async def run_turn(snapshot, text, paths, *, audit=False, repair=False):
         pool = app.McpPool() if desktop else None
         worker = app.Worker([{"role": "system", "content": app.SYSTEM}, {"role": "user", "content": text}],
                             pool, task=snapshot, save_task=lambda value: history.save_task(chat_id, value))
-        with (patch.object(app, "Client", return_value=SimpleNamespace(chat=model_for(paths, audit=audit))),
+        with (patch.object(app, "Client", return_value=SimpleNamespace(chat=model_for(paths, audit=audit, repair=repair))),
               patch.object(worker, "confirm_external", side_effect=approve),
               nullcontext() if desktop else patch.object(app, "session_for", fake_session)):
             try:
@@ -116,6 +130,14 @@ async def check(root, desktop):
         assert "once archivos" in answer
     else:
         print(answer, flush=True)
+
+    objective = "Compara los tamaños de archivo-00.txt y archivo-01.txt e identifica el mayor."
+    task = new_task(objective)
+    answer = await run_turn(task, objective, [files[0]], audit=True, repair=True)
+    saved = History().task(chat_id)
+    assert saved["status"] == "completed" and len(saved["steps"]) == 2
+    assert saved["plan"] == ["Reunir los tamaños", "Comprobar y comparar los resultados"]
+    assert answer == "archivo-01.txt es el mayor (4096 bytes)."
 
     legacy = dict(status="completed", steps=[{}])
     assert upgrade_task(legacy) and legacy["status"] == "paused" and legacy["coverage_notes"]
