@@ -189,10 +189,20 @@ async def discover(session, name, server, *, include_disabled=False):
         seen.add(cursor)
 
 
-async def probe_server(name, server):
-    async with session_for(name, server) as session:
-        entries = await discover(session, name, server, include_disabled=True)
-        return sorted((tool.name, auto) for _, _, tool, auto in entries.values())
+async def probe_server(name, server, *, include_definitions=False):
+    from anyio import BrokenResourceError
+
+    entries = None
+    try:
+        async with session_for(name, server) as session:
+            entries = await discover(session, name, server, include_disabled=True)
+    except* BrokenResourceError:
+        # STDIO puede recibir una notificación tardía mientras el SDK cierra sus streams.
+        if entries is None or server["transport"] != "stdio":
+            raise
+    if include_definitions:
+        return sorted((tool for _, _, tool, _ in entries.values()), key=lambda tool: tool.name)
+    return sorted((tool.name, auto) for _, _, tool, auto in entries.values())
 
 
 def connection_error(error):

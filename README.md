@@ -250,6 +250,8 @@ Instala el cliente con `python -m pip install "mcp>=1.28,<2"`. La memoria intern
 
 Abre **MCP** en la cabecera del chat para agregar, editar o eliminar servidores y cambiar su activación con el interruptor de cada fila. **Probar conexión** abre una sesión temporal. El indicador es verde si conecta, rojo si falla y gris antes de probar.
 
+Despliega una categoría para ver el tipo, la activación y el permiso de cada herramienta. El interruptor de la categoría cambia la activación de todo el grupo sin otorgar permisos. Selecciona una categoría o varias herramientas con **Ctrl** o **Mayús** y usa **Permisos de selección…** para pedir confirmación o autorizar explícitamente las lecturas compatibles.
+
 Para agregar un servidor desde el chat, escribe **Instala este MCP** y pega el bloque JSON oficial `mcpServers` de un solo servidor. También puedes usar `/mcp instalar NOMBRE URL` para un endpoint Streamable HTTP o pegar una línea simple `npx -y PAQUETE` o `uvx PAQUETE` después de `/mcp instalar`. Las instrucciones de alta quedan fuera del historial. Si se necesita autenticación Bearer, indica el nombre de una variable `STONEBOT_MCP_…`, o usa un marcador `Bearer ${VARIABLE}` en el ejemplo oficial. Configura el valor fuera del chat antes de probar.
 
 Revisa la URL, el ejecutable y los argumentos antes de pulsar **Autorizar y probar**. En STDIO se inicia el ejecutable para comprobar la conexión. `npx` y `uvx` pueden descargar y ejecutar el paquete en su caché. El alta no ejecuta bloques de comandos de shell ni instaladores independientes. Si la prueba funciona, el servidor aparece desactivado y sin permisos automáticos. Actívalo desde **+ → MCP** o desde el panel de la cabecera.
@@ -285,7 +287,7 @@ En el panel lateral, **Diagnóstico** abre el registro técnico local. Incluye e
 
 La configuración se guarda en `%USERPROFILE%\.stonebot\mcp_servers.json`. Usa los argumentos de lanzamiento STDIO únicamente para opciones que no contengan credenciales. Cada servidor STDIO arranca en su propio directorio bajo `%USERPROFILE%\.stonebot\mcp\`, con las variables de perfil redirigidas. Activar STDIO autoriza iniciar ese programa con los permisos de la cuenta actual. Ejecuta servidores locales de terceros bajo una cuenta o un entorno aislado por el sistema si necesitas impedirles el acceso a archivos de tu cuenta.
 
-Cuando se solicita confirmación, **Permitir una vez** autoriza esa llamada y **Denegar** la cancela. **Permitir siempre** está disponible solo para herramientas declaradas de solo lectura que pasan las comprobaciones de seguridad. El permiso queda asociado al servidor y a la definición de la herramienta. Puedes revisarlo y revocarlo en **MCP → Permisos…**. Las lecturas automáticas configuradas por nombre pasan por la misma comprobación. Las herramientas peligrosas o sin declaración de lectura piden confirmación en cada llamada. Los permisos automáticos requieren confiar en que el servidor describe sus herramientas con veracidad.
+Cuando se solicita confirmación, **Permitir una vez** autoriza esa llamada y **Denegar** la cancela. **Permitir siempre** está disponible solo para herramientas declaradas de solo lectura que pasan las comprobaciones de seguridad. El permiso queda asociado al servidor y a la definición de la herramienta. Puedes revisarlo y revocarlo en **MCP → Permisos guardados…**. Las lecturas automáticas configuradas por nombre pasan por la misma comprobación. Las herramientas peligrosas o sin declaración de lectura piden confirmación en cada llamada. Los permisos automáticos requieren confiar en que el servidor describe sus herramientas con veracidad.
 
 Con el ejemplo activado, pide en el chat «Usa echo del servidor ejemplo con el texto hola». Las pruebas usan configuraciones temporales.
 
@@ -322,6 +324,8 @@ Cada tramo de un PDF admite hasta 40 páginas, cuatro páginas visuales y 12 000
 
 El historial local conserva el nombre, una copia de la imagen redimensionada o el texto extraído. Al reabrir o regenerar el chat, los adjuntos siguen disponibles aunque se mueva el original. Las rutas de origen quedan fuera del historial. Mientras el chat incluya adjuntos, los turnos de conversación usan Ollama local sin herramientas MCP ni de memoria permanente.
 
+Pega una captura o un archivo copiado desde el Explorador con **Ctrl+V**. Las imágenes se muestran como miniaturas y los documentos como tarjetas. Usa **Quitar** en el editor para retirar un adjunto antes de enviarlo.
+
 Al elegir una consulta de **Memoria** desde una conversación con adjuntos ya enviados, StoneBot la prepara en un chat nuevo. Si hay adjuntos pendientes de enviar, primero puedes enviarlos o quitarlos.
 
 ### Agent Skills locales
@@ -333,6 +337,10 @@ Ollama recibe solo los nombres y descripciones de las Skills habilitadas. Cuando
 Para probarlo, habilita **faro-de-prueba** y escribe «Genera una ficha Faro SB sobre astronomía». La primera línea debe incluir `FARO SB · LINTERNA-742`. Una pregunta general, como «¿Cuánto es 7 por 8?», no debería mostrar la carga. La prueba automatizada con Nemotron local se ejecuta con `python -B tests/test_skills.py --live`.
 
 La fila **Actividad** aparece en la conversación junto a la respuesta en curso. Se puede desplegar para ver el estado del turno, las operaciones MCP y sus resultados o errores. **Mostrar razonamiento de Ollama** aparece solo cuando la API entrega el campo separado `message.thinking`. Con la integración actual ese campo llega al terminar cada respuesta de Ollama. La actividad y el razonamiento se conservan en la vista actual del chat y se descartan al cambiar de conversación. Los detalles técnicos siguen en **Diagnóstico**. [Campo de razonamiento en Ollama](https://docs.ollama.com/capabilities/thinking)
+
+### Instrucciones generales
+
+En **+ → Instrucciones generales…** puedes guardar preferencias para todas las conversaciones. StoneBot responde en español por defecto. Las preferencias se aplican en el siguiente turno y se conservan al reiniciar.
 
 ## Apariencia
 

@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import httpx
-from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QLineEdit, QMessageBox, QPushButton
@@ -52,7 +52,7 @@ def submit_form(button, callback):
 
 
 def test_manager():
-    qt = QApplication([])
+    qt = QApplication.instance() or QApplication([])
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         with (patch.object(mcp_client, "default_root", return_value=root),
@@ -79,6 +79,15 @@ def test_manager():
             def switch(tree, row=0):
                 holder = tree.itemWidget(tree.topLevelItem(row), 2)
                 return holder.findChild(Toggle)
+
+            def tool_item(name):
+                for row in range(dialog.tools.topLevelItemCount()):
+                    group = dialog.tools.topLevelItem(row)
+                    for index in range(group.childCount()):
+                        item = group.child(index)
+                        if item.text(0) == name:
+                            return item
+                raise AssertionError(name)
 
             def status():
                 return dialog.table.itemWidget(dialog.table.currentItem(), 3)
@@ -113,10 +122,9 @@ def test_manager():
             assert not dialog.close()
             wait_for_probe()
             assert "Correcta" in status().text() and "#86efac" in status().styleSheet()
-            assert dialog.tools.topLevelItemCount() == 2
-            assert dialog.tools.topLevelItem(0).text(1) == "Lectura automática"
-            assert dialog.tools.topLevelItem(1).text(1) == "Requiere confirmación"
-            assert dialog.tools.itemWidget(dialog.tools.topLevelItem(0), 2).findChild(QLabel).text() == "Activo"
+            assert tool_item("echo").text(1) == "Lectura automática"
+            assert tool_item("mark").text(1) == "Requiere confirmación"
+            assert dialog.tools.itemWidget(tool_item("echo"), 2).findChild(QLabel).text() == "Activo"
             widths = []
             for width in (380, 980):
                 dialog.resize(width, 460)
@@ -124,7 +132,9 @@ def test_manager():
                 widths.append([tree.columnWidth(0) for tree in (dialog.table, dialog.tools)])
                 assert_controls_fit(dialog, (dialog.add, dialog.edit, dialog.remove, dialog.api_key, dialog.probe))
                 for tree in (dialog.table, dialog.tools):
-                    assert tree.horizontalScrollBar().maximum() == 0
+                    assert tree.horizontalScrollBar().maximum() == 0, (
+                        tree.accessibleName(), tree.viewport().width(),
+                        [tree.columnWidth(i) for i in range(tree.columnCount())])
                     for row in range(tree.topLevelItemCount()):
                         item = tree.topLevelItem(row)
                         toggle = switch(tree, row)
@@ -141,11 +151,11 @@ def test_manager():
                             assert label.text() == "Activo"
                             assert end.x() < label_start and label_start + label.width() <= start + tree.columnWidth(2)
             assert all(narrow < wide for narrow, wide in zip(*widths))
-            QTest.mouseClick(switch(dialog.tools, 1), Qt.MouseButton.LeftButton)
+            QTest.mouseClick(dialog.tools.itemWidget(tool_item("mark"), 2).findChild(Toggle), Qt.MouseButton.LeftButton)
             assert mcp_client.load_servers()["ejemplo"]["disabled_tools"] == ["mark"]
-            assert dialog.tools.topLevelItem(1).text(1) == "Deshabilitada"
-            assert dialog.tools.itemWidget(dialog.tools.topLevelItem(1), 2).findChild(QLabel).text() == "Inactivo"
-            assert not switch(dialog.tools, 1).isChecked()
+            assert tool_item("mark").text(1) == "Requiere confirmación"
+            assert dialog.tools.itemWidget(tool_item("mark"), 2).findChild(QLabel).text() == "Inactivo"
+            assert not dialog.tools.itemWidget(tool_item("mark"), 2).findChild(Toggle).isChecked()
             QTest.mouseClick(switch(dialog.table), Qt.MouseButton.LeftButton)
             assert not mcp_client.load_servers()["ejemplo"]["enabled"]
             assert "Correcta" in status().text()
@@ -226,7 +236,7 @@ def test_manager():
 
             probe_http(authenticated)
             assert "Correcta" in status().text()
-            assert dialog.tools.topLevelItem(0).text(0) == "search"
+            assert tool_item("search").text(0) == "search"
             with patch.object(mcp_client, "read_key", side_effect=mcp_client.CredentialAccessError):
                 probe_http(authenticated)
             assert "Correcta" in status().text()
@@ -263,7 +273,8 @@ def test_manager():
             assert not vault
             dialog.close()
             window.close()
-            qt.processEvents()
+            window.deleteLater()
+            QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 def test_appearance():
@@ -327,9 +338,12 @@ def test_appearance():
             panel.restore.click()
             assert reopened.appearance == dict(COLORS, font_size=23)
             assert app.load_appearance() == reopened.appearance
+            after_restart.close()
             window.close()
             reopened.close()
-            qt.processEvents()
+            for widget in (after_restart, window, reopened):
+                widget.deleteLater()
+            QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 def test_toggle_contrast():
@@ -364,9 +378,12 @@ def test_xcode_manager_layout():
         assert_controls_fit(dialog, dialog.findChildren(QPushButton))
         dialog.close()
         window.close()
+        window.deleteLater()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 if __name__ == "__main__":
+    qt = QApplication([])
     test_manager()
     test_appearance()
     test_toggle_contrast()

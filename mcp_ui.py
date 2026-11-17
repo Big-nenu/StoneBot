@@ -3,11 +3,12 @@ import asyncio
 import json
 import os
 import sqlite3
+from collections import defaultdict
 
 from PySide6.QtCore import QSize, QSignalBlocker, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QHeaderView,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QListWidget, QMessageBox, QPlainTextEdit, QPushButton, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget, QWidgetAction,
 )
@@ -17,12 +18,14 @@ from mcp_client import (
     connection_error, is_desktop_commander, load_servers, probe_server, save_servers, startup_timeout, validate_server,
 )
 from mcp_credentials import credential_target, delete_key, read_key, store_key
-from mcp_permissions import list_permissions, revoke
+from mcp_permissions import list_permissions, permission_signature, remember_many, revoke, revoke_many, safe_read, saved_permissions
 from mcp_setup import ensure_new, prepare
+from mcp_tool_groups import category, operation
 
 
 TRANSPORTS = {"stdio": "STDIO", "http": "Streamable HTTP"}
 STATUS_COLORS = {"Correcta": "#86efac", "Falló": "#fca5a5"}
+TOOL_NAMES = Qt.ItemDataRole.UserRole
 
 
 class Toggle(QCheckBox):
@@ -144,7 +147,7 @@ class ConnectionTest(QThread):
 
     async def probe(self):
         async with asyncio.timeout(startup_timeout(self.server)):
-            return await probe_server(self.name, self.server)
+            return await probe_server(self.name, self.server, include_definitions=True)
 
     def run(self):
         try:
@@ -176,9 +179,11 @@ class McpDialog(QDialog):
         self.table.setRootIsDecorated(False)
         self.table.currentItemChanged.connect(self.refresh_selection)
         self.tools = QTreeWidget()
-        self.tools.setHeaderLabels(["Herramienta", "Permiso", "Activación"])
-        self.tools.setRootIsDecorated(False)
+        self.tools.setHeaderLabels(["Herramienta", "Permiso", "Activación", "Tipo"])
+        self.tools.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tools.setAccessibleName("Herramientas del servidor")
+        self.tools.itemSelectionChanged.connect(self.update_tool_actions)
+        self.tools_server = None
         for tree in (self.table, self.tools):
             tree.setAlternatingRowColors(True)
             tree.setUniformRowHeights(True)
@@ -186,6 +191,7 @@ class McpDialog(QDialog):
             header.setStretchLastSection(False)
             header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
             header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.tools.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.notice = QLabel("Probar conexión descubre herramientas. En STDIO también inicia el ejecutable.")
         self.notice.setWordWrap(True)
         self.notice.setObjectName("mcpNotice")
@@ -225,7 +231,10 @@ class McpDialog(QDialog):
         tools_title.setProperty("sectionHeading", True)
         tools_header.addWidget(tools_title)
         tools_header.addStretch()
-        self.permissions = QPushButton("Permisos…")
+        self.selection_permissions = QPushButton("Permisos de selección…")
+        self.selection_permissions.clicked.connect(self.review_selection_permissions)
+        tools_header.addWidget(self.selection_permissions)
+        self.permissions = QPushButton("Permisos guardados…")
         self.permissions.clicked.connect(self.review_permissions)
         tools_header.addWidget(self.permissions)
         layout.addLayout(tools_header)
@@ -238,7 +247,7 @@ class McpDialog(QDialog):
         self.setStyleSheet(dialog_style(theme))
         self.refresh(self.selected())
 
-    def add_toggle(self, tree, item, column, checked, label, on_change, *, show_state=False):
+    def add_toggle(self, tree, item, column, checked, label, on_change, *, show_state=False, state_text=None):
         holder = QWidget()
         layout = QHBoxLayout(holder)
         layout.setContentsMargins(5, 0, 5, 0)
@@ -248,12 +257,12 @@ class McpDialog(QDialog):
         switch.setEnabled(self.test is None)
         switch.toggled.connect(on_change)
         layout.addWidget(switch)
-        if show_state:
-            state = QLabel("Activo" if checked else "Inactivo")
+        if show_state or state_text is not None:
+            state = QLabel(state_text if state_text is not None else ("Activo" if checked else "Inactivo"))
             state.setStyleSheet(f"background: transparent; color: {text};")
             layout.addWidget(state)
         tree.setItemWidget(item, column, holder)
-        if show_state:
+        if show_state or state_text is not None:
             state.ensurePolished()
             state.setMinimumWidth(state.fontMetrics().horizontalAdvance("Inactivo"))
         item.setSizeHint(column, holder.sizeHint().expandedTo(QSize(70, 30)))
@@ -277,6 +286,7 @@ class McpDialog(QDialog):
         return item.text(0) if item else None
 
     def refresh(self, selected=None):
+        blocker = QSignalBlocker(self.table)
         self.table.clear()
         for name, server in sorted(self.servers.items()):
             status, _, detail = self.results.get(name, ("Sin probar", [], ""))
@@ -301,6 +311,7 @@ class McpDialog(QDialog):
                 self.table.setCurrentItem(item)
         if self.table.currentItem() is None and self.table.topLevelItemCount():
             self.table.setCurrentItem(self.table.topLevelItem(0))
+        blocker.unblock()
         self.refresh_selection()
 
     def refresh_selection(self):
@@ -311,17 +322,101 @@ class McpDialog(QDialog):
             button.setEnabled(idle and name is not None)
         self.api_key.setEnabled(idle and name is not None and bool(credential_target(name, self.servers[name])))
         self.permissions.setEnabled(idle and name is not None)
+        self.refresh_tools(name)
+
+    def refresh_tools(self, name):
+        old_groups = [self.tools.topLevelItem(i) for i in range(self.tools.topLevelItemCount())]
+        same_server = self.tools_server == name and bool(old_groups)
+        expanded = {group.text(0) for group in old_groups if group.isExpanded()} if same_server else set()
+        selected = {(item.parent() is None, tuple(item.data(0, TOOL_NAMES)))
+                    for item in self.tools.selectedItems()} if same_server else set()
+        self.tools_server = name
         self.tools.clear()
         _, tools, _ = self.results.get(name, ("", [], ""))
-        for tool, auto in tools:
-            permission = "Lectura automática" if auto else "Requiere confirmación"
-            checked = tool not in self.servers[name].get("disabled_tools", [])
-            item = QTreeWidgetItem([tool, permission if checked else "Deshabilitada", ""])
-            item.setToolTip(0, tool)
-            self.tools.addTopLevelItem(item)
-            self.add_toggle(self.tools, item, 2, checked, f"Herramienta {tool}",
-                            lambda enabled, name=name, tool=tool: self.toggle_tool(name, tool, enabled),
-                            show_state=True)
+        if not tools:
+            self.update_tool_actions()
+            return
+        server = self.servers[name]
+        disabled = set(server.get("disabled_tools", []))
+        configured = set(server["read_tools"])
+        try:
+            granted = saved_permissions(name)
+        except (OSError, ValueError, RuntimeError, sqlite3.Error):
+            granted = {}
+        groups = defaultdict(list)
+        for tool in tools:
+            groups[category(tool)].append(tool)
+        colors = ({"Lectura": "#16723f", "Cambios": "#906100", "Ejecución": "#a32929"}
+                  if readable_text(self.theme["background"]) == "#000000" else
+                  {"Lectura": "#86efac", "Cambios": "#fcd38b", "Ejecución": "#fca5a5"})
+        for label, members in sorted(groups.items()):
+            names = tuple(tool.name for tool in members)
+            active_count = len(names) - len(disabled.intersection(names))
+            group = QTreeWidgetItem([label, "", "", ""])
+            group.setData(0, TOOL_NAMES, names)
+            group.setToolTip(0, f"{active_count} de {len(names)} herramientas activas")
+            self.tools.addTopLevelItem(group)
+            self.add_toggle(self.tools, group, 2, active_count == len(names), f"Todas las herramientas de {label}",
+                            lambda active, names=names: self.toggle_tools(name, names, active),
+                            state_text=f"{active_count}/{len(names)}")
+            for tool in members:
+                automatic = safe_read(tool) and (
+                    tool.name in configured or granted.get(tool.name) == permission_signature(server, tool))
+                checked = tool.name not in disabled
+                kind = operation(tool)
+                permission = "Lectura automática" if automatic else "Requiere confirmación"
+                item = QTreeWidgetItem([tool.name, permission, "", kind])
+                item.setData(0, TOOL_NAMES, (tool.name,))
+                item.setToolTip(0, tool.name)
+                item.setToolTip(1, permission if checked else f"{permission} cuando la herramienta esté activa.")
+                item.setToolTip(3, kind)
+                if kind in colors:
+                    item.setForeground(3, QColor(colors[kind]))
+                group.addChild(item)
+                self.add_toggle(self.tools, item, 2, checked, f"Herramienta {tool.name}",
+                                lambda active, tool=tool.name: self.toggle_tools(name, (tool,), active), show_state=True)
+                item.setSelected((False, (tool.name,)) in selected)
+            group.setExpanded(label in expanded if same_server else len(tools) <= 8)
+            group.setSelected((True, names) in selected)
+        self.update_tool_actions()
+
+    def update_tool_actions(self):
+        self.selection_permissions.setEnabled(self.test is None and bool(self.tools.selectedItems()))
+
+    def review_selection_permissions(self):
+        name = self.selected()
+        if self.test is not None or not self.tools.selectedItems():
+            return
+        names = {tool for item in self.tools.selectedItems() for tool in item.data(0, TOOL_NAMES)}
+        tools = [tool for tool in self.results[name][1] if tool.name in names]
+        eligible = [tool for tool in tools if safe_read(tool)]
+        dialog = QMessageBox(QMessageBox.Icon.Question, "Permisos de la selección",
+                             f"{len(tools)} herramientas seleccionadas · {len(eligible)} lecturas compatibles.", parent=self)
+        dialog.setInformativeText("Las operaciones de cambio, ejecución o riesgo desconocido requieren confirmación.")
+        automatic = dialog.addButton("Autorizar lecturas compatibles", QMessageBox.ButtonRole.AcceptRole)
+        require = dialog.addButton("Pedir confirmación", QMessageBox.ButtonRole.ActionRole)
+        cancel = dialog.addButton(QMessageBox.StandardButton.Cancel)
+        automatic.setEnabled(bool(eligible))
+        dialog.setDefaultButton(cancel)
+        dialog.exec()
+        choice = dialog.clickedButton()
+        dialog.deleteLater()
+        try:
+            server = self.servers[name]
+            if choice is automatic:
+                remember_many(name, [(tool.name, permission_signature(server, tool)) for tool in eligible])
+                self.notice.setText(f"{len(eligible)} permisos de lectura guardados.")
+            elif choice is require:
+                remaining = [tool for tool in server["read_tools"] if tool not in names]
+                if remaining != server["read_tools"] and not self.commit(name, dict(server, read_tools=remaining)):
+                    return
+                revoke_many(name, names)
+                self.notice.setText("La selección volverá a pedir confirmación.")
+            else:
+                return
+        except (OSError, ValueError, RuntimeError, sqlite3.Error):
+            self.notice.setText("No se pudieron guardar todos los cambios de permisos.")
+        self.refresh_tools(name)
 
     def commit(self, name, server):
         try:
@@ -343,7 +438,7 @@ class McpDialog(QDialog):
             return False
         old = self.servers.get(name)
         self.servers = current
-        transient = {"enabled", "disabled_tools"}
+        transient = {"enabled", "disabled_tools", "read_tools"}
         if (old is None or server is None or
                 any(old.get(key) != server.get(key) for key in (old.keys() | server.keys()) - transient)):
             self.results.pop(name, None)
@@ -557,17 +652,17 @@ class McpDialog(QDialog):
         except ValueError as exc:
             return str(exc)
         if is_desktop_commander(server):
-            server["disabled_tools"] = [tool for tool, _ in tools]
+            server["disabled_tools"] = [tool.name for tool in tools]
         if not self.commit(name, server):
             return self.notice.text()
         self.results[name] = ("Correcta", tools, "")
         self.refresh(name)
         return f"{name} verificado y guardado desactivado. Herramientas encontradas: {len(tools)}."
 
-    def toggle_tool(self, name, tool, enabled):
+    def toggle_tools(self, name, tools, enabled):
         server = self.servers[name]
         disabled = set(server.get("disabled_tools", []))
-        (disabled.discard if enabled else disabled.add)(tool)
+        (disabled.difference_update if enabled else disabled.update)(tools)
         self.commit(name, dict(server, disabled_tools=sorted(disabled)))
 
     def remove_server(self):

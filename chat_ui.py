@@ -1,17 +1,21 @@
 """Vista del chat y estilo basado en las preferencias de apariencia."""
+import base64
 import re
 from math import ceil
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QTextOption
+from PySide6.QtGui import QImage, QPixmap, QTextOption
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMenu, QPlainTextEdit, QPushButton,
     QSizePolicy, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
 from appearance import button_style, control_colors, link_color, readable_text, secondary_button, shade
-from attachments import FILE_FILTER, MAX_FILES, MAX_IMAGES, PDFPageRange, attachment_images, attachment_label, read_attachment
+from attachments import (
+    FILE_FILTER, MAX_FILES, MAX_IMAGES, PDFPageRange, attachment_images, attachment_label, clipboard_attachment,
+    read_attachment,
+)
 
 
 class ChatText(QTextEdit):
@@ -42,6 +46,8 @@ class ChatText(QTextEdit):
 
 class Composer(ChatText):
     submitted = Signal()
+    pasted_paths = Signal(list)
+    pasted_image = Signal(QImage)
 
     def __init__(self):
         super().__init__()
@@ -81,6 +87,55 @@ class Composer(ChatText):
             return
         super().keyPressEvent(event)
 
+    def canInsertFromMimeData(self, source):
+        return (source.hasImage() or any(url.isLocalFile() for url in source.urls())
+                or super().canInsertFromMimeData(source))
+
+    def insertFromMimeData(self, source):
+        paths = [url.toLocalFile() for url in source.urls() if url.isLocalFile()]
+        if paths:
+            self.pasted_paths.emit(paths)
+        elif source.hasImage():
+            image = source.imageData()
+            self.pasted_image.emit(image.toImage() if isinstance(image, QPixmap) else QImage(image))
+        else:
+            super().insertFromMimeData(source)
+
+
+class AttachmentCard(QWidget):
+    def __init__(self, file):
+        super().__init__()
+        self.setObjectName("attachmentCard")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.row = QHBoxLayout(self)
+        self.row.setContentsMargins(8, 5, 8, 5)
+        self.row.setSpacing(8)
+        badge = QLabel()
+        badge.setObjectName("attachmentBadge")
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        badge.setFixedSize(44, 36)
+        if encoded := file.get("image"):
+            pixmap = QPixmap()
+            try:
+                pixmap.loadFromData(base64.b64decode(encoded, validate=True))
+            except (ValueError, TypeError):
+                pass
+            if pixmap.isNull():
+                badge.setText("IMG")
+            else:
+                badge.setPixmap(pixmap.scaled(badge.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                                              Qt.TransformationMode.SmoothTransformation))
+        else:
+            suffix = Path(file["name"]).suffix[1:].upper()
+            badge.setText(suffix if suffix in {"PDF", "TXT", "MD", "CSV", "TSV", "LOG", "JSON"} else "DOC")
+        self.row.addWidget(badge)
+        display = attachment_label(file) + (" · parcial" if file.get("partial") else "")
+        label = QLabel(display if len(display) <= 48 else display[:45] + "…")
+        label.setTextFormat(Qt.TextFormat.PlainText)
+        label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        label.setToolTip(display)
+        self.row.addWidget(label, 1)
+
 
 class AttachmentTray(QWidget):
     problem = Signal(str)
@@ -101,20 +156,31 @@ class AttachmentTray(QWidget):
 
     def choose(self):
         paths, _ = QFileDialog.getOpenFileNames(self, "Adjuntar archivos", filter=FILE_FILTER)
+        self.add_paths(paths)
+
+    def add_paths(self, paths):
         for path in paths:
-            if len(self.files) >= MAX_FILES:
-                self.problem.emit(f"Puedes adjuntar hasta {MAX_FILES} archivos por mensaje.")
+            if not self.has_room():
                 break
             try:
                 file = self.read_selected(path)
-                if file is None:
-                    continue
-                if sum(map(attachment_images, self.files)) + attachment_images(file) > MAX_IMAGES:
-                    raise ValueError(f"El mensaje admite hasta {MAX_IMAGES} imágenes o páginas visuales. "
-                                     "Envía los archivos en mensajes separados.")
-                self.add_file(file)
+                if file is not None:
+                    self.add_file(file)
             except (OSError, ValueError, RuntimeError) as exc:
                 self.problem.emit(f"No se pudo adjuntar {Path(path).name}. {exc}")
+
+    def has_room(self):
+        if len(self.files) < MAX_FILES:
+            return True
+        self.problem.emit(f"Puedes adjuntar hasta {MAX_FILES} archivos por mensaje.")
+        return False
+
+    def add_clipboard_image(self, image):
+        if self.has_room():
+            try:
+                self.add_file(clipboard_attachment(image))
+            except ValueError as exc:
+                self.problem.emit(str(exc))
 
     def read_selected(self, path):
         pages = None
@@ -133,20 +199,15 @@ class AttachmentTray(QWidget):
                 pages = (int(pieces[0]), int(pieces[-1]))
 
     def add_file(self, file):
+        if sum(map(attachment_images, self.files)) + attachment_images(file) > MAX_IMAGES:
+            raise ValueError(f"El mensaje admite hasta {MAX_IMAGES} imágenes o páginas visuales. "
+                             "Envía los archivos en mensajes separados.")
         self.files.append(file)
-        row = QWidget()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        name = file["name"]
-        display = attachment_label(file)
-        label = QLabel((display if len(display) <= 64 else display[:61] + "…") + (" (parcial)" if file.get("partial") else ""))
-        label.setTextFormat(Qt.TextFormat.PlainText)
-        label.setToolTip(display)
+        row = AttachmentCard(file)
         remove = secondary_button(QPushButton("Quitar"))
-        remove.setAccessibleName(f"Quitar {name}")
+        remove.setAccessibleName(f"Quitar {file['name']}")
         remove.clicked.connect(lambda: self.remove_row(row))
-        layout.addWidget(label, 1)
-        layout.addWidget(remove)
+        row.row.addWidget(remove)
         self.rows.addWidget(row)
         self.show()
 
@@ -315,6 +376,10 @@ def chat_style(theme):
             QTextBrowser#codeText QScrollBar::add-line:horizontal, QTextBrowser#codeText QScrollBar::sub-line:horizontal {{ width: 0; }}
             QWidget#composerPanel {{
                 background: {surface}; border: 1px solid {subtle_edge}; border-radius: 16px;
+            }}
+            QWidget#attachmentCard {{ background: {surface}; border: 1px solid {edge}; border-radius: 8px; }}
+            QLabel#attachmentBadge {{
+                background: {shade(surface, .09)}; color: {text}; border-radius: 5px; font-size: 12px;
             }}
             QMenu#chatMenu {{
                 background: {surface}; color: {text}; border: 1px solid {edge}; padding: 4px;

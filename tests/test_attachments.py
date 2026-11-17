@@ -8,16 +8,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from PySide6.QtCore import QEvent, QPoint, QTimer
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QTimer, Qt, QUrl
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox, QPushButton
+from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QLabel, QMessageBox, QPushButton
 
 from test_chat_presentation import wait_for_turn
 import app
 import attachments
 import mcp_client
-from chat_ui import ChatText
 from history import History
 from stonebot_engine.safety import IsolationError
 
@@ -157,7 +156,7 @@ def test_window(root):
     client = SimpleNamespace(show=lambda model: SimpleNamespace(capabilities=["vision"]), chat=respond)
     try:
         menu = window.attachments.add_button.menu()
-        attach, mcp, memory, _, skills = menu.actions()
+        attach, mcp, memory, _, skills, instructions = menu.actions()
         assert attach.isEnabled() and mcp.isEnabled() and skills.isEnabled()
         with patch.object(app.SkillsDialog, "exec") as opened:
             skills.trigger()
@@ -170,6 +169,29 @@ def test_window(root):
         with patch.object(app.McpDialog, "exec") as opened:
             window.mcp_button.click()
             opened.assert_called_once_with()
+
+        def paste(mime):
+            QApplication.clipboard().setMimeData(mime)
+            QTest.keyClick(window.message, Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier)
+
+        capture = QMimeData()
+        capture.setImageData(QImage(str(root / "figura.png")))
+        paste(capture)
+        copied = QMimeData()
+        copied.setUrls([QUrl.fromLocalFile(str(root / "figura.jpg"))])
+        copied.setText(str(root / "figura.jpg"))
+        paste(copied)
+        assert not window.message.toPlainText()
+        assert [file["name"] for file in window.attachments.files] == [
+            "Captura del portapapeles.jpg", "figura.jpg"]
+        assert len(window.attachments.findChildren(app.AttachmentCard)) == 2
+        assert all(not badge.pixmap().isNull() for badge in window.attachments.findChildren(QLabel)
+                   if badge.objectName() == "attachmentBadge")
+        window.attachments.clear()
+        QApplication.clipboard().setText("Texto normal")
+        QTest.keyClick(window.message, Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier)
+        assert window.message.toPlainText() == "Texto normal"
+        window.message.clear()
 
         with (patch.object(QFileDialog, "getOpenFileNames", return_value=([str(root / "escaneado.pdf")], "")),
               patch.object(QInputDialog, "getText", return_value=("5-8", True)) as ask):
@@ -226,8 +248,12 @@ def test_window(root):
             (root / "notas.txt").unlink()
             window.new_chat()
             window.open_chat(chat_id)
-            assert any("Adjuntos: figura.png, documento.pdf, notas.txt" in body.toPlainText()
-                       for body in window.findChildren(ChatText))
+            QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            cards = window.findChildren(app.AttachmentCard)
+            assert len(cards) == 3
+            assert {"figura.png", "documento.pdf", "notas.txt"} <= {
+                label.toolTip() for card in cards for label in card.findChildren(QLabel)}
+            assert any(not card.findChild(QLabel, "attachmentBadge").pixmap().isNull() for card in cards)
             window.message.setPlainText("¿Cuál era el código del archivo de texto?")
             window.enviar()
             wait_for_turn(window)

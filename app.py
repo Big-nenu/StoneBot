@@ -15,9 +15,10 @@ from appearance import (
     AppearanceDialog, apply_palette, dialog_style, load_appearance, palette_icon, readable_text, save_appearance,
     secondary_button,
 )
-from attachments import attachment_label, missing_pdf_pages, ollama_messages
+from attachments import missing_pdf_pages, ollama_messages
 from chat_markdown import MarkdownText
-from chat_ui import ActivityPanel, AttachmentTray, ChatText, Composer, chat_style
+from chat_preferences import load_instructions, save_instructions
+from chat_ui import ActivityPanel, AttachmentCard, AttachmentTray, ChatText, Composer, chat_style
 from diagnostics import read_log, record
 from experiences import query_experiences, record_experience
 from history import History
@@ -37,7 +38,7 @@ from win_caption import apply_native_caption
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QIcon, QTextCursor
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
+    QApplication, QDialog, QDialogButtonBox, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
     QPushButton, QScrollArea, QSplitter, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
@@ -49,8 +50,11 @@ SYSTEM = """
 Eres StoneBot, un agente experimental de inteligencia artificial local.
 La identidad declarada describe tu origen, no experiencias que hayas vivido.
 Si piden corregirla, indica el comando /identidad campo valor.
-Conversas en español de manera natural.
+Responde en español por defecto, salvo que el usuario prefiera otro idioma.
 Puedes hacer preguntas, razonar y reconocer cuando no sabes algo.
+Si pediste datos para realizar una tarea y el usuario te los proporciona, retoma el objetivo
+que motivó la pregunta y continúa con las herramientas disponibles cuando hagan falta.
+Pregunta de nuevo solo si todavía falta un dato necesario o si la respuesta es ambigua.
 No afirmes tener conciencia, emociones o experiencias que no posees.
 Tienes acceso a recuerdos persistentes recuperados de la memoria de StoneBot cuando estén disponibles.
 Busca en la memoria cuando la conversación dependa de algo recordado de sesiones anteriores.
@@ -72,6 +76,15 @@ No inventes recuerdos.
 
 class TurnError(RuntimeError):
     pass
+
+
+def model_context(prompt_chars, minimum=4096):
+    # shortcut: estimación por caracteres, usar el tokenizador del modelo si Ollama lo expone.
+    if prompt_chars > 38_000:
+        return 32768
+    if prompt_chars > 17_500:
+        return 16384
+    return max(minimum, 8192 if prompt_chars > 6500 else 4096)
 
 
 class Worker(QObject):
@@ -213,14 +226,14 @@ class Worker(QObject):
                     self.mcp_notice.emit(f"MCP {name}. {connection_error(exc)}")
 
             planning_retried = False
-            context_chars = (
-                sum(len(m.get("content", "")) for m in self.messages)
-                + sum(len(json.dumps(entry[2].inputSchema)) + len(entry[2].description or "")
-                      for entry in external.values())
-            ) if external else 0
+            context_chars = sum(len(m.get("content", "")) for m in messages)
+            context_chars += sum(
+                len(json.dumps(tool.inputSchema, ensure_ascii=False)) + len(tool.description or "")
+                for _, _, tool, _ in external.values()
+            )
             for _ in range(6):
                 # Los resultados MCP pueden llenar la ventana antes de que Nemotron redacte.
-                options = {"num_ctx": 8192 if skills or (external and context_chars > 6500) or planning_retried else 4096}
+                options = {"num_ctx": model_context(context_chars, 8192 if skills or planning_retried else 4096)}
                 self.activity.emit("Esperando la respuesta de Ollama…")
                 response = await asyncio.to_thread(client.chat, model=MODEL, messages=messages,
                                                    tools=specs, options=options)
@@ -236,7 +249,7 @@ class Worker(QObject):
                                                  f"tokens={getattr(response, 'prompt_eval_count', None)}). Reintentando.")
                         retry = await asyncio.to_thread(client.chat, model=MODEL, messages=messages,
                                                         tools=[] if used_mcp else specs, think=False,
-                                                        options={"num_ctx": 8192})
+                                                        options={"num_ctx": model_context(context_chars, 8192)})
                         reply = retry.message
                         if thinking := getattr(reply, "thinking", None):
                             self.reasoning.emit(thinking)
@@ -532,6 +545,8 @@ class StoneBot(QMainWindow):
         self.attachments = AttachmentTray()
         self.attachments.problem.connect(self.show_problem)
         self.message = Composer()
+        self.message.pasted_paths.connect(self.attachments.add_paths)
+        self.message.pasted_image.connect(self.attachments.add_clipboard_image)
         menu = self.attachments.menu
         self.mcp_menu = menu.addMenu("MCP")
         self.mcp_menu.setObjectName("chatMenu")
@@ -544,6 +559,7 @@ class StoneBot(QMainWindow):
         menu.aboutToShow.connect(self.update_composer_menu)
         menu.addSeparator()
         menu.addAction("Skills…", self.open_skills)
+        menu.addAction("Instrucciones generales…", self.open_instructions)
         self.send = QPushButton("Enviar")
         self.send.setObjectName("sendMessage")
         self.send.clicked.connect(self.enviar)
@@ -830,6 +846,31 @@ class StoneBot(QMainWindow):
         dialog.exec()
         dialog.deleteLater()
 
+    def open_instructions(self):
+        try:
+            instructions = load_instructions()
+            dialog = QInputDialog(self)
+            dialog.setWindowTitle("Instrucciones generales")
+            dialog.setLabelText("Preferencias para todas las conversaciones. El idioma predeterminado es español.")
+            dialog.setOption(QInputDialog.InputDialogOption.UsePlainTextEditForTextInput)
+            dialog.setTextValue(instructions)
+            dialog.setOkButtonText("Guardar")
+            dialog.setCancelButtonText("Cancelar")
+            dialog.setStyleSheet(dialog_style(self.appearance))
+            dialog.resize(540, 260)
+            try:
+                while dialog.exec():
+                    try:
+                        save_instructions(dialog.textValue())
+                    except (OSError, ValueError, RuntimeError) as exc:
+                        QMessageBox.warning(self, "Instrucciones generales", str(exc))
+                    else:
+                        break
+            finally:
+                dialog.deleteLater()
+        except (OSError, ValueError, RuntimeError):
+            self.show_problem("No se pudieron abrir las instrucciones generales.")
+
     def update_composer_menu(self):
         self.memory_menu.setEnabled(not self.attachments.files)
         attached_chat = any(message.get("attachments") for message in self.messages)
@@ -869,6 +910,8 @@ class StoneBot(QMainWindow):
         column.setSpacing(3)
         row.addWidget(card, 4)
         if user:
+            for file in attachments or ():
+                column.addWidget(AttachmentCard(file))
             bubble_row = QHBoxLayout()
             bubble_row.setContentsMargins(0, 0, 0, 0)
             bubble_row.addStretch()
@@ -879,8 +922,7 @@ class StoneBot(QMainWindow):
         body.ensurePolished()
         if user:
             body.document().setDocumentMargin(12)
-            names = ", ".join(map(attachment_label, attachments or []))
-            body.setPlainText(f"{text}\n\nAdjuntos: {names}" if names else text)
+            body.setPlainText(text)
         actions = QHBoxLayout()
         actions.setContentsMargins(4, 0, 4, 0)
         if created is not None:
@@ -913,7 +955,8 @@ class StoneBot(QMainWindow):
         width = max(map(body.fontMetrics().horizontalAdvance, body.toPlainText().split("\n")))
         body.setMaximumWidth(width + 26)
         card = body.parentWidget()
-        card.setMaximumWidth(max(width + 26, card.layout().minimumSize().width()))
+        preview_width = 280 if card.findChild(AttachmentCard) is not None else 0
+        card.setMaximumWidth(max(width + 26, card.layout().minimumSize().width(), preview_width))
 
     def scroll_to_latest(self):
         if self.follow_latest:
@@ -1009,8 +1052,17 @@ class StoneBot(QMainWindow):
         self.scroll_to_latest()
 
         self.thread = QThread()
-        self.worker = Worker([{key: value for key, value in m.items() if key != "created"} for m in self.messages],
-                             self.pool, identity_enabled=True, dream_thread=self.dream_thread)
+        turn_messages = [{key: value for key, value in m.items() if key != "created"} for m in self.messages]
+        try:
+            instructions = load_instructions()
+        except (OSError, ValueError, RuntimeError):
+            instructions = ""
+            record("No se pudieron leer las instrucciones generales.")
+        if instructions:
+            turn_messages[0]["content"] += (
+                "\nPreferencias generales del usuario. Se aplican bajo las reglas de StoneBot:\n" + instructions
+            )
+        self.worker = Worker(turn_messages, self.pool, identity_enabled=True, dream_thread=self.dream_thread)
         self.worker.moveToThread(self.thread)
 
         self.thread.started.connect(self.worker.run)

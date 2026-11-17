@@ -81,13 +81,27 @@ def allowed(server, tool, signature):
 
 
 def remember(server, tool, signature):
+    remember_many(server, [(tool, signature)])
+
+
+def remember_many(server, permissions):
     with database() as conn:
-        conn.execute("INSERT OR REPLACE INTO permission VALUES (?, ?, ?)", (server, tool, signature))
+        conn.executemany("INSERT OR REPLACE INTO permission VALUES (?, ?, ?)",
+                         [(server, tool, signature) for tool, signature in permissions])
 
 
 def list_permissions(server):
+    return list(saved_permissions(server))
+
+
+def saved_permissions(server):
     with database() as conn:
-        return [row[0] for row in conn.execute("SELECT tool FROM permission WHERE server=? ORDER BY tool", (server,))]
+        return dict(conn.execute("SELECT tool, signature FROM permission WHERE server=? ORDER BY tool", (server,)))
+
+
+def revoke_many(server, tools):
+    with database() as conn:
+        conn.executemany("DELETE FROM permission WHERE server=? AND tool=?", [(server, tool) for tool in tools])
 
 
 def revoke(server, tool=None):

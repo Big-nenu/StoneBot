@@ -94,6 +94,15 @@ def image_snapshot(source):
     return base64.b64encode(bytes(output.data())).decode("ascii")
 
 
+def clipboard_attachment(source):
+    if source.isNull() or source.width() * source.height() > MAX_IMAGE_PIXELS:
+        raise ValueError("La captura es inválida o supera 16 megapíxeles.")
+    if max(source.width(), source.height()) > 1600:
+        source = source.scaled(QSize(1600, 1600), Qt.AspectRatioMode.KeepAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+    return {"name": "Captura del portapapeles.jpg", "image": image_snapshot(source)}
+
+
 def pdf_pages(raw, page_range):
     source = QBuffer()
     source.setData(QByteArray(raw))
