@@ -19,8 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app
 import mcp_client
+from experiences import task_results
 from history import History
-from tasks import COVERAGE_STATUS, PLAN_STATUS, REPORT, new_task
+from tasks import COVERAGE_STATUS, PLAN_STATUS, REPORT, START_TASK, new_task
 from test_mcp import example_stdio
 
 
@@ -38,6 +39,7 @@ def report(status, text):
 
 def stage(root, phase, live):
     folder = root / "archivos"
+    objective = OBJECTIVE if live else "Revisa la documentación del proyecto, contrasta los avances y dime qué sigue."
     approvals = []
 
     def approve():
@@ -57,6 +59,7 @@ def stage(root, phase, live):
         transcript = call["messages"]
         if call.get("format") == PLAN_STATUS:
             assert phase in {"ask", "pause"}
+            assert "Preferencia de prueba" in transcript[-1]["content"]
             return SimpleNamespace(message=Message(role="assistant", content=json.dumps(
                 {"pasos": ["Obtener la ruta", "Revisar los tamaños", "Ordenar los resultados"]})))
         if call.get("format") == COVERAGE_STATUS:
@@ -66,8 +69,12 @@ def stage(root, phase, live):
             assert phase == "recover" and "Resultado de prueba verificado." in transcript[-1]["content"]
             return SimpleNamespace(message=Message(role="assistant", content='{"estado":"completada"}'))
         if phase == "ask":
+            if START_TASK in call["tools"]:
+                return SimpleNamespace(message=Message(role="assistant", tool_calls=[{
+                    "function": {"name": START_TASK.function.name, "arguments": {"objetivo": objective}},
+                }]))
             return SimpleNamespace(message=report("espera", "¿Cuál es la ruta absoluta de la carpeta?"))
-        assert OBJECTIVE in transcript[-1]["content"] or transcript[-1]["role"] == "tool"
+        assert objective in transcript[-1]["content"] or transcript[-1]["role"] == "tool"
         if transcript[-1]["role"] == "tool":
             assert "Eco MCP" in transcript[-1]["content"]
             answer = (Message(role="assistant", content="Resultado de prueba verificado.") if phase == "recover"
@@ -91,7 +98,8 @@ def stage(root, phase, live):
         return response
 
     with (patch.object(mcp_client, "default_root", return_value=root),
-          patch.object(app, "Client", return_value=SimpleNamespace(chat=chat))):
+          patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)),
+          patch.object(app.memory_service, "query_memory", return_value="Preferencia de prueba")):
         window = app.StoneBot()
         window.show()
         approval_timer = QTimer(window)
@@ -99,12 +107,12 @@ def stage(root, phase, live):
         approval_timer.start(100)
         try:
             if phase in {"ask", "pause"}:
-                text = f"/tarea {OBJECTIVE}"
+                text = objective if phase == "ask" and not live else f"/tarea {objective}"
                 expected = "paused" if phase == "pause" else "waiting"
             else:
                 window.open_chat(window.history.find()[0][0])
                 assert window.task["status"] == ("interrupted" if phase == "recover" else "waiting")
-                assert OBJECTIVE == window.task["objective"]
+                assert objective == window.task["objective"]
                 assert window.task["plan"]
                 assert f"Plan · {window.task['plan'][-1]}" in window.task_panel.events.toPlainText()
                 if phase == "recover":
@@ -114,7 +122,8 @@ def stage(root, phase, live):
                 expected = "paused" if phase == "recover" else "completed"
             window.message.setPlainText(text)
             window.send.click()
-            assert not window.activity_panel.pause_button.isHidden()
+            if phase != "ask" or live:
+                assert not window.activity_panel.pause_button.isHidden()
             if phase == "pause":
                 window.activity_panel.pause_button.click()
             loop = QEventLoop()
@@ -143,6 +152,19 @@ def stage(root, phase, live):
                 assert History().task(window.chat_id)["status"] == "cancelled"
             else:
                 assert task["steps"] and approvals and all(step["status"] == "response" for step in task["steps"])
+                assert task["clarifications"] == [str(folder)]
+                if not live:
+                    assert task_results(task)[0]["outcome"] == "completo"
+                if not live:
+                    with patch.object(app.memory_service, "inject_memory", return_value="📍 NUEVA ONDA.") as save:
+                        window.message.setPlainText("Guarda el resumen")
+                        window.send.click()
+                        window.thread.finished.connect(loop.quit)
+                        timer.start(10_000)
+                        loop.exec()
+                        assert window.thread is None
+                        assert "Resultado de prueba verificado." in save.call_args.args[0]
+                        assert History().task(window.chat_id)["status"] == "completed"
                 if live:
                     names = re.findall(r"\b[a-z]+\.txt\b", task["message"].casefold())
                     expected_names = sorted(FILES, key=FILES.get, reverse=True)[:5]

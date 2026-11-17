@@ -35,7 +35,33 @@ def connect():
             outcome TEXT NOT NULL, omitted INTEGER, observed TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )""")
         db.execute("CREATE INDEX IF NOT EXISTS folder_ranking_scope ON folder_ranking(scope, id)")
+        db.execute("""CREATE TABLE IF NOT EXISTS task_result (
+            id INTEGER PRIMARY KEY, scope TEXT NOT NULL, methods TEXT NOT NULL,
+            outcome TEXT NOT NULL, observed TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )""")
+        db.execute("CREATE INDEX IF NOT EXISTS task_result_scope ON task_result(scope, id)")
         yield db
+
+
+def task_scope(task):
+    scope = [task["objective"], task.get("clarifications", [])]
+    return hashlib.sha256(json.dumps(scope).encode()).hexdigest()
+
+
+def record_task_result(task, outcome):
+    methods = sorted({step["tool"] for step in task["steps"] if step["status"] not in {"not_run", "running"}})
+    if methods:
+        with connect() as db:
+            db.execute("INSERT INTO task_result(scope, methods, outcome) VALUES (?, ?, ?)",
+                       (task_scope(task), json.dumps(methods), outcome))
+
+
+def task_results(task):
+    with connect() as db:
+        return [dict(row) for row in db.execute(
+            "SELECT id, methods, outcome FROM task_result WHERE scope=? ORDER BY id DESC LIMIT 3",
+            (task_scope(task),),
+        )]
 
 
 def ranking_scope(folder, count, recursive):

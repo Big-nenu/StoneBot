@@ -31,6 +31,17 @@ PLAN_STATUS = {"type": "object", "required": ["pasos"], "properties": {
 }}
 LIMIT_REASON = ("Se agotó el presupuesto de herramientas antes de verificar la cobertura. "
                 "Falta demostrar qué universo debía revisarse y que no quedaron elementos pendientes.")
+START_TASK = Tool.model_validate({
+    "type": "function", "function": {
+        "name": "iniciar_tarea",
+        "description": "Abre una tarea reanudable de solo lectura para el encargo de varios pasos que acaba de pedir "
+                       "el usuario. Llámala antes de las herramientas externas. Incluye el objetivo y las referencias "
+                       "que el usuario ya dio. No la uses para preguntas simples, memoria ni acciones de escritura.",
+        "parameters": {"type": "object", "required": ["objetivo"], "properties": {
+            "objetivo": {"type": "string", "maxLength": 4000},
+        }},
+    },
+})
 REPORT = Tool.model_validate({
     "type": "function", "function": {
         "name": "informar_estado_tarea",
@@ -88,13 +99,15 @@ def task_context(task):
         remaining -= len(json.dumps(entry, ensure_ascii=False))
     return json.dumps({"objetivo": task["objective"], "mensaje_anterior": task["message"],
                        "plan": task.get("plan", []),
+                       "aclaraciones": task.get("clarifications", []),
+                       "pendiente": task.get("pending", ""),
                        "observaciones_de_cobertura": task.get("coverage_notes", []),
                        "pasos_fuera_del_contexto": len(task["steps"]) - len(recent),
                        "pasos_recientes": list(reversed(recent))}, ensure_ascii=False)
 
 
 def completion_evidence(task):
-    reasons = list(task.get("coverage_notes", []))
+    reasons = [note for note in task.get("coverage_notes", []) if note != LIMIT_REASON]
     latest = {step["key"]: step for step in task["steps"]}
     evidence = []
     for step in latest.values():
@@ -103,7 +116,8 @@ def completion_evidence(task):
         elif step["status"] != "response":
             reasons.append(f"{step_caption(step)}. Falta una lectura verificable.")
         evidence.append({key: value for key, value in step.items() if key != "key"})
-    serialized = json.dumps({"objetivo": task["objective"], "lecturas": evidence}, ensure_ascii=False)
+    serialized = json.dumps({"objetivo": task["objective"], "aclaraciones": task.get("clarifications", []),
+                             "lecturas": evidence}, ensure_ascii=False)
     if len(serialized) > 24_000:
         reasons.append("El conjunto de evidencias supera lo que puedo comprobar en una sola revisión.")
     return list(dict.fromkeys(reasons)), serialized

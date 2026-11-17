@@ -64,7 +64,7 @@ async def check(root, desktop):
         approvals.append(Path(arguments["path"]))
         return approvals[-1] in [folder, *files]
 
-    def model_for(paths, *, audit=False, repair=False, verified=False):
+    def model_for(paths, *, audit=False, repair=False, verified=False, resume_count=None):
         def chat(**call):
             if call.get("format") == PLAN_STATUS:
                 return SimpleNamespace(message=Message(role="assistant", content=json.dumps(
@@ -72,6 +72,12 @@ async def check(root, desktop):
             if call.get("format") == COVERAGE_STATUS:
                 assert audit
                 evidence = json.loads(call["messages"][-1]["content"])["lecturas"]
+                if resume_count is not None:
+                    assert len(evidence) == resume_count
+                    complete = resume_count == 17
+                    return SimpleNamespace(message=Message(role="assistant", content=json.dumps({
+                        "verificada": complete, "faltante": "" if complete else "Faltan cuatro archivos.",
+                    })))
                 if verified:
                     assert len(evidence) == 2 and "mayor.bin" in evidence[0]["result"]
                     return SimpleNamespace(message=Message(role="assistant", content='{"verificada":true,"faltante":""}'))
@@ -99,16 +105,19 @@ async def check(root, desktop):
                 ]))
             result = ("archivo-01.txt es el mayor (4096 bytes)." if repair else
                       "Los cinco están verificados; archivo-04.txt es el mayor.")
+            if resume_count == 17:
+                result = "Los mayores son archivo-15.txt, archivo-14.txt, archivo-13.txt, archivo-12.txt y archivo-11.txt."
             return SimpleNamespace(message=report("completada", result))
         return chat
 
-    async def run_turn(snapshot, text, paths, *, audit=False, repair=False, verified=False, events=None):
+    async def run_turn(snapshot, text, paths, *, audit=False, repair=False, verified=False, events=None,
+                       resume_count=None):
         pool = app.McpPool() if desktop else None
         worker = app.Worker([{"role": "system", "content": app.SYSTEM}, {"role": "user", "content": text}],
                             pool, task=snapshot, save_task=lambda value: history.save_task(chat_id, value))
         if events is not None:
             worker.activity.connect(events.append)
-        model = model_for(paths, audit=audit, repair=repair, verified=verified)
+        model = model_for(paths, audit=audit, repair=repair, verified=verified, resume_count=resume_count)
         with (patch.object(app, "Client", return_value=SimpleNamespace(chat=model)),
               patch.object(worker, "confirm_external", side_effect=approve),
               nullcontext() if desktop else patch.object(app, "session_for", fake_session)):
@@ -128,9 +137,13 @@ async def check(root, desktop):
     assert len(task["steps"]) == len(approvals) == 12
     scope = ranking_scope(folder, 5, True)
     assert ranking_evidence(scope)[0]["outcome"] == "presupuesto agotado"
-    answer = await run_turn(task, "/reanudar", [files[0], files[11]])
-    assert task["status"] == "paused" and LIMIT_REASON in answer and "archivo-04.txt" not in answer
+    answer = await run_turn(task, "/reanudar", [files[0], files[11]], audit=True, resume_count=13)
+    assert task["status"] == "paused" and "Faltan cuatro archivos" in answer and "archivo-04.txt" not in answer
     assert len(task["steps"]) == len(approvals) == 13 and approvals[-1] == files[11]
+    assert "Faltan cuatro archivos" in History().task(chat_id)["pending"]
+    answer = await run_turn(History().task(chat_id), "/reanudar", files[12:], audit=True, resume_count=17)
+    assert History().task(chat_id)["status"] == "completed" and "archivo-15.txt" in answer
+    assert LIMIT_REASON not in History().task(chat_id)["coverage_notes"]
 
     task = new_task(objective)
     answer = await run_turn(task, objective, [folder, *files[:5]], audit=True)
