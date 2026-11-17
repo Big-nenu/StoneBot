@@ -1,9 +1,9 @@
 """Panel lateral del historial."""
-from PySide6.QtCore import QEvent, QPoint, Qt, Signal
-from PySide6.QtGui import QContextMenuEvent
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt, Signal
+from PySide6.QtGui import QContextMenuEvent, QIcon, QPainter, QPen, QPixmap, QPolygon
 from PySide6.QtWidgets import (
-    QInputDialog, QLabel, QLineEdit, QListView, QListWidget, QListWidgetItem,
-    QMenu, QMessageBox, QPushButton, QStyledItemDelegate, QVBoxLayout, QWidget,
+    QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListView, QListWidget, QListWidgetItem,
+    QMenu, QMessageBox, QPushButton, QSizePolicy, QStyledItemDelegate, QVBoxLayout, QWidget,
 )
 
 from appearance import appearance_settings, secondary_button, sync
@@ -11,6 +11,29 @@ from appearance import appearance_settings, secondary_button, sync
 
 DEFAULT_WIDTH = 236
 MINIMUM_WIDTH = 184
+
+
+def sidebar_icon(name, color):
+    pixmap = QPixmap(20, 20)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    with QPainter(pixmap) as painter:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(color, 1.5)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        if name == "search":
+            painter.drawEllipse(QRect(3, 3, 10, 10))
+            painter.drawLine(12, 12, 17, 17)
+        elif name == "projects":
+            painter.drawRoundedRect(QRect(2, 6, 16, 11), 2, 2)
+            painter.drawLine(4, 4, 9, 4)
+            painter.drawLine(9, 4, 11, 6)
+        elif name == "diagnostics":
+            painter.drawPolyline(QPolygon([QPoint(x, y) for x, y in [(2, 11), (6, 11), (8, 5), (11, 16), (13, 9), (18, 9)]]))
+        else:
+            painter.drawLine(4, 10, 16, 10)
+            painter.drawLine(10, 4, 10, 16)
+    return QIcon(pixmap)
 
 
 def load_history_width():
@@ -87,6 +110,9 @@ class HistoryPanel(QWidget):
     new_chat = Signal()
     searched = Signal(str)
     diagnostics = Signal()
+    projects_requested = Signal()
+    project_opened = Signal(int)
+    move_requested = Signal(int)
 
     def __init__(self):
         super().__init__()
@@ -96,6 +122,7 @@ class HistoryPanel(QWidget):
         self.search.setPlaceholderText("Buscar conversaciones…")
         self.search.setAccessibleName("Buscar conversaciones")
         self.search.textChanged.connect(self.searched)
+        self.search.hide()
         self.list = ConversationList()
         self.list.setAccessibleName("Conversaciones")
         self.list.setTextElideMode(Qt.TextElideMode.ElideRight)
@@ -108,19 +135,67 @@ class HistoryPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(11, 12, 11, 12)
         layout.setSpacing(8)
-        new = secondary_button(QPushButton("+  Nuevo chat"))
-        new.clicked.connect(self.new_chat)
-        log = secondary_button(QPushButton("Diagnóstico"))
-        log.setProperty("quiet", True)
-        log.clicked.connect(self.diagnostics)
+        self.icon_buttons = {}
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(3)
+        for name, title, action in (
+            ("new", "Nuevo chat", self.new_chat), ("search", "Buscar conversaciones", self.toggle_search),
+            ("projects", "Proyectos", self.projects_requested), ("diagnostics", "Diagnóstico", self.diagnostics),
+        ):
+            button = secondary_button(QPushButton())
+            button.setProperty("quiet", True)
+            button.setProperty("sidebarIcon", True)
+            button.setFixedSize(32, 32)
+            button.setToolTip(title)
+            button.setAccessibleName(title)
+            button.clicked.connect(action)
+            self.icon_buttons[name] = button
+            toolbar.addWidget(button)
+        toolbar.addStretch()
+        self.pinned = QWidget()
+        self.pinned_layout = QVBoxLayout(self.pinned)
+        self.pinned_layout.setContentsMargins(0, 0, 0, 0)
+        self.pinned_layout.setSpacing(2)
+        self.pinned.hide()
         heading = QLabel("Conversaciones")
         heading.setObjectName("historyHeading")
-        layout.addWidget(new)
+        layout.addLayout(toolbar)
         layout.addWidget(self.search)
+        layout.addWidget(self.pinned)
         layout.addSpacing(3)
         layout.addWidget(heading)
         layout.addWidget(self.list, 1)
-        layout.addWidget(log)
+
+    def toggle_search(self):
+        if self.search.isHidden():
+            self.search.show()
+            self.search.setFocus()
+        else:
+            self.search.clear()
+            self.search.hide()
+
+    def refresh_icons(self, color):
+        for name, button in self.icon_buttons.items():
+            button.setIcon(sidebar_icon(name, color))
+
+    def fill_projects(self, projects):
+        while self.pinned_layout.count():
+            widget = self.pinned_layout.takeAt(0).widget()
+            widget.hide()
+            widget.deleteLater()
+        pinned = [project for project in projects if project["pinned"]]
+        self.pinned.setVisible(bool(pinned))
+        if pinned:
+            heading = QLabel("Fijados")
+            heading.setObjectName("historyHeading")
+            self.pinned_layout.addWidget(heading)
+        for project in pinned:
+            button = secondary_button(QPushButton(project["name"].replace("&", "&&")))
+            button.setProperty("quiet", True)
+            button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            button.setToolTip(project["name"])
+            button.clicked.connect(lambda _checked=False, pid=project["id"]: self.project_opened.emit(pid))
+            self.pinned_layout.addWidget(button)
 
     def fill(self, rows, current):
         self.list.hide_options()
@@ -138,6 +213,7 @@ class HistoryPanel(QWidget):
         menu = QMenu(self)
         menu.setObjectName("chatMenu")
         rename = menu.addAction("Renombrar")
+        move = menu.addAction("Mover a proyecto…")
         remove = menu.addAction("Eliminar")
         choice = menu.exec(point)
         menu.deleteLater()
@@ -145,6 +221,8 @@ class HistoryPanel(QWidget):
             self.prompt_name(chat_id, title)
         elif choice is remove:
             self.prompt_delete(chat_id)
+        elif choice is move:
+            self.move_requested.emit(chat_id)
 
     def prompt_name(self, chat_id, current_title):
         title, ok = QInputDialog.getText(self, "Renombrar conversación", "Título", text=current_title)

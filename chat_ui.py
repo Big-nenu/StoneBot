@@ -328,6 +328,13 @@ def chat_style(theme):
             QWidget#historyPanel QListWidget::item:focus {{ border-color: {link_color(background)}; }}
             QLabel#historyHeading {{ color: {muted}; font-size: 13px; font-weight: 600; padding: 0 7px; }}
             QWidget#historyPanel QPushButton {{ padding: 6px 8px; }}
+            QWidget#historyPanel QPushButton[sidebarIcon="true"] {{ padding: 0; }}
+            QScrollArea#projectPage, QWidget#projectCanvas {{ background: {background}; border: 0; }}
+            QLabel#projectTitle {{ color: {text}; font-family: "Georgia"; font-size: 28px; font-weight: 600; }}
+            QLabel#projectSection {{ color: {text}; font-size: 14px; font-weight: 600; }}
+            QLabel#projectMeta {{ color: {muted}; font-size: 13px; }}
+            QWidget#projectCard {{ background: {sidebar}; border-radius: 10px; }}
+            QPushButton#projectLink {{ text-align: left; padding: 8px; border-radius: 7px; }}
             QPushButton#historyRowOptions {{ padding: 0; border: none; border-radius: 6px; }}
             QSplitter::handle:horizontal {{ background: {sidebar}; border-right: 1px solid {subtle_edge}; }}
             QSplitter::handle:horizontal:hover {{ background: {edge}; }}

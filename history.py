@@ -26,12 +26,21 @@ class History:
                 CREATE TABLE IF NOT EXISTS chat_task (
                     chat_id INTEGER PRIMARY KEY REFERENCES chat(id) ON DELETE CASCADE, snapshot TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS project (
+                    id INTEGER PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL,
+                    instructions TEXT NOT NULL, folder TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0
+                );
             """)
             columns = {row[1] for row in conn.execute("PRAGMA table_info(message)")}
             if "created" not in columns:
                 conn.execute("ALTER TABLE message ADD COLUMN created INTEGER")
             if "attachments" not in columns:
                 conn.execute("ALTER TABLE message ADD COLUMN attachments TEXT")
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if "project_id" not in {row[1] for row in conn.execute("PRAGMA table_info(chat)")}:
+                conn.execute("ALTER TABLE chat ADD COLUMN project_id INTEGER REFERENCES project(id) ON DELETE SET NULL")
+            conn.execute("CREATE INDEX IF NOT EXISTS chat_project ON chat(project_id, updated)")
 
     @contextmanager
     def connect(self):
@@ -40,14 +49,14 @@ class History:
             conn.execute("PRAGMA foreign_keys = ON")
             yield conn
 
-    def append(self, chat_id, role, content, *, created=None, attachments=None, task=None):
+    def append(self, chat_id, role, content, *, created=None, attachments=None, task=None, project_id=None):
         now = time.time_ns() if created is None else created
         with self.connect() as conn:
             if chat_id is None:
                 title = " ".join(content.split())
                 title = title if len(title) <= 60 else title[:59].rstrip() + "…"
-                chat_id = conn.execute("INSERT INTO chat(title, updated) VALUES (?, ?)",
-                                       (title, now)).lastrowid
+                chat_id = conn.execute("INSERT INTO chat(title, updated, project_id) VALUES (?, ?, ?)",
+                                       (title, now, project_id)).lastrowid
             self.insert_message(conn, chat_id, role, content, now, attachments)
             if task is not None:
                 self.write_task(conn, chat_id, task)
@@ -68,17 +77,53 @@ class History:
         conn.execute("INSERT INTO chat_task VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET snapshot=excluded.snapshot",
                      (chat_id, json.dumps(task, ensure_ascii=False)))
 
-    def find(self, query=""):
+    def find(self, query="", *, project_id=None):
         needle = query.strip().casefold()
         with self.connect() as conn:
             conn.create_function("casefold", 1, str.casefold, deterministic=True)
             return conn.execute("""
                 SELECT c.id, c.title FROM chat AS c
-                WHERE ? = '' OR instr(casefold(c.title), ?) OR EXISTS (
+                WHERE (? IS NULL OR c.project_id = ?) AND (? = '' OR instr(casefold(c.title), ?) OR EXISTS (
                     SELECT 1 FROM message AS m WHERE m.chat_id = c.id AND instr(casefold(m.content), ?)
-                )
+                ))
                 ORDER BY c.updated DESC, c.id DESC
-            """, (needle, needle, needle)).fetchall()
+            """, (project_id, project_id, needle, needle, needle)).fetchall()
+
+    def projects(self):
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            return [dict(row) for row in conn.execute("""
+                SELECT p.*, count(c.id) AS chats, max(c.updated) AS updated
+                FROM project p LEFT JOIN chat c ON c.project_id = p.id
+                GROUP BY p.id ORDER BY p.pinned DESC, max(c.updated) DESC, p.name COLLATE NOCASE
+            """)]
+
+    def save_project(self, name, description, instructions, folder, project_id=None):
+        name = name.strip()
+        if not name:
+            raise ValueError("Escribe un nombre para el proyecto.")
+        with self.connect() as conn:
+            if project_id is None:
+                return conn.execute("INSERT INTO project(name, description, instructions, folder) VALUES (?, ?, ?, ?)",
+                                    (name, description, instructions, folder)).lastrowid
+            conn.execute("UPDATE project SET name=?, description=?, instructions=?, folder=? WHERE id=?",
+                         (name, description, instructions, folder, project_id))
+            return project_id
+
+    def pin_project(self, project_id, pinned):
+        with self.connect() as conn:
+            conn.execute("UPDATE project SET pinned=? WHERE id=?", (pinned, project_id))
+
+    def chat_project(self, chat_id):
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT p.* FROM project p JOIN chat c ON c.project_id=p.id WHERE c.id=?",
+                               (chat_id,)).fetchone()
+            return dict(row) if row else None
+
+    def move_chat(self, chat_id, project_id):
+        with self.connect() as conn:
+            conn.execute("UPDATE chat SET project_id=? WHERE id=?", (project_id, chat_id))
 
     def messages(self, chat_id):
         with self.connect() as conn:

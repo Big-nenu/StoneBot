@@ -14,7 +14,7 @@ from mcp.types import Tool, ToolAnnotations
 from ollama import Message
 from PySide6.QtCore import QEvent, QEventLoop, QTimer, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QInputDialog, QMenu, QMessageBox, QPushButton
+from PySide6.QtWidgets import QApplication, QDialog, QInputDialog, QMenu, QMessageBox, QPushButton
 
 from test_mcp import example_stdio
 from test_chat_presentation import wait_for_turn
@@ -22,6 +22,7 @@ import app
 import stonebot_service as memory_service
 import mcp_client
 from diagnostics import read_log
+from experiences import record_task_result, task_results
 from history import History
 from mcp_permissions import allowed, list_permissions, permission_signature, remember, revoke, safe_read
 from mcp_pool import McpPool
@@ -204,6 +205,66 @@ def test_history_and_gui(qt):
     qt.processEvents()
 
 
+def test_projects():
+    window = app.StoneBot()
+    window.show()
+
+    def create(dialog):
+        dialog.name.setText("Atom-Fusion")
+        dialog.description.setPlainText("Juego local")
+        dialog.instructions.setPlainText("Cita README y cambios recientes.")
+        dialog.folder.setText(str(window.history.path.parent))
+        return QDialog.DialogCode.Accepted
+
+    async def reply(worker):
+        assert worker.project["name"] == "Atom-Fusion"
+        assert "Cita README y cambios recientes." in worker.messages[0]["content"]
+        return "Documentación revisada."
+
+    try:
+        icons = window.history_panel.icon_buttons
+        assert all(not btn.icon().isNull() and btn.toolTip() for btn in icons.values())
+        assert window.history_panel.search.isHidden()
+        icons["search"].click()
+        assert not window.history_panel.search.isHidden()
+        icons["search"].click()
+        icons["projects"].click()
+        assert window.pages.currentWidget() is window.project_page
+        with patch.object(app.ProjectDialog, "exec", create):
+            window.project_page.created.emit()
+        project = History().projects()[0]
+        pid = project["id"]
+        assert project["folder"] == str(window.history.path.parent.resolve())
+        window.project_page.pinned.emit(pid, True)
+        assert History().projects()[0]["pinned"]
+        assert not window.history_panel.pinned.isHidden()
+
+        window.project_page.chat_started.emit(pid)
+        with patch.object(app.Worker, "chat", reply):
+            window.message.setPlainText("Revisa cómo va.")
+            window.send.click()
+            wait_for_turn(window)
+        chat = window.chat_id
+        assert History().chat_project(chat)["id"] == pid
+        assert History().find(project_id=pid) == [(chat, "Revisa cómo va.")]
+        window.new_chat()
+        window.open_chat(chat)
+        assert window.project["id"] == pid
+        with patch.object(QInputDialog, "getItem", return_value=("Sin proyecto", True)):
+            window.move_chat_to_project(chat)
+        assert History().chat_project(chat) is None
+
+        record_task_result({"objective": "Revisa este repositorio", "project_id": pid,
+                            "steps": [{"tool": "local / read_file", "status": "response"}]}, "completo")
+        related = task_results({"objective": "¿Dónde me quedé?", "project_id": pid + 1})
+        assert related[0]["mismo_encargo"] == 0 and "read_file" in related[0]["methods"]
+        assert not task_results({"objective": "Busca el pronóstico del clima"})
+    finally:
+        window.close()
+        window.deleteLater()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 async def test_permissions():
     config = {"transport": "http", "url": "https://example.test/mcp"}
     hints = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
@@ -270,6 +331,7 @@ if __name__ == "__main__":
     qt_app = QApplication([])
     with tempfile.TemporaryDirectory() as directory, patch.object(mcp_client, "default_root", return_value=Path(directory)):
         test_history_and_gui(qt_app)
+        test_projects()
         test_sueno_espera_inactividad_y_se_serializa_con_el_turno()
         asyncio.run(test_permissions())
         client = McpPool()

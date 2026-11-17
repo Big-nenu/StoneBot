@@ -35,6 +35,7 @@ from mcp_permissions import allowed, permission_signature, remember, safe_read
 from mcp_pool import McpPool
 from mcp_setup import is_setup_request
 from mcp_ui import McpDialog
+from projects_ui import ProjectDialog, ProjectPage
 from skills_ui import SkillsDialog
 from stonebot_engine.llm import env_var
 from stonebot_engine.safety import IsolationError, check_path
@@ -46,10 +47,10 @@ from tasks import (
 )
 from win_caption import apply_native_caption
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QIcon, QTextCursor
+from PySide6.QtGui import QColor, QIcon, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QDialog, QDialogButtonBox, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
-    QPushButton, QScrollArea, QSplitter, QSystemTrayIcon, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
 MODEL = "nemotron-3.5-bolt:e4b"
@@ -117,7 +118,7 @@ class Worker(QObject):
     task_started = Signal(object)
 
     def __init__(self, messages, pool=None, *, identity_enabled=False, dream_thread=None, task=None, save_task=None,
-                 completed_task=None):
+                 completed_task=None, project=None):
         super().__init__()
         self.messages = messages
         self.pool = pool
@@ -127,6 +128,7 @@ class Worker(QObject):
         self.task = task
         self.save_task = save_task
         self.completed_task = completed_task
+        self.project = project
         self.ranking_scope = None
         self.learned_server = None
 
@@ -304,10 +306,14 @@ class Worker(QObject):
         try:
             history = task_results(self.task)
             if history:
-                self.activity.emit("Consulté resultados de este encargo en mis experiencias.")
-                context += "\nResultados de ejecuciones previas (datos): " + json.dumps(history, ensure_ascii=False)
+                self.activity.emit("Consulté experiencias de encargos iguales o parecidos.")
+                context += ("\nMétodos y resultados de encargos iguales o parecidos (datos). "
+                            "Un resultado anterior no demuestra el estado del proyecto actual: "
+                            + json.dumps(history, ensure_ascii=False))
             if self.identity_enabled:
                 question = "\n".join([self.task["objective"], *self.task.get("clarifications", [])])
+                if self.project:
+                    question = f"{self.project['name']}\n{question}"
                 memories = await asyncio.to_thread(memory_service.query_memory, question)
                 if memories.strip() not in {"", "[]"}:
                     self.activity.emit("Consulté recuerdos de StoneBot para este encargo.")
@@ -330,6 +336,7 @@ class Worker(QObject):
                         {"role": "user", "content": json.dumps({
                             "objetivo": self.task["objective"], "herramientas": list(external),
                             "aclaraciones": self.task.get("clarifications", []),
+                            "proyecto": self.project,
                         }, ensure_ascii=False) + context},
                     ],
                 )
@@ -377,6 +384,8 @@ class Worker(QObject):
             return await self.execute_turn()
         except StartSavedTask as request:
             self.task = new_task(str(request))
+            if self.project:
+                self.task["project_id"] = self.project["id"]
             try:
                 self.persist_task()
             except TaskPaused as exc:
@@ -395,13 +404,18 @@ class Worker(QObject):
                                  current.get("content", "").strip(), re.I)
                 and not current.get("attachments")):
             snapshot = self.completed_task
-            memory = f"Punto de continuidad · {snapshot['objective']}\n{snapshot['message']}"
+            project = f" · {self.project['name']}" if self.project else ""
+            memory = f"Punto de continuidad{project} · {snapshot['objective']}\n{snapshot['message']}"
             result = await asyncio.to_thread(memory_service.inject_memory, memory)
             if result.startswith(("📍", "= YA EXISTE")):
                 return f"Punto de continuidad en la memoria de StoneBot. {result}"
             return f"No pude guardar el punto de continuidad. {result}"
         if self.task is not None:
             upgrade_task(self.task)
+            if self.project:
+                self.task["project_id"] = self.project["id"]
+            else:
+                self.task.pop("project_id", None)
             self.check_pause()
             ranking = ranking_request(
                 self.task["objective"], current["content"], self.task.get("inventory_folder", ""),
@@ -924,6 +938,8 @@ class StoneBot(QMainWindow):
         self.task = None
         self.history_write_ok = True
         self.pending_edit = None
+        self.project = None
+        self.projects = []
         try:
             self.history = History()
         except (OSError, ValueError, RuntimeError, sqlite3.Error):
@@ -948,6 +964,9 @@ class StoneBot(QMainWindow):
         self.history_panel.deleted.connect(self.delete_chat)
         self.history_panel.searched.connect(self.refresh_history)
         self.history_panel.diagnostics.connect(self.open_diagnostics)
+        self.history_panel.projects_requested.connect(self.show_projects)
+        self.history_panel.project_opened.connect(self.show_project)
+        self.history_panel.move_requested.connect(self.move_chat_to_project)
         self.history_splitter.addWidget(self.history_panel)
         conversation = QWidget()
         self.history_splitter.addWidget(conversation)
@@ -963,7 +982,9 @@ class StoneBot(QMainWindow):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(16, 9, 16, 9)
         header_layout.setSpacing(8)
-        title = QLabel("StoneBot")
+        title = self.header_title = QLabel("StoneBot")
+        title.setTextFormat(Qt.TextFormat.PlainText)
+        title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         title.setObjectName("chatTitle")
         title.setToolTip(f"Modelo activo · {MODEL}")
         title.setAccessibleDescription(f"Modelo activo: {MODEL}")
@@ -975,8 +996,7 @@ class StoneBot(QMainWindow):
         self.history_button.setToolTip("Historial")
         self.history_button.toggled.connect(self.toggle_history)
         header_layout.addWidget(self.history_button)
-        header_layout.addWidget(title)
-        header_layout.addStretch()
+        header_layout.addWidget(title, 1)
         self.mcp_button = secondary_button(QPushButton("MCP"))
         self.mcp_button.setProperty("quiet", True)
         self.mcp_button.setAccessibleName("Administrar servidores MCP")
@@ -990,6 +1010,22 @@ class StoneBot(QMainWindow):
         self.settings_button.clicked.connect(self.open_appearance)
         header_layout.addWidget(self.settings_button)
         layout.addWidget(header)
+        self.pages = QStackedWidget()
+        layout.addWidget(self.pages, 1)
+        self.chat_page = QWidget()
+        self.pages.addWidget(self.chat_page)
+        self.project_page = ProjectPage()
+        self.project_page.created.connect(self.edit_project)
+        self.project_page.opened.connect(self.show_project)
+        self.project_page.back.connect(self.show_projects)
+        self.project_page.edited.connect(self.edit_project)
+        self.project_page.pinned.connect(self.pin_project)
+        self.project_page.chat_started.connect(self.new_project_chat)
+        self.project_page.chat_opened.connect(self.open_chat)
+        self.pages.addWidget(self.project_page)
+        layout = QVBoxLayout(self.chat_page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         self.chat = QScrollArea()
         self.chat.setAccessibleName("Conversación")
@@ -1072,6 +1108,7 @@ class StoneBot(QMainWindow):
         conversation.setMinimumWidth(self.chat_min_width)
         self.toggle_history(True)
         self.refresh_history()
+        self.refresh_projects()
         if self.history is None:
             self.show_problem("No se pudo abrir el historial. Los mensajes de esta sesión no se guardarán.")
         self.message.setFocus()
@@ -1169,14 +1206,113 @@ class StoneBot(QMainWindow):
         self.history_panel.search.clear()
 
     def open_chat(self, chat_id):
-        if self.thread is not None or (chat_id is not None and chat_id == self.chat_id):
+        if self.thread is not None:
+            return
+        if chat_id is not None and chat_id == self.chat_id:
+            self.show_chat_page()
             return
         try:
             saved = self.history.messages(chat_id) if self.history is not None and chat_id is not None else []
+            self.project = self.history.chat_project(chat_id) if self.history is not None and chat_id is not None else None
         except (OSError, ValueError, RuntimeError, sqlite3.Error):
             self.show_problem("No se pudo abrir la conversación.")
             return
         self.render_chat(chat_id, saved)
+        self.show_chat_page()
+
+    def show_chat_page(self):
+        self.pages.setCurrentWidget(self.chat_page)
+        self.header_title.setText(f"StoneBot  /  {self.project['name']}" if self.project else "StoneBot")
+        self.message.setFocus()
+
+    def refresh_projects(self):
+        if self.history is not None:
+            try:
+                self.projects = self.history.projects()
+            except (OSError, ValueError, RuntimeError, sqlite3.Error):
+                self.show_problem("No se pudieron leer los proyectos.")
+        self.history_panel.fill_projects(self.projects)
+
+    def show_projects(self):
+        if self.thread is None:
+            self.refresh_projects()
+            self.project_page.show_projects(self.projects)
+            self.pages.setCurrentWidget(self.project_page)
+            self.header_title.setText("Proyectos")
+
+    def show_project(self, project_id):
+        if self.thread is not None or self.history is None:
+            return
+        project = next((item for item in self.projects if item["id"] == project_id), None)
+        if project is None:
+            return
+        try:
+            chats = self.history.find(project_id=project_id)
+        except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+            QMessageBox.warning(self, "Proyectos", str(exc))
+            return
+        self.project_page.show_project(project, chats)
+        self.pages.setCurrentWidget(self.project_page)
+        self.header_title.setText(f"Proyectos  /  {project['name']}")
+
+    def edit_project(self, project_id=None):
+        if self.history is None:
+            QMessageBox.warning(self, "Proyectos", "El historial local no está disponible.")
+            return
+        project = next((item for item in self.projects if item["id"] == project_id), None)
+        dialog = ProjectDialog(self, project)
+        dialog.setStyleSheet(dialog_style(self.appearance))
+        while dialog.exec() == QDialog.DialogCode.Accepted:
+            try:
+                name, description, instructions, folder = dialog.fields()
+                if folder:
+                    if not Path(folder).is_absolute() or folder.startswith(("\\\\", "//")):
+                        raise ValueError("Elige una carpeta local con ruta absoluta.")
+                    folder = check_path(folder)
+                    if folder.startswith(("\\\\", "//")) or not Path(folder).is_dir():
+                        raise ValueError("La carpeta local no está disponible.")
+                saved = self.history.save_project(name, description, instructions, folder, project_id)
+            except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+                QMessageBox.warning(dialog, "Proyectos", str(exc))
+            else:
+                self.refresh_projects()
+                if self.project and self.project["id"] == saved:
+                    self.project = next(item for item in self.projects if item["id"] == saved)
+                self.show_project(saved)
+                return
+
+    def pin_project(self, project_id, pinned):
+        try:
+            self.history.pin_project(project_id, pinned)
+        except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+            QMessageBox.warning(self, "Proyectos", str(exc))
+            return
+        self.refresh_projects()
+        self.show_project(project_id)
+
+    def new_project_chat(self, project_id):
+        if self.thread is None:
+            self.project = next((item for item in self.projects if item["id"] == project_id), None)
+            self.render_chat(None, [])
+            self.show_chat_page()
+
+    def move_chat_to_project(self, chat_id):
+        self.refresh_projects()
+        choices = {"Sin proyecto": None}
+        for project in self.projects:
+            title = project["name"]
+            while title in choices:
+                title += f" · {project['id']}"
+            choices[title] = project["id"]
+        title, ok = QInputDialog.getItem(self, "Mover conversación", "Proyecto", list(choices), editable=False)
+        if ok:
+            try:
+                self.history.move_chat(chat_id, choices[title])
+                if chat_id == self.chat_id:
+                    self.project = self.history.chat_project(chat_id)
+                    self.show_chat_page()
+            except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+                QMessageBox.warning(self, "Proyectos", str(exc))
 
     def render_chat(self, chat_id, saved, *, keep_activity=False):
         self.chat_id = chat_id
@@ -1257,7 +1393,8 @@ class StoneBot(QMainWindow):
         if self.history is not None and self.history_write_ok:
             try:
                 self.chat_id = self.history.append(self.chat_id, role, text, created=created,
-                                                   attachments=attachments, task=task)
+                                                   attachments=attachments, task=task,
+                                                   project_id=self.project["id"] if self.project else None)
                 self.refresh_history()
             except (OSError, ValueError, RuntimeError, sqlite3.Error):
                 self.history_write_ok = False
@@ -1296,6 +1433,7 @@ class StoneBot(QMainWindow):
         theme = self.appearance
         apply_palette(theme)
         self.centralWidget().setStyleSheet(chat_style(theme))
+        self.history_panel.refresh_icons(QColor(readable_text(theme["background"])))
         self.settings_button.setIcon(palette_icon(
             [readable_text(theme["background"]), theme["background"], theme["accent"], theme["background"]],
             artist=True))
@@ -1642,6 +1780,13 @@ class StoneBot(QMainWindow):
             turn_messages[0]["content"] += (
                 "\nPreferencias generales del usuario. Se aplican bajo las reglas de StoneBot:\n" + instructions
             )
+        project_context = None
+        if self.project:
+            project_context = {key: self.project[key] for key in ("id", "name", "description", "instructions", "folder")}
+            turn_messages[0]["content"] += (
+                "\nContexto del proyecto configurado por el usuario. La carpeta indica el alcance habitual "
+                "y conserva los permisos de lectura existentes:\n" + json.dumps(project_context, ensure_ascii=False)
+            )
         history, chat_id = self.history, self.chat_id
         save_task = None
         if history is not None and chat_id is not None and self.history_write_ok and self.pending_edit is None:
@@ -1649,7 +1794,7 @@ class StoneBot(QMainWindow):
         completed_task = (self.task if self.pending_edit is None and self.task is not None
                           and self.task["status"] == "completed" else None)
         self.worker = Worker(turn_messages, self.pool, identity_enabled=True, dream_thread=self.dream_thread,
-                             task=task, save_task=save_task, completed_task=completed_task)
+                             task=task, save_task=save_task, completed_task=completed_task, project=project_context)
         self.worker.moveToThread(self.thread)
 
         self.thread.started.connect(self.worker.run)

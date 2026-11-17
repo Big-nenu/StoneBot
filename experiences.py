@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 import sqlite3
 from contextlib import closing, contextmanager
 
@@ -37,30 +38,48 @@ def connect():
         db.execute("CREATE INDEX IF NOT EXISTS folder_ranking_scope ON folder_ranking(scope, id)")
         db.execute("""CREATE TABLE IF NOT EXISTS task_result (
             id INTEGER PRIMARY KEY, scope TEXT NOT NULL, methods TEXT NOT NULL,
-            outcome TEXT NOT NULL, observed TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            outcome TEXT NOT NULL, observed TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            family TEXT NOT NULL DEFAULT ''
         )""")
+        if "family" not in {row[1] for row in db.execute("PRAGMA table_info(task_result)")}:
+            db.execute("ALTER TABLE task_result ADD COLUMN family TEXT NOT NULL DEFAULT ''")
         db.execute("CREATE INDEX IF NOT EXISTS task_result_scope ON task_result(scope, id)")
+        db.execute("CREATE INDEX IF NOT EXISTS task_result_family ON task_result(family, id)")
         yield db
 
 
 def task_scope(task):
     scope = [task["objective"], task.get("clarifications", [])]
+    if task.get("project_id") is not None:
+        scope.append(task["project_id"])
     return hashlib.sha256(json.dumps(scope).encode()).hexdigest()
+
+
+def task_family(task):
+    # shortcut: la recuperación por similitud cubre revisiones de proyectos; ampliar al validar más tipos.
+    text = task["objective"]
+    review = re.search(r"\b(?:revis\w*|retom\w*|resum\w*|estado|avances?|pendientes?|"
+                       r"d[oó]nde (?:me )?qued\w*|qu[eé] sigue|review|status)\b", text, re.I)
+    project = task.get("project_id") is not None or re.search(r"\b(?:proyecto|repositorio|repo|readme)\b", text, re.I)
+    return "revision_proyecto" if review and project else ""
 
 
 def record_task_result(task, outcome):
     methods = sorted({step["tool"] for step in task["steps"] if step["status"] not in {"not_run", "running"}})
     if methods:
         with connect() as db:
-            db.execute("INSERT INTO task_result(scope, methods, outcome) VALUES (?, ?, ?)",
-                       (task_scope(task), json.dumps(methods), outcome))
+            db.execute("INSERT INTO task_result(scope, methods, outcome, family) VALUES (?, ?, ?, ?)",
+                       (task_scope(task), json.dumps(methods), outcome, task_family(task)))
 
 
 def task_results(task):
+    scope, family = task_scope(task), task_family(task)
     with connect() as db:
         return [dict(row) for row in db.execute(
-            "SELECT id, methods, outcome FROM task_result WHERE scope=? ORDER BY id DESC LIMIT 3",
-            (task_scope(task),),
+            """SELECT id, methods, outcome, scope=? AS mismo_encargo
+               FROM task_result WHERE scope=? OR (family=? AND family<>'')
+               ORDER BY mismo_encargo DESC, id DESC LIMIT 3""",
+            (scope, scope, family),
         )]
 
 
