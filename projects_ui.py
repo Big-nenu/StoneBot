@@ -1,5 +1,6 @@
 """Vistas de proyectos y diálogo de edición."""
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QPlainTextEdit, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
@@ -75,6 +76,7 @@ class ProjectPage(QScrollArea):
     opened = Signal(int)
     back = Signal()
     edited = Signal(int)
+    continuity_requested = Signal(int)
     pinned = Signal(int, bool)
     chat_started = Signal(int)
     chat_opened = Signal(int)
@@ -166,6 +168,22 @@ class ProjectPage(QScrollArea):
             self.content.addWidget(label(project["description"]))
         self.content.addWidget(self.action("Nuevo chat", lambda: self.chat_started.emit(pid), primary=True),
                                alignment=Qt.AlignmentFlag.AlignLeft)
+        continuity = QWidget()
+        continuity.setObjectName("projectCard")
+        summary = QVBoxLayout(continuity)
+        summary.setContentsMargins(14, 12, 14, 12)
+        row = QHBoxLayout()
+        row.addWidget(label("Punto de continuidad", "projectSection"), 1)
+        row.addWidget(self.action("Editar" if project["continuity"] else "Añadir",
+                                  lambda: self.continuity_requested.emit(pid)))
+        summary.addLayout(row)
+        document = QTextDocument()
+        document.setMarkdown(project["continuity"])
+        preview = document.toPlainText().strip()
+        if len(preview) > 580:
+            preview = preview[:579].rstrip() + "…"
+        summary.addWidget(label(preview or "Guarda aquí en qué te quedaste y qué sigue."))
+        self.content.addWidget(continuity)
         context = QWidget()
         context.setObjectName("projectCard")
         details = QVBoxLayout(context)

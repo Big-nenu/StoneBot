@@ -28,7 +28,8 @@ class History:
                 );
                 CREATE TABLE IF NOT EXISTS project (
                     id INTEGER PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL,
-                    instructions TEXT NOT NULL, folder TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0
+                    instructions TEXT NOT NULL, folder TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0,
+                    continuity TEXT NOT NULL DEFAULT ''
                 );
             """)
             columns = {row[1] for row in conn.execute("PRAGMA table_info(message)")}
@@ -40,6 +41,8 @@ class History:
             conn.execute("BEGIN IMMEDIATE")
             if "project_id" not in {row[1] for row in conn.execute("PRAGMA table_info(chat)")}:
                 conn.execute("ALTER TABLE chat ADD COLUMN project_id INTEGER REFERENCES project(id) ON DELETE SET NULL")
+            if "continuity" not in {row[1] for row in conn.execute("PRAGMA table_info(project)")}:
+                conn.execute("ALTER TABLE project ADD COLUMN continuity TEXT NOT NULL DEFAULT ''")
             conn.execute("CREATE INDEX IF NOT EXISTS chat_project ON chat(project_id, updated)")
 
     @contextmanager
@@ -113,6 +116,22 @@ class History:
     def pin_project(self, project_id, pinned):
         with self.connect() as conn:
             conn.execute("UPDATE project SET pinned=? WHERE id=?", (pinned, project_id))
+
+    def save_continuity(self, project_id, text):
+        with self.connect() as conn:
+            updated = conn.execute("UPDATE project SET continuity=? WHERE id=?", (text.strip(), project_id))
+            if not updated.rowcount:
+                raise ValueError("El proyecto ya no está disponible.")
+
+    def project_chats(self):
+        with self.connect() as conn:
+            chats = {}
+            for project_id, chat_id, title in conn.execute("""
+                SELECT project_id, id, title FROM chat WHERE project_id IS NOT NULL
+                ORDER BY project_id, updated DESC, id DESC
+            """):
+                chats.setdefault(project_id, []).append((chat_id, title))
+            return chats
 
     def chat_project(self, chat_id):
         with self.connect() as conn:

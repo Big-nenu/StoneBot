@@ -310,6 +310,9 @@ def chat_style(theme):
             QWidget#chatHeader QPushButton {{ padding: 4px 8px; font-size: 14px; }}
             QPushButton[quiet="true"]:checked:enabled:!hover:!pressed {{ background: {shade(background, .09)}; }}
             QWidget#historyPanel {{ background: {sidebar}; }}
+            QWidget#sidebarRail {{ background: {sidebar}; border-right: 1px solid {subtle_edge}; }}
+            QWidget#sidebarRail QPushButton#sidebarToggle {{ padding: 0; }}
+            QWidget#sidebarRail QPushButton[sidebarAction="true"] {{ text-align: left; padding: 0 0 0 7px; }}
             QWidget#historyPanel QListWidget, QWidget#historyPanel QLineEdit {{
                 color: {text}; font-family: "Segoe UI"; font-size: 14px;
             }}
@@ -320,15 +323,14 @@ def chat_style(theme):
             }}
             QWidget#historyPanel QLineEdit:focus {{ border-color: {accent}; }}
             QWidget#historyPanel QListWidget {{ background: transparent; border: 0; outline: 0; }}
-            QWidget#historyPanel QListWidget::item {{ padding: 7px 36px 7px 8px; border: 1px solid transparent; border-radius: 7px; }}
+            QWidget#historyPanel QListWidget::item {{ padding: 5px 30px 5px 8px; border: 1px solid transparent; border-radius: 7px; }}
+            QWidget#historyPanel QListWidget::item:disabled {{ color: {muted}; padding-top: 8px; }}
             QWidget#historyPanel QListWidget::item:hover {{ background: {shade(sidebar, .07)}; }}
             QWidget#historyPanel QListWidget::item:selected {{
                 background: {shade(sidebar, .14)}; color: {text}; border-left-color: {link_color(background)};
             }}
             QWidget#historyPanel QListWidget::item:focus {{ border-color: {link_color(background)}; }}
-            QLabel#historyHeading {{ color: {muted}; font-size: 13px; font-weight: 600; padding: 0 7px; }}
             QWidget#historyPanel QPushButton {{ padding: 6px 8px; }}
-            QWidget#historyPanel QPushButton[sidebarIcon="true"] {{ padding: 0; }}
             QScrollArea#projectPage, QWidget#projectCanvas {{ background: {background}; border: 0; }}
             QLabel#projectTitle {{ color: {text}; font-family: "Georgia"; font-size: 28px; font-weight: 600; }}
             QLabel#projectSection {{ color: {text}; font-size: 14px; font-weight: 600; }}

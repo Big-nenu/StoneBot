@@ -308,7 +308,9 @@ Usa **☰** para mostrar u ocultar el panel izquierdo. Arrastra su borde derecho
 
 Las conversaciones se guardan en `%USERPROFILE%\.stonebot\conversations.sqlite3`. El historial almacena los mensajes del usuario y las respuestas visibles. Los permisos MCP se guardan en `mcp_permissions.sqlite3` y el diagnóstico en `diagnostics.log`. La memoria seleccionada de StoneBot continúa en `memoria.db` y se usa mediante sus herramientas existentes.
 
-El icono **Proyectos** de la barra lateral abre la lista de proyectos locales. Puedes crear uno con nombre, descripción, instrucciones y una carpeta opcional, fijarlo en la barra lateral y abrir sus conversaciones desde su ficha. Para asociar un chat existente, usa **Mover a proyecto…** en su menú. Los iconos **Nuevo chat**, **Buscar conversaciones** y **Diagnóstico** muestran su nombre al pasar el puntero. Vincular una carpeta añade contexto al chat y al planificador. Los permisos MCP se aplican según su configuración.
+La columna izquierda mantiene los iconos visibles con la barra expandida o recogida. Al expandirla aparecen los nombres de las acciones, los proyectos desplegables con sus conversaciones y los chats recientes. El icono **Proyectos** abre la lista de proyectos locales. Puedes crear uno con nombre, descripción, instrucciones y una carpeta opcional, fijarlo arriba y abrir su ficha desde el menú de su fila. Para asociar un chat existente, usa **Mover a proyecto…** en su menú.
+
+Cada ficha incluye un **Punto de continuidad** editable para recordar dónde te quedaste y qué sigue. Puedes escribirlo a mano o decir «Guarda el resumen» tras completar una tarea en ese proyecto. Los chats del proyecto reciben la nota como contexto anterior, además de las instrucciones y la carpeta vinculada. Los permisos MCP se aplican según su configuración.
 
 Los mensajes con hora registrada la muestran en formato local. Las respuestas muestran Markdown con títulos, listas, enlaces HTTP(S) y expresiones matemáticas sencillas en línea. Cada bloque de código tiene su lenguaje, resaltado cuando el lenguaje es compatible y un botón **Copiar** que copia solo ese bloque.
 

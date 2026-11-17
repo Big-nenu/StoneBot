@@ -24,6 +24,7 @@ import mcp_client
 from diagnostics import read_log
 from experiences import record_task_result, task_results
 from history import History
+from history_ui import NESTED_ROLE, PROJECT_ROLE, RAIL_WIDTH
 from mcp_permissions import allowed, list_permissions, permission_signature, remember, revoke, safe_read
 from mcp_pool import McpPool
 
@@ -219,14 +220,28 @@ def test_projects():
     async def reply(worker):
         assert worker.project["name"] == "Atom-Fusion"
         assert "Cita README y cambios recientes." in worker.messages[0]["content"]
+        assert "Falta probar la receta de oxígeno" in worker.messages[0]["content"]
         return "Documentación revisada."
 
     try:
-        icons = window.history_panel.icon_buttons
+        icons = window.sidebar_rail.actions
         assert all(not btn.icon().isNull() and btn.toolTip() for btn in icons.values())
+        for button in icons.values():
+            assert button.text() == button.accessibleName()
+            assert sum(candidate.accessibleName() == button.accessibleName()
+                       for candidate in window.findChildren(QPushButton)) == 1
+        expanded_positions = {name: button.mapTo(window, button.rect().topLeft()) for name, button in icons.items()}
         assert window.history_panel.search.isHidden()
+        window.history_button.click()
+        QApplication.processEvents()
+        assert window.history_panel.isHidden()
+        assert window.sidebar_rail.width() == RAIL_WIDTH
+        assert all(btn.isVisible() and not btn.text() for btn in icons.values())
+        assert {name: button.mapTo(window, button.rect().topLeft()) for name, button in icons.items()} == expanded_positions
         icons["search"].click()
+        assert not window.history_panel.isHidden()
         assert not window.history_panel.search.isHidden()
+        assert icons["search"].text() == "Buscar conversaciones"
         icons["search"].click()
         icons["projects"].click()
         assert window.pages.currentWidget() is window.project_page
@@ -237,7 +252,9 @@ def test_projects():
         assert project["folder"] == str(window.history.path.parent.resolve())
         window.project_page.pinned.emit(pid, True)
         assert History().projects()[0]["pinned"]
-        assert not window.history_panel.pinned.isHidden()
+        with patch.object(QInputDialog, "getMultiLineText", return_value=("Falta probar la receta de oxígeno", True)):
+            window.project_page.continuity_requested.emit(pid)
+        assert History().projects()[0]["continuity"] == "Falta probar la receta de oxígeno"
 
         window.project_page.chat_started.emit(pid)
         with patch.object(app.Worker, "chat", reply):
@@ -247,9 +264,29 @@ def test_projects():
         chat = window.chat_id
         assert History().chat_project(chat)["id"] == pid
         assert History().find(project_id=pid) == [(chat, "Revisa cómo va.")]
+        panel = window.history_panel
+        row = next(panel.list.item(i) for i in range(panel.list.count())
+                   if panel.list.item(i).data(PROJECT_ROLE) == pid)
+        panel.activate_row(row)
+        assert not any(panel.list.item(i).data(NESTED_ROLE) for i in range(panel.list.count()))
+        row = next(panel.list.item(i) for i in range(panel.list.count())
+                   if panel.list.item(i).data(PROJECT_ROLE) == pid)
+        panel.activate_row(row)
+        assert any(panel.list.item(i).data(NESTED_ROLE) and panel.list.item(i).data(Qt.ItemDataRole.UserRole) == chat
+                   for i in range(panel.list.count()))
+        assert any(panel.list.item(i).text() == "Recientes" for i in range(panel.list.count()))
+
+        completed = app.new_task("Revisa Atom-Fusion")
+        completed.update(status="completed", message="Siguiente paso: probar oxígeno en móvil.")
+        History().save_task(chat, completed)
         window.new_chat()
         window.open_chat(chat)
         assert window.project["id"] == pid
+        window.message.setPlainText("Guarda el resumen")
+        window.send.click()
+        wait_for_turn(window)
+        assert "probar oxígeno en móvil" in History().projects()[0]["continuity"]
+        assert window.project["continuity"] == History().projects()[0]["continuity"]
         with patch.object(QInputDialog, "getItem", return_value=("Sin proyecto", True)):
             window.move_chat_to_project(chat)
         assert History().chat_project(chat) is None
