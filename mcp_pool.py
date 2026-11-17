@@ -4,7 +4,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-from mcp_client import discover, session_for
+from mcp_client import discover, session_for, startup_timeout
 
 
 class SessionProxy:
@@ -86,7 +86,7 @@ class McpPool:
             self.slots[name] = slot
             slot.task = asyncio.create_task(self.connect(name, slot))
         try:
-            async with asyncio.timeout(25):
+            async with asyncio.timeout(startup_timeout(config)):
                 return await asyncio.shield(slot.ready)
         except TimeoutError as exc:
             if not slot.ready.done():

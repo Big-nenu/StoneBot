@@ -13,7 +13,9 @@ from PySide6.QtWidgets import (
 )
 
 from appearance import COLORS, control_colors, dialog_style, link_color, readable_text, shade
-from mcp_client import connection_error, load_servers, probe_server, save_servers, validate_server
+from mcp_client import (
+    connection_error, is_desktop_commander, load_servers, probe_server, save_servers, startup_timeout, validate_server,
+)
 from mcp_credentials import credential_target, delete_key, read_key, store_key
 from mcp_permissions import list_permissions, revoke
 from mcp_setup import ensure_new, prepare
@@ -141,7 +143,7 @@ class ConnectionTest(QThread):
         self.server = server
 
     async def probe(self):
-        async with asyncio.timeout(25):
+        async with asyncio.timeout(startup_timeout(self.server)):
             return await probe_server(self.name, self.server)
 
     def run(self):
@@ -519,6 +521,9 @@ class McpDialog(QDialog):
             if download:
                 review += "\nEl lanzador puede descargar e instalar el paquete en su caché antes de iniciarlo."
         review += "\n\nSi la prueba funciona, guardar el servidor desactivado y sin permisos automáticos."
+        if is_desktop_commander(server):
+            review += ("\nSus herramientas también quedarán desactivadas hasta que las habilites. "
+                       "La primera prueba puede tardar unos dos minutos.")
         dialog = QMessageBox(QMessageBox.Icon.Question, f"Revisar MCP · {name}", review,
                              QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, self.parentWidget())
         dialog.setTextFormat(Qt.TextFormat.PlainText)
@@ -551,6 +556,8 @@ class McpDialog(QDialog):
             ensure_new(self.servers, name, server)
         except ValueError as exc:
             return str(exc)
+        if is_desktop_commander(server):
+            server["disabled_tools"] = [tool for tool, _ in tools]
         if not self.commit(name, server):
             return self.notice.text()
         self.results[name] = ("Correcta", tools, "")

@@ -254,6 +254,8 @@ Para agregar un servidor desde el chat, escribe **Instala este MCP** y pega el b
 
 Revisa la URL, el ejecutable y los argumentos antes de pulsar **Autorizar y probar**. En STDIO se inicia el ejecutable para comprobar la conexión. `npx` y `uvx` pueden descargar y ejecutar el paquete en su caché. El alta no ejecuta bloques de comandos de shell ni instaladores independientes. Si la prueba funciona, el servidor aparece desactivado y sin permisos automáticos. Actívalo desde **+ → MCP** o desde el panel de la cabecera.
 
+Para Desktop Commander, envía `/mcp instalar` y en la línea siguiente `npx -y @wonderwhy-er/desktop-commander@latest`. La primera prueba puede tardar unos dos minutos con una caché vacía. Cada herramienta recién descubierta queda desactivada. Habilita las que elijas en el panel **MCP**, donde también se gestionan las autorizaciones.
+
 Cada herramienta descubierta tiene su propio interruptor. Los servidores y herramientas deshabilitados quedan fuera de las herramientas que recibe Nemotron. Estas preferencias se conservan al reiniciar. Vuelve a probar la conexión para cargar el catálogo en la nueva sesión. Al habilitar una herramienta se vuelven a aplicar sus permisos de lectura o confirmación.
 
 Los servidores se agregan desactivados. El nombre identifica la configuración y se mantiene al editarla. Cambiar el transporte, el ejecutable, los argumentos, la URL o la referencia al token desactiva el servidor y revoca sus lecturas automáticas. Los cambios aplican al siguiente turno. En STDIO, escribe los argumentos como una lista JSON, por ejemplo `["-B", "C:\\ruta\\servidor.py"]`. En HTTP, el archivo de configuración guarda el nombre de la variable del token si se configuró.

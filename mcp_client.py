@@ -6,9 +6,10 @@ import os
 import re
 import socket
 import ssl
+import sys
 import sqlite3
 import tempfile
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -21,6 +22,19 @@ from mcp_permissions import revoke, safe_read
 
 class MissingTokenError(ValueError):
     pass
+
+
+def is_desktop_commander(server):
+    if server["transport"] != "stdio":
+        return False
+    command = Path(server["command"]).stem.casefold()
+    args = server["args"]
+    npx = command == "npx" or (command == "node" and bool(args) and Path(args[0]).name.casefold() == "npx-cli.js")
+    return npx and any(re.fullmatch(r"@wonderwhy-er/desktop-commander(?:@[\w.-]+)?", arg) for arg in args)
+
+
+def startup_timeout(server):
+    return 125 if is_desktop_commander(server) else 25
 
 
 def data_path(*parts):
@@ -118,12 +132,18 @@ async def session_for(name, server, *, message_handler=None):
         drive, home = os.path.splitdrive(folder)
         env = dict.fromkeys(("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP"), str(folder))
         env.update(HOMEDRIVE=drive, HOMEPATH=home)
+        if is_desktop_commander(server):
+            # Una descarga interrumpida puede dejar npm-cache/_npx incompleta.
+            env["npm_config_cache"] = str(data_path("mcp", name, "npm-cache-stonebot"))
         params = StdioServerParameters(command=server["command"], args=server["args"], cwd=folder, env=env)
-        async with stdio_client(params) as streams:
-            async with ClientSession(*streams, read_timeout_seconds=timedelta(seconds=20),
-                                     message_handler=message_handler) as session:
-                await session.initialize()
-                yield session
+        # pythonw no tiene consola. Algunos servidores escriben en stderr antes de responder.
+        stderr = nullcontext(sys.stderr) if sys.stderr is not None else open(os.devnull, "w")
+        with stderr as log:
+            async with stdio_client(params, errlog=log) as streams:
+                async with ClientSession(*streams, read_timeout_seconds=timedelta(seconds=startup_timeout(server) - 5),
+                                         message_handler=message_handler) as session:
+                    await session.initialize()
+                    yield session
     else:
         headers = {}
         variable = server["token_env"]
@@ -178,6 +198,7 @@ async def probe_server(name, server):
 def connection_error(error):
     """Describe fallos de la prueba sin publicar URLs, cabeceras ni mensajes del servidor."""
     import httpx
+    from anyio import BrokenResourceError, ClosedResourceError
 
     try:
         from mcp.shared.exceptions import McpError
@@ -219,6 +240,8 @@ def connection_error(error):
             return f"HTTP {status}. {detail}"
         if isinstance(exc, McpError):
             code = exc.error.code
+            if code == -32000 and exc.error.message == "Connection closed":
+                return "El canal MCP se cerró antes de recibir respuesta (código -32000)."
             # El SDK 1.x transforma un POST 404 en este error de sesión.
             if code == 32600 and exc.error.message == "Session terminated":
                 return "HTTP 404. La ruta MCP no existe o la sesión terminó. Revisa la URL del endpoint."
@@ -237,6 +260,7 @@ def connection_error(error):
         (httpx.ConnectError, "No se pudo establecer la conexión. Revisa el dominio, el puerto y la red."),
         (FileNotFoundError, "No se encontró el ejecutable STDIO o su directorio de trabajo."),
         (PermissionError, "Permiso denegado al intentar iniciar el proceso o abrir la conexión."),
+        ((BrokenResourceError, ClosedResourceError), "El canal MCP se cerró antes de recibir respuesta."),
         (ImportError, "Falta el SDK de MCP o una de sus dependencias."),
     ):
         if any(isinstance(exc, kind) for exc in errors):

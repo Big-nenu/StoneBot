@@ -6,7 +6,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import mcp
-from PySide6.QtCore import QTimer
+from mcp.shared.exceptions import McpError
+from mcp.types import ErrorData
+from PySide6.QtCore import QEvent, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -76,6 +78,8 @@ def test_install(root):
         assert len(window.messages) == 1 and window.history.find() == []
     finally:
         window.close()
+        window.deleteLater()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 if __name__ == "__main__":
@@ -89,6 +93,12 @@ if __name__ == "__main__":
     _, http, download = mcp_setup.prepare('/mcp instalar {"mcpServers":{"ejemplo":{"url":"https://example.test/mcp",'
                                            '"headers":{"Authorization":"Bearer ${API_KEY}"}}}}')
     assert http["token_env"] == "STONEBOT_MCP_EJEMPLO_TOKEN" and not download
+    node = {"transport": "stdio", "command": "node.exe", "args": ["npx-cli.js", "-y", "@wonderwhy-er/desktop-commander@latest"]}
+    assert mcp_client.is_desktop_commander(node) and mcp_client.startup_timeout(node) > 90
+    assert mcp_client.startup_timeout({**node, "args": ["npx-cli.js", "-y", "other-package"]}) == 25
+    assert mcp_client.startup_timeout(http) == 25
+    closed = McpError(ErrorData(code=-32000, message="Connection closed"))
+    assert "canal MCP se cerró" in mcp_client.connection_error(closed)
     with patch.object(mcp_setup.shutil, "which", return_value=None):
         try:
             mcp_setup.prepare('/mcp instalar {"mcpServers":{"falta":{"command":"uvx","args":["example-mcp"]}}}')
