@@ -237,6 +237,9 @@ class ActivityPanel(QWidget):
         self.summary.setAccessibleName("Expandir o contraer actividad de este turno")
         self.summary.setCheckable(True)
         self.summary.toggled.connect(self.expand)
+        self.pause_button = secondary_button(QPushButton("Pausar"))
+        self.pause_button.setAccessibleName("Pausar tarea al terminar el paso actual")
+        self.pause_button.hide()
         self.detail = QWidget()
         self.detail.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         self.events = QPlainTextEdit()
@@ -263,9 +266,29 @@ class ActivityPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 3, 8, 3)
         layout.setSpacing(3)
-        layout.addWidget(self.summary)
+        controls = QHBoxLayout()
+        controls.addWidget(self.summary, 1)
+        controls.addWidget(self.pause_button)
+        layout.addLayout(controls)
         layout.addWidget(self.detail)
         self.detail.hide()
+
+    def enable_pause(self, pause):
+        def request_pause():
+            pause()
+            self.pause_button.setEnabled(False)
+            self.add_event("Pausa solicitada · esperando el paso actual…")
+
+        self.pause_button.clicked.connect(request_pause)
+        self.pause_button.show()
+
+    @staticmethod
+    def task_status(label, steps):
+        return f"{label} · {steps} pasos registrados"
+
+    def finish_task(self, label, steps, *, saved):
+        self.pause_button.hide()
+        self.add_event(self.task_status(label, steps) if saved else "No se pudo guardar el cierre de la tarea")
 
     def expand(self, expanded):
         self.summary.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
@@ -280,7 +303,7 @@ class ActivityPanel(QWidget):
         text = f"Actividad · {self.latest}"
         self.summary.setToolTip(text)
         self.summary.setText(self.summary.fontMetrics().elidedText(
-            text, Qt.TextElideMode.ElideRight, max(60, self.width() - 48)))
+            text, Qt.TextElideMode.ElideRight, max(60, self.summary.width() - 30)))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

@@ -85,10 +85,12 @@ Las etapas son orientativas, no fechas prometidas. Cada etapa debe tener una dem
 
 ### Etapa 4 — Autonomía experimental
 
+- Primer alcance disponible: tareas reanudables de solo lectura en el chat.
 - Cola de actividades, presupuesto de tiempo/recursos y botón de parada.
 - Acciones clasificadas: lectura automática, propuestas sujetas a revisión y acciones prohibidas.
 - Autoevaluación mediante pruebas pequeñas.
 - Cambios de código solo en rama o entorno aislado, con pruebas y aprobación antes de integrarlos.
+- Futuro: detectar bibliotecas Python faltantes, proponer paquete, versión y entorno, y pedir autorización antes de instalar, preferentemente en un entorno virtual aislado.
 
 **Criterio de salida:** realiza un experimento permitido, explica el resultado y se detiene cuando se le indica.
 
@@ -313,6 +315,18 @@ En el cuadro de mensaje, **Ampliar editor** y **Reducir editor** ajustan la altu
 Al pasar el cursor sobre una conversación, **⋯** abre las acciones **Renombrar** y **Eliminar**. También puedes abrir ese menú con clic derecho o con **Mayús + F10** sobre la fila seleccionada.
 
 En un mensaje del usuario, **Editar → Regenerar** vuelve a usar el historial anterior a ese punto. Si Ollama entrega una respuesta nueva y se guarda correctamente, se reemplaza el tramo posterior solo en esa conversación. Si la regeneración falla, se restaura el historial guardado.
+
+### Tareas reanudables
+
+En un chat sin adjuntos, envía `/tarea` seguido del objetivo. Por ejemplo, `/tarea Encuentra los cinco archivos más grandes de una carpeta con Desktop Commander. Pídeme la ruta y devuelve los nombres y tamaños en bytes.` Activa Desktop Commander y sus herramientas `list_directory` y `get_file_info` desde el panel MCP. Los permisos actuales se aplican a cada lectura nueva.
+
+- Si la tarea espera un dato, reabre el mismo chat y responde con el dato, por ejemplo la ruta absoluta. La tarea recupera su objetivo y los resultados guardados.
+- **Actividad** muestra el estado y los pasos registrados. **Pausar** deja terminar la operación actual y detiene el siguiente paso. Usa `/reanudar` para retomar una tarea pausada o interrumpida, o `/cancelar` para cerrarla. Tras un cierre inesperado, un paso sin resultado queda marcado como incierto.
+- El historial local conserva el objetivo, el estado y los resultados acotados de las lecturas de la tarea más reciente de cada chat. Se reutiliza una lectura idéntica durante la tarea. Para volver a consultar datos que hayan cambiado, inicia otra. Los mensajes anteriores siguen en la conversación. Usa conversaciones sin tarea para editar y regenerar.
+
+Esta etapa admite herramientas MCP de solo lectura y se inicia desde el chat. Adjuntos, Skills, acciones de escritura y ejecución desatendida quedan pendientes en el modo de tareas. Las tareas se guardan en `conversations.sqlite3`, separadas de la memoria de StoneBot y StoneWave.
+
+`python -B tests/test_tasks.py` comprueba el reinicio, la pausa y la cancelación con un MCP STDIO de prueba. Con Ollama activo, `python -B tests/test_tasks.py --desktop RUTA_NODE RUTA_DIST_INDEX_JS` usa el Desktop Commander ya instalado. La prueba crea seis archivos en una carpeta temporal y verifica los cinco resultados y sus tamaños.
 
 ### Adjuntos del chat
 

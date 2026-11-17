@@ -23,6 +23,9 @@ class History:
                     created INTEGER, attachments TEXT
                 );
                 CREATE INDEX IF NOT EXISTS messages_by_chat ON message(chat_id, id);
+                CREATE TABLE IF NOT EXISTS chat_task (
+                    chat_id INTEGER PRIMARY KEY REFERENCES chat(id) ON DELETE CASCADE, snapshot TEXT NOT NULL
+                );
             """)
             columns = {row[1] for row in conn.execute("PRAGMA table_info(message)")}
             if "created" not in columns:
@@ -37,7 +40,7 @@ class History:
             conn.execute("PRAGMA foreign_keys = ON")
             yield conn
 
-    def append(self, chat_id, role, content, *, created=None, attachments=None):
+    def append(self, chat_id, role, content, *, created=None, attachments=None, task=None):
         now = time.time_ns() if created is None else created
         with self.connect() as conn:
             if chat_id is None:
@@ -46,8 +49,24 @@ class History:
                 chat_id = conn.execute("INSERT INTO chat(title, updated) VALUES (?, ?)",
                                        (title, now)).lastrowid
             self.insert_message(conn, chat_id, role, content, now, attachments)
+            if task is not None:
+                self.write_task(conn, chat_id, task)
             conn.execute("UPDATE chat SET updated=? WHERE id=?", (now, chat_id))
         return chat_id
+
+    def task(self, chat_id):
+        with self.connect() as conn:
+            row = conn.execute("SELECT snapshot FROM chat_task WHERE chat_id=?", (chat_id,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_task(self, chat_id, task):
+        with self.connect() as conn:
+            self.write_task(conn, chat_id, task)
+
+    @staticmethod
+    def write_task(conn, chat_id, task):
+        conn.execute("INSERT INTO chat_task VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET snapshot=excluded.snapshot",
+                     (chat_id, json.dumps(task, ensure_ascii=False)))
 
     def find(self, query=""):
         needle = query.strip().casefold()
