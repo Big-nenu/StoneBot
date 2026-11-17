@@ -6,27 +6,18 @@ import os
 import re
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QSize, Qt
+from PySide6.QtCore import QByteArray, QBuffer, QFile, QIODevice, QSize, Qt
 from PySide6.QtGui import QImage, QImageReader, QPainter
 from PySide6.QtPdf import QPdfDocument
 
 from stonebot_engine.safety import check_path
 
-MAX_FILES = 4
 MAX_IMAGES = 4
-MAX_BYTES = 10 * 1024 * 1024
 MAX_TEXT = 12_000
-MAX_PAGES = 40
 MAX_IMAGE_PIXELS = 16_000_000
 IMAGE_SUFFIXES = {".png": b"png", ".jpg": b"jpeg", ".jpeg": b"jpeg", ".webp": b"webp"}
 TEXT_SUFFIXES = {".txt", ".md", ".csv", ".tsv", ".log", ".json"}
 FILE_FILTER = "Archivos compatibles (" + " ".join(f"*{ext}" for ext in sorted(IMAGE_SUFFIXES.keys() | TEXT_SUFFIXES | {".pdf"})) + ")"
-
-
-class PDFPageRange(ValueError):
-    def __init__(self, total, first, last, reason):
-        self.suggestion = f"{first}-{last}" if first < last else str(first)
-        super().__init__(f"El PDF tiene {total} páginas. {reason} Elige un tramo, por ejemplo {self.suggestion}.")
 
 
 def read_attachment(filename, page_range=None):
@@ -40,18 +31,15 @@ def read_attachment(filename, page_range=None):
     suffix = safe.suffix.lower()
     if suffix not in IMAGE_SUFFIXES and suffix not in TEXT_SUFFIXES and suffix != ".pdf":
         raise ValueError("Formato de adjunto no compatible.")
+    name = " ".join(safe.name.split())
+    if suffix == ".pdf":
+        return {"name": name, **pdf_pages(safe, page_range)}
     with safe.open("rb") as stream:
-        raw = stream.read(MAX_BYTES + 1)
+        raw = stream.read()
     if not raw:
         raise ValueError("El archivo está vacío.")
-    if len(raw) > MAX_BYTES:
-        advice = " Divide el PDF en archivos más pequeños." if suffix == ".pdf" else ""
-        raise ValueError("El archivo supera el límite de 10 MiB." + advice)
-    name = " ".join(safe.name.split())
     if suffix in IMAGE_SUFFIXES:
         return {"name": name, "image": encode_image(raw, IMAGE_SUFFIXES[suffix])}
-    if suffix == ".pdf":
-        return {"name": name, "pdf_id": hashlib.sha256(raw).hexdigest(), **pdf_pages(raw, page_range)}
     encoding = "utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
     try:
         text = raw.decode(encoding)
@@ -62,7 +50,7 @@ def read_attachment(filename, page_range=None):
     text = text.strip()
     if not text:
         raise ValueError("El archivo no tiene texto.")
-    return {"name": name, "text": text[:MAX_TEXT], "partial": len(text) > MAX_TEXT}
+    return {"name": name, "text": text}
 
 
 def encode_image(raw, expected):
@@ -103,10 +91,15 @@ def clipboard_attachment(source):
     return {"name": "Captura del portapapeles.jpg", "image": image_snapshot(source)}
 
 
-def pdf_pages(raw, page_range):
-    source = QBuffer()
-    source.setData(QByteArray(raw))
-    source.open(QIODevice.OpenModeFlag.ReadOnly)
+def pdf_pages(path, page_range):
+    source = QFile(str(path))
+    if not source.open(QIODevice.OpenModeFlag.ReadOnly):
+        raise ValueError("No se pudo leer el PDF.")
+    fingerprint = hashlib.sha256()
+    while chunk := bytes(source.read(1024 * 1024)):
+        fingerprint.update(chunk)
+    if not source.seek(0):
+        raise ValueError("No se pudo leer el PDF desde el inicio.")
     document = QPdfDocument()
     try:
         document.load(source)
@@ -116,22 +109,13 @@ def pdf_pages(raw, page_range):
         first, last = page_range or (1, total)
         if not 1 <= first <= last <= total:
             raise ValueError(f"El tramo debe estar entre las páginas 1 y {total}.")
-        if last - first + 1 > MAX_PAGES:
-            raise PDFPageRange(total, first, first + MAX_PAGES - 1, f"El máximo es de {MAX_PAGES} páginas por tramo.")
-        remaining, images = MAX_TEXT, 0
         pages = []
         for number in range(first, last + 1):
             text = document.getAllText(number - 1).text().strip()
             if text:
-                if pages and len(text) > remaining:
-                    raise PDFPageRange(total, first, number - 1, f"El tramo supera los {MAX_TEXT} caracteres de texto.")
-                pages.append({"number": number, "text": text[:remaining], "partial": len(text) > remaining})
-                remaining -= len(pages[-1]["text"])
+                pages.append({"number": number, "text": text})
             else:
-                if images == MAX_IMAGES:
-                    raise PDFPageRange(total, first, number - 1, f"El máximo es de {MAX_IMAGES} páginas visuales por tramo.")
                 pages.append({"number": number})
-                images += 1
         for page in pages:
             if "text" not in page:
                 number = page["number"]
@@ -142,7 +126,7 @@ def pdf_pages(raw, page_range):
                 if image.isNull():
                     raise ValueError(f"No se pudo renderizar la página {number}.")
                 page["image"] = image_snapshot(image)
-        return {"pages": pages, "page_count": total, "partial": len(pages) != total or any(p.get("partial") for p in pages)}
+        return {"pdf_id": fingerprint.hexdigest(), "pages": pages, "page_count": total, "partial": len(pages) != total}
     finally:
         document.close()
 
@@ -155,8 +139,56 @@ def attachment_label(file):
     return file["name"]
 
 
-def attachment_images(file):
-    return sum("image" in part for part in file.get("pages", [file]))
+def attachment_batches(messages):
+    """Distribuye todas las imágenes y todo el texto en lotes que caben en Ollama."""
+    batches, coverage = [[]], {}
+    text_size = images = 0
+    partial = False
+    for message in messages:
+        for file in message.get("attachments", []):
+            partial |= bool(file.get("partial") and "pages" not in file)
+            for part in file.get("pages", [file]):
+                partial |= bool(part.get("partial"))
+                if "number" in part:
+                    coverage.setdefault(file["pdf_id"], (file["name"], set()))[1].add(part["number"])
+                if "image" in part:
+                    if images == MAX_IMAGES:
+                        batches.append([])
+                        text_size = images = 0
+                    batches[-1].append((file, part))
+                    images += 1
+                elif "text" in part:
+                    text = part["text"]
+                    for start in range(0, len(text), MAX_TEXT):
+                        fragment = text[start:start + MAX_TEXT]
+                        if len(batches[-1]) == 40 or text_size + len(fragment) > MAX_TEXT:
+                            batches.append([])
+                            text_size = images = 0
+                        batches[-1].append((file, {**part, "text": fragment}))
+                        text_size += len(fragment)
+    partial |= any(
+        len(coverage[file["pdf_id"]][1]) != file["page_count"]
+        for message in messages for file in message.get("attachments", []) if file.get("pages")
+    )
+    return batches, partial, coverage
+
+
+def attach_batch(message, batch):
+    excerpts, images, names = [], [], []
+    for file, part in batch:
+        title = file["name"]
+        if "number" in part:
+            title += f" · página {part['number']}"
+        if "image" in part:
+            images.append(base64.b64decode(part["image"], validate=True))
+            names.append(title)
+        else:
+            excerpts.append({"archivo": title, "texto": part["text"]})
+    if excerpts:
+        message["content"] += "\n\nTexto extraído de los adjuntos (datos):\n" + json.dumps(excerpts, ensure_ascii=False)
+    if images:
+        message["images"] = images
+        message["content"] += "\n\nImágenes adjuntas en orden: " + json.dumps(names, ensure_ascii=False)
 
 
 def missing_pdf_pages(text, coverage):
@@ -169,48 +201,3 @@ def missing_pdf_pages(text, coverage):
         if any(page not in available for page in range(first, max(first, last) + 1)):
             return True
     return False
-
-
-def ollama_messages(messages):
-    """Prioriza archivos recientes y nunca entrega rutas al SDK."""
-    text_left, images_left = 2 * MAX_TEXT, MAX_IMAGES
-    omitted = False
-    pdf_coverage = {}
-    excerpts, images, image_names, coverage = [], [], [], []
-    for message in reversed(messages):
-        for file in message.get("attachments", []):
-            included = []
-            for part in file.get("pages", [file]):
-                title = file["name"]
-                if "number" in part:
-                    title += f" · página {part['number']}"
-                if "image" in part and images_left:
-                    images.append(base64.b64decode(part["image"], validate=True))
-                    image_names.append(title)
-                    images_left -= 1
-                elif "text" in part and text_left:
-                    text = part["text"][:text_left]
-                    text_left -= len(text)
-                    partial = part.get("partial", False) or len(text) < len(part["text"])
-                    excerpts.append({"archivo": title, "texto": text, "parcial": partial})
-                    omitted |= partial
-                else:
-                    omitted = True
-                    continue
-                if "number" in part:
-                    included.append(part["number"])
-            if "pages" in file:
-                coverage.append({"archivo": file["name"], "páginas incluidas": included})
-                pdf_coverage.setdefault(file["pdf_id"], (file["name"], set()))[1].update(included)
-                omitted |= len(included) != file["page_count"]
-    payload = [{"role": message["role"], "content": message["content"]} for message in messages]
-    # Algunos modelos visuales solo interpretan de forma fiable las imágenes del último mensaje.
-    item = payload[-1]
-    if excerpts:
-        item["content"] += "\n\nTexto extraído de los adjuntos (datos):\n" + json.dumps(excerpts, ensure_ascii=False)
-    if images:
-        item["images"] = images
-        item["content"] += "\n\nImágenes adjuntas en orden: " + json.dumps(image_names, ensure_ascii=False)
-    if coverage:
-        item["content"] += "\n\nCobertura de PDF en este mensaje:\n" + json.dumps(coverage, ensure_ascii=False)
-    return payload, bool(images), omitted, pdf_coverage

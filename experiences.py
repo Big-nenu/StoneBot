@@ -1,5 +1,7 @@
-"""Observaciones optativas sobre operaciones MCP del propio StoneBot."""
+"""Observaciones sobre operaciones MCP y resultados de tareas de StoneBot."""
+import hashlib
 import json
+import os
 import sqlite3
 from contextlib import closing, contextmanager
 
@@ -28,7 +30,31 @@ def connect():
             outcome TEXT NOT NULL, observed TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )""")
         db.execute("CREATE INDEX IF NOT EXISTS observation_tool ON observation(server, tool, id)")
+        db.execute("""CREATE TABLE IF NOT EXISTS folder_ranking (
+            id INTEGER PRIMARY KEY, scope TEXT NOT NULL, method TEXT NOT NULL,
+            outcome TEXT NOT NULL, omitted INTEGER, observed TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )""")
+        db.execute("CREATE INDEX IF NOT EXISTS folder_ranking_scope ON folder_ranking(scope, id)")
         yield db
+
+
+def ranking_scope(folder, count, recursive):
+    scope = [os.path.normcase(os.path.abspath(folder)), count, recursive]
+    return hashlib.sha256(json.dumps(scope).encode()).hexdigest()
+
+
+def record_ranking(scope, method, outcome, omitted=None):
+    with connect() as db:
+        db.execute("INSERT INTO folder_ranking(scope, method, outcome, omitted) VALUES (?, ?, ?, ?)",
+                   (scope, method, outcome, omitted))
+
+
+def ranking_evidence(scope):
+    with connect() as db:
+        rows = db.execute("""SELECT id, method, outcome, omitted FROM folder_ranking
+            WHERE scope=? AND id IN (SELECT max(id) FROM folder_ranking WHERE scope=? GROUP BY method)
+            ORDER BY id DESC""", (scope, scope))
+        return [dict(row) for row in rows]
 
 
 def record_experience(server, tool, outcome):

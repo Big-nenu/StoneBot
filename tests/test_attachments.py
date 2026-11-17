@@ -11,7 +11,7 @@ from unittest.mock import patch
 from PySide6.QtCore import QEvent, QMimeData, QPoint, QTimer, Qt, QUrl
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QLabel, QMessageBox, QPushButton
+from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMessageBox, QPushButton
 
 from test_chat_presentation import wait_for_turn
 import app
@@ -93,24 +93,22 @@ def reject(path, error):
 def test_files(root):
     for suffix in ("png", "jpg", "webp"):
         item = attachments.read_attachment(root / f"figura.{suffix}")
-        payload, vision, partial, _ = attachments.ollama_messages([{"role": "user", "content": "", "attachments": [item]}])
-        assert vision and not partial and payload[0]["images"][0].startswith(b"\xff\xd8")
+        batches, partial, _ = attachments.attachment_batches([{"attachments": [item]}])
+        payload = {"content": ""}
+        attachments.attach_batch(payload, batches[0])
+        assert not partial and payload["images"][0].startswith(b"\xff\xd8")
     assert "CEDRO-742" in attachments.read_attachment(root / "documento.pdf")["pages"][0]["text"]
     mixed = attachments.read_attachment(root / "mixto.pdf")
-    assert "CEDRO-742" in mixed["pages"][0]["text"] and attachments.attachment_images(mixed) == 1
-    reject(root / "escaneado.pdf", attachments.PDFPageRange)
+    assert "CEDRO-742" in mixed["pages"][0]["text"] and "image" in mixed["pages"][1]
+    full = attachments.read_attachment(root / "escaneado.pdf")
+    assert len(full["pages"]) == 9 and not full["partial"]
     part = attachments.read_attachment(root / "escaneado.pdf", (5, 8))
     assert attachments.attachment_label(part) == "escaneado.pdf · págs. 5–8 de 9"
-    payload, vision, partial, coverage = attachments.ollama_messages([{"role": "user", "content": "", "attachments": [part]}])
-    assert vision and partial and len(payload[0]["images"]) == 4
-    assert '"páginas incluidas": [5, 6, 7, 8]' in payload[0]["content"]
+    batches, partial, coverage = attachments.attachment_batches([{"attachments": [part]}])
+    assert partial and len(batches[0]) == 4
     assert attachments.missing_pdf_pages("¿Puedes ver la página 1?", coverage)
     assert not attachments.missing_pdf_pages("Resume las páginas 5–8", coverage)
     recent = {"role": "user", "content": "", "attachments": [part]}
-    old = {"role": "user", "content": "", "attachments": [mixed]}
-    payload, _, _, _ = attachments.ollama_messages([old, recent])
-    assert '"páginas incluidas": [1]' in payload[-1]["content"]
-    assert "images" not in payload[0] and len(payload[-1]["images"]) == 4
     with patch.object(app, "Client", return_value=object()):
         worker = app.Worker([{**recent, "content": "¿Puedes ver la página 1?"}])
         assert "no están incluidas" in asyncio.run(worker.chat())
@@ -121,12 +119,23 @@ def test_files(root):
     with patch.object(app, "Client", return_value=client):
         worker = app.Worker([{**recent, "content": "Resume el tramo."}])
         assert "no se muestra" in asyncio.run(worker.chat())
+    calls = []
+
+    def review(**request):
+        calls.append(request["messages"][-1])
+        return SimpleNamespace(message=SimpleNamespace(content=f"Hallazgo {len(calls)}"))
+
+    client.chat = review
+    with patch.object(app, "Client", return_value=client):
+        worker = app.Worker([{**recent, "content": "Resume el PDF.", "attachments": [full]}])
+        assert asyncio.run(worker.chat()) == "Hallazgo 4"
+    assert [len(item.get("images", [])) for item in calls] == [4, 4, 1, 0]
+    assert "página 9" in calls[2]["content"] and "Hallazgo 3" in calls[3]["content"]
     assert "LUNA-531" in attachments.read_attachment(root / "notas.txt")["text"]
     long_file = root / "largo.txt"
     long_file.write_text("A" * (attachments.MAX_TEXT + 2), encoding="utf-8")
-    assert attachments.read_attachment(long_file)["partial"]
-    with patch.object(attachments, "MAX_BYTES", 4):
-        reject(root / "notas.txt", ValueError)
+    batches, partial, _ = attachments.attachment_batches([{"attachments": [attachments.read_attachment(long_file)]}])
+    assert not partial and [len(batch[0][1]["text"]) for batch in batches] == [attachments.MAX_TEXT, 2]
     reject(Path("notas.txt"), ValueError)
     with patch("stonebot_engine.safety.protected_paths", return_value=[root / "notas.txt"]):
         reject(root / "notas.txt", IsolationError)
@@ -193,11 +202,11 @@ def test_window(root):
         assert window.message.toPlainText() == "Texto normal"
         window.message.clear()
 
-        with (patch.object(QFileDialog, "getOpenFileNames", return_value=([str(root / "escaneado.pdf")], "")),
-              patch.object(QInputDialog, "getText", return_value=("5-8", True)) as ask):
+        with patch.object(QFileDialog, "getOpenFileNames",
+                          return_value=([str(root / "escaneado.pdf")] * 5, "")):
             attach.trigger()
-            assert [page["number"] for page in window.attachments.files[0]["pages"]] == [5, 6, 7, 8]
-            assert ask.call_args.kwargs["text"] == "1-4"
+            assert len(window.attachments.files) == 5
+            assert [page["number"] for page in window.attachments.files[0]["pages"]] == list(range(1, 10))
             menu.aboutToShow.emit()
             assert not memory.isEnabled()
         window.attachments.clear()

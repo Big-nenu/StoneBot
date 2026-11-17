@@ -73,6 +73,8 @@ def stage(root, phase, live):
             answer = (Message(role="assistant", content="Resultado de prueba verificado.") if phase == "recover"
                       else report("completada", "Resultado de prueba verificado."))
             return SimpleNamespace(message=answer)
+        if phase == "recover":
+            assert str(folder) in transcript[-1]["content"]
         alias, = [tool.function.name for tool in call["tools"] if tool.function.name.startswith("mcp_")]
         return SimpleNamespace(message=Message(role="assistant", tool_calls=[
             {"function": {"name": alias, "arguments": {"text": "lectura"}}}
@@ -108,7 +110,7 @@ def stage(root, phase, live):
                 if phase == "recover":
                     assert "Resultado guardado" in window.task_panel.events.toPlainText()
                     assert "Resultado incierto" in window.task_panel.events.toPlainText()
-                text = "/reanudar" if phase == "recover" else str(folder)
+                text = f"/reanudar\n\n{folder}" if phase == "recover" else str(folder)
                 expected = "paused" if phase == "recover" else "completed"
             window.message.setPlainText(text)
             window.send.click()
@@ -159,6 +161,42 @@ def stage(root, phase, live):
             QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
+def inventory_stage(root, phase):
+    objective = "¿Puedes revisar Descargas y decirme cuáles son los cinco archivos más pesados? Solo archivos directos."
+    largest = root / "archivos" / "subcarpeta" / "mayor.bin"
+    if phase == "inventory":
+        largest.parent.mkdir()
+        largest.write_bytes(b"x" * 20_000)
+    assert not app.is_ranking_request("¿Cómo puedo encontrar los archivos más pesados?")
+    assert not app.is_ranking_request("Busca los cinco archivos más pesados usando Desktop Commander.")
+    with (patch.object(mcp_client, "default_root", return_value=root),
+          patch("folder_inventory.downloads_folder", return_value=root / "archivos"),
+          patch.object(app, "Client", side_effect=AssertionError("La clasificación local no necesita Ollama."))):
+        window = app.StoneBot()
+        try:
+            first = phase == "inventory"
+            if not first:
+                window.open_chat(History().find(objective)[0][0])
+                assert window.task["status"] == "completed" and not window.task["inventory_recursive"]
+            window.message.setPlainText(objective if first else "Incluye las subcarpetas también.")
+            window.send.click()
+            assert window.thread is not None
+            loop = QEventLoop()
+            window.thread.finished.connect(loop.quit)
+            QTimer.singleShot(10_000, loop.quit)
+            loop.exec()
+            assert window.thread is None
+            saved = History().task(window.chat_id)
+            assert saved["objective"] == objective and saved["status"] == "completed"
+            assert saved["inventory_recursive"] == (not first)
+            assert ("mayor.bin" in saved["message"]) == (not first)
+            assert (str(largest) in saved["message"]) == (not first)
+        finally:
+            window.close()
+            window.deleteLater()
+            QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 def run(desktop):
     with TemporaryDirectory() as directory:
         root = Path(directory).resolve()
@@ -196,12 +234,19 @@ def run(desktop):
             chat_id = history.find()[0][0]
             history.delete(chat_id)
             assert history.task(chat_id) is None
+        if not desktop:
+            for phase in ("inventory", "inventory-followup"):
+                subprocess.run([sys.executable, "-B", __file__, str(root), phase, "False"],
+                               check=True, env=env, timeout=30)
     print("PASS: tarea guardada, reinicio, permisos y resultado.", flush=True)
 
 
 if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] != "--desktop":
         qt = QApplication([])
-        stage(Path(sys.argv[1]), sys.argv[2], sys.argv[3] == "True")
+        if sys.argv[2].startswith("inventory"):
+            inventory_stage(Path(sys.argv[1]), sys.argv[2])
+        else:
+            stage(Path(sys.argv[1]), sys.argv[2], sys.argv[3] == "True")
     else:
         run(sys.argv[2:] if sys.argv[1:2] == ["--desktop"] else [])

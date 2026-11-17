@@ -1,20 +1,18 @@
 """Vista del chat y estilo basado en las preferencias de apariencia."""
 import base64
-import re
 from math import ceil
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QImage, QPixmap, QTextOption
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMenu, QPlainTextEdit, QPushButton,
+    QApplication, QCheckBox, QFileDialog, QHBoxLayout, QLabel, QMenu, QPlainTextEdit, QPushButton, QScrollArea,
     QSizePolicy, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
 from appearance import button_style, control_colors, link_color, readable_text, secondary_button, shade
 from attachments import (
-    FILE_FILTER, MAX_FILES, MAX_IMAGES, PDFPageRange, attachment_images, attachment_label, clipboard_attachment,
-    read_attachment,
+    FILE_FILTER, attachment_label, clipboard_attachment, read_attachment,
 )
 
 
@@ -143,8 +141,15 @@ class AttachmentTray(QWidget):
     def __init__(self):
         super().__init__()
         self.files = []
-        self.rows = QVBoxLayout(self)
+        body = QWidget()
+        self.rows = QVBoxLayout(body)
         self.rows.setContentsMargins(3, 0, 3, 0)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setWidget(body)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.scroll)
         self.add_button = secondary_button(QPushButton("+"))
         self.add_button.setAccessibleName("Opciones del chat")
         self.add_button.setToolTip("Adjuntos, MCP y memoria")
@@ -160,48 +165,18 @@ class AttachmentTray(QWidget):
 
     def add_paths(self, paths):
         for path in paths:
-            if not self.has_room():
-                break
             try:
-                file = self.read_selected(path)
-                if file is not None:
-                    self.add_file(file)
+                self.add_file(read_attachment(path))
             except (OSError, ValueError, RuntimeError) as exc:
                 self.problem.emit(f"No se pudo adjuntar {Path(path).name}. {exc}")
 
-    def has_room(self):
-        if len(self.files) < MAX_FILES:
-            return True
-        self.problem.emit(f"Puedes adjuntar hasta {MAX_FILES} archivos por mensaje.")
-        return False
-
     def add_clipboard_image(self, image):
-        if self.has_room():
-            try:
-                self.add_file(clipboard_attachment(image))
-            except ValueError as exc:
-                self.problem.emit(str(exc))
-
-    def read_selected(self, path):
-        pages = None
-        while True:
-            try:
-                return read_attachment(path, pages)
-            except PDFPageRange as exc:
-                span, accepted = QInputDialog.getText(
-                    self, "Elegir páginas del PDF", f"{exc}\nTras enviar el tramo, vuelve a adjuntar el PDF y elige las páginas siguientes.",
-                    text=exc.suggestion)
-                if not accepted:
-                    return None
-                pieces = span.strip().split("-")
-                if len(pieces) not in (1, 2) or not all(re.fullmatch(r"[0-9]{1,6}", part.strip()) for part in pieces):
-                    raise ValueError("Escribe un número de página o un tramo como 1-4.")
-                pages = (int(pieces[0]), int(pieces[-1]))
+        try:
+            self.add_file(clipboard_attachment(image))
+        except ValueError as exc:
+            self.problem.emit(str(exc))
 
     def add_file(self, file):
-        if sum(map(attachment_images, self.files)) + attachment_images(file) > MAX_IMAGES:
-            raise ValueError(f"El mensaje admite hasta {MAX_IMAGES} imágenes o páginas visuales. "
-                             "Envía los archivos en mensajes separados.")
         self.files.append(file)
         row = AttachmentCard(file)
         remove = secondary_button(QPushButton("Quitar"))
@@ -209,11 +184,13 @@ class AttachmentTray(QWidget):
         remove.clicked.connect(lambda: self.remove_row(row))
         row.row.addWidget(remove)
         self.rows.addWidget(row)
+        self.scroll.setFixedHeight(min(144, self.rows.sizeHint().height() + 2))
         self.show()
 
     def remove_row(self, row):
         del self.files[self.rows.indexOf(row)]
         self.rows.removeWidget(row)
+        self.scroll.setFixedHeight(min(144, self.rows.sizeHint().height() + 2))
         row.hide()
         row.deleteLater()
         self.setVisible(bool(self.files))
