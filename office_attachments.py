@@ -10,7 +10,7 @@ from zipfile import BadZipFile, ZipFile
 OFFICE_SUFFIXES = {".docx", ".xlsx", ".pptx"}
 MAX_PACKAGE_BYTES = 64 * 1024 * 1024
 MAX_PART_BYTES = 16 * 1024 * 1024
-MAX_OFFICE_CHARS = 240_000
+MAX_OFFICE_CHARS = 4_000_000
 CELL = re.compile(r"([A-Z]{1,3})([1-9][0-9]{0,6})")
 
 
@@ -187,9 +187,13 @@ def spreadsheet_sections(archive, main):
             row_number = int(row.get("r", row_number + 1))
             column = 0
             cells = {}
+            row_chars = 0
             for cell in row.iterfind("{*}c"):
                 address, column = cell_address(cell.get("r"), row_number, column + 1)
                 if value := cell_content(cell, strings, number_formats):
+                    row_chars += len(address) + len(value)
+                    if row_chars > MAX_OFFICE_CHARS:
+                        raise ValueError("Una fila de Excel supera el volumen de texto que StoneBot puede guardar.")
                     cells[address] = value
             if cells:
                 yield f"hoja «{sheet.attrib['name']}», fila {row_number}", json.dumps(cells, ensure_ascii=False)
@@ -221,7 +225,7 @@ def read_office(path):
             for location, text in extract(archive, main):
                 size += len(location) + len(text)
                 if size > MAX_OFFICE_CHARS:
-                    raise ValueError("El archivo de Office tiene demasiado texto o datos. Adjunta una parte más pequeña.")
+                    raise ValueError("El archivo de Office supera los 4 millones de caracteres de texto y datos.")
                 sections.append({"location": location, "text": text})
     except (BadZipFile, XML.ParseError, KeyError, AttributeError, StopIteration, RuntimeError, OverflowError) as exc:
         raise ValueError("No pude leer el archivo de Office. Comprueba que abra y que no esté protegido.") from exc

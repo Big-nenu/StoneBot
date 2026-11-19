@@ -129,6 +129,43 @@ def test_chat(paths):
         window.close()
 
 
+def test_large_workbook(root):
+    path = root / "Libro largo.xlsx"
+    s = f"{OFFICE}/spreadsheetml/2006/main"
+    rows = "".join(f'<row r="{row}"><c r="A{row}" t="inlineStr"><is><t>{"Producto " * 14}'
+                   f'{row}</t></is></c></row>' for row in range(1, 2101))
+    package(path, "xl/workbook.xml", "spreadsheetml.sheet", {
+        "xl/workbook.xml": f'<workbook xmlns="{s}" xmlns:r="{REL}"><sheets>'
+                           '<sheet name="Detalle" sheetId="1" r:id="detail"/>'
+                           '<sheet name="Totales" sheetId="2" r:id="total"/></sheets></workbook>',
+        "xl/_rels/workbook.xml.rels": rels(("detail", "worksheet", "detail.xml"), ("total", "worksheet", "total.xml")),
+        "xl/detail.xml": f'<worksheet xmlns="{s}"><sheetData>{rows}</sheetData></worksheet>',
+        "xl/total.xml": f'<worksheet xmlns="{s}"><sheetData><row r="7"><c r="F7"><v>9175</v></c></row>'
+                        '</sheetData></worksheet>',
+    })
+    file = attachments.read_attachment(path)
+    assert sum(len(part["text"]) for part in file["sections"]) > 240_000
+    messages = [{"role": "user", "content": '¿Cuál es el total de la hoja "Totales"?', "attachments": [file]}]
+    batches, partial, _ = attachments.attachment_batches(messages)
+    assert len(batches) > 1 and not partial
+    assert sum(len(batch) for batch in batches) == len(file["sections"]) == 2101
+    assert batches[-1][-1][1]["text"] == '{"F7": "9175"}'
+    scoped, notice = attachments.attachment_scope(messages)
+    selected, partial, _ = attachments.attachment_batches(scoped)
+    assert notice and not partial and len(selected) == len(selected[0]) == 1
+    assert selected[0][0][1]["location"] == "hoja «Totales», fila 7"
+    assert len(file["sections"]) == 2101
+
+    def answer(**request):
+        source = request["messages"][-1]["content"]
+        assert "hoja «Totales», fila 7" in source and "9175" in source and "Producto" not in source
+        return SimpleNamespace(message=SimpleNamespace(content="9175 en Totales, F7."))
+
+    with patch.object(app, "Client", return_value=SimpleNamespace(chat=answer)):
+        response = asyncio.run(app.Worker(messages).chat())
+    assert "**Alcance:**" in response and "9175" in response
+
+
 if __name__ == "__main__":
     qt = QApplication([])
     with TemporaryDirectory() as directory:
@@ -136,5 +173,6 @@ if __name__ == "__main__":
         with patch.object(mcp_client, "default_root", return_value=root):
             paths = samples(root)
             test_readers(root, paths)
+            test_large_workbook(root)
             test_chat(paths)
     print("PASS: lectura de Office, origen de los datos y chat con adjuntos.")

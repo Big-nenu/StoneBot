@@ -16,6 +16,8 @@ from stonebot_engine.safety import check_path
 MAX_IMAGES = 4
 MAX_TEXT = 12_000
 MAX_IMAGE_PIXELS = 16_000_000
+PDF_PAGE_RANGE = re.compile(r"\bp[aá]ginas?\s+(?:de\s+)?(\d{1,6})\b(?:\s*(?:[-–—]|\ba\b)\s*(\d{1,6})\b)?", re.I)
+EXCEL_SHEET = re.compile(r'\bhoja\s+["“«]([^"”»]+)["”»]', re.I)
 IMAGE_SUFFIXES = {".png": b"png", ".jpg": b"jpeg", ".jpeg": b"jpeg", ".webp": b"webp"}
 TEXT_SUFFIXES = {".txt", ".md", ".csv", ".tsv", ".log", ".json"}
 ATTACHMENT_SUFFIXES = IMAGE_SUFFIXES.keys() | TEXT_SUFFIXES | OFFICE_SUFFIXES | {".pdf"}
@@ -157,6 +159,47 @@ def has_chat_attachments(messages):
     return any("project_document" not in file for message in messages for file in message.get("attachments", ()))
 
 
+def pdf_ranges(text):
+    for match in PDF_PAGE_RANGE.finditer(text):
+        first = int(match[1])
+        last = int(match[2] or match[1])
+        yield min(first, last), max(first, last)
+
+
+def attachment_scope(messages):
+    """Acota una consulta explícita sin modificar el adjunto original del historial."""
+    files = [file for message in messages for file in message.get("attachments", ()) if "project_document" not in file]
+    if len(files) != 1:
+        return messages, ""
+    file, = files
+    question = messages[-1]["content"]
+    if file.get("pages") and (ranges := list(pdf_ranges(question))):
+        available = {page["number"] for page in file["pages"]}
+        if any(page not in available for first, last in ranges for page in range(first, last + 1)):
+            return messages, ""
+        pages = [page for page in file["pages"] if any(first <= page["number"] <= last for first, last in ranges)]
+        selected = {**file, "pages": pages}
+        notice = ""
+    elif file["name"].lower().endswith(".xlsx") and file.get("sections"):
+        sheets = {match[1].casefold() for match in EXCEL_SHEET.finditer(question)}
+        if not sheets:
+            return messages, ""
+        sections, found = [], set()
+        for section in file["sections"]:
+            name = section["location"].rsplit("», fila ", 1)[0].removeprefix("hoja «").casefold()
+            if name in sheets:
+                sections.append(section)
+                found.add(name)
+        if found != sheets:
+            raise ValueError("No encontré datos para todas las hojas indicadas. Comprueba sus nombres en Excel.")
+        selected = {**file, "sections": sections}
+        notice = "**Alcance:** hojas de Excel indicadas en la pregunta.\n\n"
+    else:
+        return messages, ""
+    return [{**message, "attachments": [selected if item is file else item for item in message["attachments"]]}
+            if message.get("attachments") else message for message in messages], notice
+
+
 def attachment_batches(messages):
     """Distribuye todas las imágenes y todo el texto en lotes que caben en Ollama."""
     batches, coverage = [[]], {}
@@ -177,13 +220,15 @@ def attachment_batches(messages):
                     images += 1
                 elif "text" in part:
                     text = part["text"]
+                    title_cost = len(file["name"]) + len(part.get("location", "")) + 45
                     for start in range(0, len(text), MAX_TEXT):
                         fragment = text[start:start + MAX_TEXT]
-                        if len(batches[-1]) == 40 or text_size + len(fragment) > MAX_TEXT:
+                        cost = title_cost + len(fragment)
+                        if text_size and text_size + cost > MAX_TEXT:
                             batches.append([])
                             text_size = images = 0
                         batches[-1].append((file, {**part, "text": fragment}))
-                        text_size += len(fragment)
+                        text_size += cost
     partial |= any(
         len(coverage[file["pdf_id"]][1]) != file["page_count"]
         for message in messages for file in message.get("attachments", []) if file.get("pages")
@@ -215,9 +260,4 @@ def missing_pdf_pages(text, coverage):
     if len(coverage) != 1:
         return False
     _, available = next(iter(coverage.values()))
-    for match in re.finditer(r"\bp[aá]ginas?\s+(\d{1,6})\b(?:\s*[-–—]\s*(\d{1,6})\b)?", text, re.I):
-        first = int(match[1])
-        last = int(match[2] or match[1])
-        if any(page not in available for page in range(first, max(first, last) + 1)):
-            return True
-    return False
+    return any(page not in available for first, last in pdf_ranges(text) for page in range(first, last + 1))

@@ -102,6 +102,11 @@ def test_files(root):
     assert "CEDRO-742" in mixed["pages"][0]["text"] and "image" in mixed["pages"][1]
     full = attachments.read_attachment(root / "escaneado.pdf")
     assert len(full["pages"]) == 9 and not full["partial"]
+    scoped, _ = attachments.attachment_scope([{"role": "user", "content": "Resume las páginas 5 a 8",
+                                               "attachments": [full]}])
+    selected, partial, coverage = attachments.attachment_batches(scoped)
+    assert partial and len(selected) == 1
+    assert [part["number"] for _, part in selected[0]] == [5, 6, 7, 8] and len(full["pages"]) == 9
     part = attachments.read_attachment(root / "escaneado.pdf", (5, 8))
     assert attachments.attachment_label(part) == "escaneado.pdf · págs. 5–8 de 9"
     batches, partial, coverage = attachments.attachment_batches([{"attachments": [part]}])

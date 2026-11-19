@@ -17,7 +17,7 @@ from appearance import (
     secondary_button,
 )
 from attachments import (
-    FILE_FILTER, attach_batch, attachment_batches, attachment_path, has_chat_attachments, missing_pdf_pages,
+    FILE_FILTER, attach_batch, attachment_batches, attachment_path, attachment_scope, has_chat_attachments, missing_pdf_pages,
     read_attachment,
 )
 from chat_markdown import MarkdownText
@@ -903,6 +903,10 @@ class Worker(QObject):
         return result.message.content
 
     async def chat_with_attachments(self, client, messages, skills, *, project_files=()):
+        try:
+            messages, scope_note = attachment_scope(messages)
+        except ValueError as exc:
+            return str(exc)
         batches, partial, coverage = attachment_batches(messages)
         available = "\n".join(f"- {name}: {', '.join(map(str, sorted(pages))) or 'ninguna'}"
                               for name, pages in coverage.values())
@@ -950,7 +954,7 @@ class Worker(QObject):
                         for start in range(0, len(notes), 4)
                     ]
                 payload[-1]["content"] += ("\n\nResponde usando los hallazgos de todos los lotes. "
-                                           "Conserva las referencias a los archivos y páginas. "
+                                           "Conserva las referencias a archivos, páginas, hojas y celdas, o diapositivas. "
                                            "Indica lo que no se pudo leer.\n" + json.dumps(notes, ensure_ascii=False))
             else:
                 attach_batch(payload[-1], batches[0])
@@ -976,7 +980,7 @@ class Worker(QObject):
         if project_files:
             names = [re.sub(r"([\\`*_\[\]<>~&])", r"\\\1", file["name"]) for file in project_files]
             answer += "\n\n**Documentos del proyecto consultados**\n\n" + "\n".join(f"- {name}" for name in names)
-        return answer
+        return scope_note + answer
 
     async def attachment_notes(self, client, instruction, item):
         response = await asyncio.to_thread(
