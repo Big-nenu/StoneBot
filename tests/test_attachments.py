@@ -4,9 +4,13 @@ import json
 import os
 import sys
 import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
+from ollama import Message
 
 from PySide6.QtCore import QEvent, QMimeData, QPoint, QTimer, Qt, QUrl
 from PySide6.QtGui import QColor, QImage, QPainter
@@ -176,7 +180,8 @@ def test_window(root):
         assert [mode.data() for mode in modes] == [None, False, True] and modes[0].isChecked()
         assert attach.isEnabled() and mcp.isEnabled() and skills.isEnabled()
         with patch.object(app.SkillsDialog, "exec") as opened:
-            skills.trigger()
+            skills.menu().aboutToShow.emit()
+            skills.menu().actions()[-1].trigger()
             opened.assert_called_once_with()
         memory.menu().actions()[0].trigger()
         assert window.message.toPlainText() == "Busca en la memoria: "
@@ -215,6 +220,10 @@ def test_window(root):
             attach.trigger()
             assert len(window.attachments.files) == 5
             assert [page["number"] for page in window.attachments.files[0]["pages"]] == list(range(1, 10))
+            QApplication.processEvents()
+            cards = [window.attachments.rows.itemAt(i).widget() for i in range(5)]
+            assert len({card.y() for card in cards}) == 1
+            assert all(first.x() + first.width() <= second.x() for first, second in zip(cards, cards[1:]))
             menu.aboutToShow.emit()
             assert not memory.isEnabled()
         window.attachments.clear()
@@ -251,7 +260,7 @@ def test_window(root):
             assert window.message.height() > compact
             controls = window.attachments.add_button, window.send
             anchors = [button.mapTo(window, QPoint()) for button in controls]
-            window.message.setPlainText("Revisa los adjuntos")
+            window.message.setPlainText("/resumir los adjuntos")
             window.enviar()
             assert not window.attachments.add_button.isEnabled() and not window.history_panel.isEnabled()
             wait_for_turn(window)
@@ -263,6 +272,7 @@ def test_window(root):
             request = calls[0]
             assert request["model"] == app.MODEL and not request.get("tools")
             assert request["think"] is True
+            assert request["messages"][-1]["content"].startswith("Resume los puntos principales de los adjuntos")
             assert isinstance(request["messages"][-1]["images"][0], bytes)
             assert all(word in request["messages"][-1]["content"] for word in ("CEDRO-742", "LUNA-531"))
             assert str(root) not in repr(saved)
@@ -323,6 +333,119 @@ def live(root):
     answer = asyncio.run(worker.chat())
     print(f"Ollama ({app.MODEL}):", json.dumps(answer, ensure_ascii=False))
     assert all(word in answer.casefold() for word in ("rojo", "azul", "cedro-742", "luna-531"))
+
+
+async def test_save_from_capture(root):
+    image = attachments.read_attachment(root / "figura.png")
+    original = {"role": "user", "content": f'Guarda los comandos en tu memoria y haz un .md en "{root}".',
+                "attachments": [image]}
+    payload = "# Comandos\n\n- /tarea\n- /resumir\n"
+    writer = Tool(name="write_file", inputSchema={"type": "object", "properties": {
+        "path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]})
+    unrelated = Tool(name="start_process", inputSchema={"type": "object"})
+    config = {"enabled": True, "read_tools": [], "disabled_tools": []}
+    memory = []
+
+    def inject_memory(content: str):
+        memory.append(content)
+        return "📍 NUEVA ONDA."
+
+    async def run(filename, *, approve=True, write=True, followup=False, split=False, confirmations=(), local=False):
+        path = root / filename
+        calls = []
+
+        async def call_tool(name, arguments):
+            assert name == "write_file" and Path(arguments["path"]) == path
+            calls.append(arguments)
+            if write:
+                path.write_text(arguments["content"], encoding="utf-8")
+            return CallToolResult(content=[TextContent(type="text", text="Se escribió el archivo.")])
+
+        @asynccontextmanager
+        async def session(*_):
+            yield SimpleNamespace(list_tools=AsyncMock(return_value=ListToolsResult(tools=[writer, unrelated])),
+                                  call_tool=call_tool)
+
+        def chat(**request):
+            if not request.get("tools"):
+                assert request["messages"][-1]["images"]
+                if split:
+                    assert "Encargo original del usuario" in request["messages"][-1]["content"]
+                return SimpleNamespace(message=Message(role="assistant", content="Se ven /tarea y /resumir."))
+            assert "Se ven /tarea y /resumir." in request["messages"][-1]["content"]
+            assert not any(isinstance(row, dict) and row.get("images") for row in request["messages"])
+            if followup or split or local:
+                assert "Petición original del usuario" in request["messages"][-1]["content"]
+            alias, = (tool.function.name for tool in request["tools"] if isinstance(tool, app.Tool))
+            tool_calls = [{"function": {"name": alias, "arguments": {"path": str(path), "content": payload}}}]
+            if local:
+                assert alias == "save_markdown" and len(request["tools"]) == 1
+            else:
+                tool_calls.insert(0, {"function": {"name": "inject_memory", "arguments": {"content": "/tarea y /resumir"}}})
+            return SimpleNamespace(message=Message(role="assistant", content="", tool_calls=tool_calls))
+
+        messages = [{"role": "system", "content": app.SYSTEM}, original]
+        if split:
+            messages[-1] = {"role": "user", "content": original["content"]}
+            with patch.object(app, "Client") as waiting:
+                assert await app.Worker(messages).chat() == "Envíame la captura o pega los comandos que quieres guardar."
+                waiting.return_value.chat.assert_not_called()
+            messages.extend([{"role": "assistant", "content": "Envíame la captura o pega los comandos que quieres guardar."},
+                             {"role": "user", "content": "oops, estos de la imagen porfa", "attachments": [image]}])
+            for text in confirmations:
+                messages.extend([{"role": "assistant", "content": "Ya identifiqué /tarea y /resumir. ¿Son esos?"},
+                                 {"role": "user", "content": text}])
+        if followup:
+            messages.extend([{"role": "assistant", "content": "He guardado todo."},
+                             {"role": "user", "content": "si tienes puedes usar desktop commander"}])
+        if local:
+            messages.extend([{"role": "assistant", "content": "**Memoria.** Guardada en StoneBot.\n\n"
+                                                            "**Archivo.** No encontré una herramienta activa."},
+                             {"role": "user", "content": "Intenta guardar el archivo de nuevo"}])
+        worker = app.Worker(messages)
+        worker.confirm_external = AsyncMock(return_value=approve)
+        client = SimpleNamespace(chat=chat, show=lambda _: SimpleNamespace(capabilities=["vision"]))
+        memory_count = len(memory)
+        with (patch.object(app, "Client", return_value=client), patch.object(app, "session_for", session),
+              patch.object(app, "load_servers", return_value={} if local else {"desktop": config}),
+              patch.dict(app.MEMORY_TOOLS, {"inject_memory": inject_memory})):
+            response = await worker.chat()
+            if split and write and approve:
+                repeated = [*messages, {"role": "assistant", "content": response},
+                            {"role": "user", "content": "sí, esos comandos porfa"}]
+                memory_count = len(memory)
+                assert await app.Worker(repeated).chat() == response
+                assert len(memory) == memory_count
+        assert worker.confirm_external.await_count == 1
+        if local:
+            assert worker.confirm_external.await_args.kwargs == {"local": True}
+            assert len(memory) == memory_count
+        assert ("Guardado y verificado" in response) == (approve and write)
+        assert len(calls) == int(approve and not local)
+        assert "Guardada en StoneBot" in response and memory[-1] == "/tarea y /resumir"
+        if approve and write:
+            assert path.read_text(encoding="utf-8") == payload and str(path) in response
+        else:
+            assert not path.exists()
+        return response
+
+    await run("Comandos.md")
+    assert "no fue autorizada" in await run("Denegado.md", approve=False, followup=True)
+    assert "no confirmó" in await run("Sin escritura real.md", write=False)
+    await run("Captura posterior.md", split=True)
+    await run("Confirmado.md", split=True, confirmations=("si esos comandos porfa", "son los que tu me dijiste"))
+    await run("Sin MCP.md", local=True)
+    assert "no fue autorizada" in await run("Local denegado.md", local=True, approve=False)
+    existing = root / "Sin MCP.md"
+    worker = app.Worker([])
+    worker.confirm_external = AsyncMock()
+    response, _ = await worker.save_local_markdown(root, {"path": str(existing), "content": "Otro texto"})
+    assert "ya existe" in response and existing.read_text(encoding="utf-8") == payload
+    worker.confirm_external.assert_not_called()
+    assert app.attachment_save_request([original, {"role": "user", "content": "¿Qué sabes de Excel?"},
+                                        {"role": "assistant", "content": "Puedo leer hojas."},
+                                        {"role": "user", "content": "sí"}]) is None
+    assert app.attachment_save_request([original, {"role": "user", "content": "No puedes usar Desktop Commander."}]) is None
 
 
 def test_project_documents(root):
@@ -404,4 +527,5 @@ if __name__ == "__main__":
                 test_files(root)
                 test_window(root)
                 test_project_documents(root)
+                asyncio.run(test_save_from_capture(root))
     print("PASS: adjuntos de StoneBot.")

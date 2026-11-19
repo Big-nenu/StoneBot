@@ -36,6 +36,10 @@ def publish(engine, vault, approval, scope="experiencias"):
     data, digest = preview(engine, scope)
     if digest != approval:
         raise ValueError("La aprobación no coincide. Revisa de nuevo la previsualización.")
+    return publish_notes(data, vault, scope)
+
+
+def publish_notes(data, vault, scope):
     generated, _ = vault_folders(vault)
     if scope == "memoria":
         generated = checked_child(generated, SCOPES[scope])

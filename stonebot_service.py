@@ -273,6 +273,17 @@ def dream_if_due(scope):
         if engine.dream_due(SCOPES[scope]):
             record(f"Sueño automático ({scope}) iniciado.")
             record(f"Sueño automático ({scope}): {dream(scope)}")
+            from chat_preferences import load_obsidian_vault
+            from stonebot_memory import publish_notes
+
+            if vault := load_obsidian_vault():
+                try:
+                    data = engine.notes_data(SCOPES[scope], include_all_facts=True)
+                    result = publish_notes(data, vault, scope)
+                    record(f"Obsidian ({scope}): {result['written']} notas actualizadas, "
+                           f"{result['conclusions']} conclusiones, {len(result['skipped'])} notas editadas conservadas.")
+                except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+                    record(f"Obsidian ({scope}), error de publicación: {exc!r}")
     except Exception as exc:
         record(f"Sueño automático ({scope}), error: {exc!r}")
 

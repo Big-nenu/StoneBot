@@ -11,6 +11,7 @@ from appearance import appearance_settings, secondary_button, sync
 
 DEFAULT_WIDTH = 236
 MINIMUM_WIDTH = 184
+MAXIMUM_WIDTH = 480
 RAIL_WIDTH = 48
 PROJECT_ROLE = Qt.ItemDataRole.UserRole + 1
 NESTED_ROLE = Qt.ItemDataRole.UserRole + 2
@@ -59,7 +60,6 @@ class SidebarRail(QWidget):
     def __init__(self, history):
         super().__init__()
         self.setObjectName("sidebarRail")
-        self.expanded_max_width = self.maximumWidth()
         self.history = history
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -86,7 +86,7 @@ class SidebarRail(QWidget):
 
     def set_expanded(self, expanded):
         self.setMinimumWidth(MINIMUM_WIDTH if expanded else RAIL_WIDTH)
-        self.setMaximumWidth(self.expanded_max_width if expanded else RAIL_WIDTH)
+        self.setMaximumWidth(MAXIMUM_WIDTH if expanded else RAIL_WIDTH)
         for name, title in SIDEBAR_ACTIONS:
             self.actions[name].setText(title if expanded else "")
         self.history.setVisible(expanded)
@@ -100,14 +100,14 @@ class SidebarRail(QWidget):
 def load_history_width():
     try:
         width = int(appearance_settings().value("history_width", DEFAULT_WIDTH))
-        return max(MINIMUM_WIDTH, width)
+        return min(MAXIMUM_WIDTH, max(MINIMUM_WIDTH, width))
     except (OSError, RuntimeError, TypeError, ValueError):
         return DEFAULT_WIDTH
 
 
 def save_history_width(width):
     settings = appearance_settings()
-    settings.setValue("history_width", width)
+    settings.setValue("history_width", min(MAXIMUM_WIDTH, max(MINIMUM_WIDTH, width)))
     sync(settings)
 
 

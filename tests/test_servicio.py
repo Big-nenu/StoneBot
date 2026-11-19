@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 import stonebot_service as service  # noqa: E402
 import mcp_client  # noqa: E402
 from diagnostics import read_log  # noqa: E402
+from chat_preferences import save_obsidian_vault  # noqa: E402
 from stonebot_engine import StoneBotEngine, safety  # noqa: E402
 
 
@@ -191,6 +192,42 @@ def test_sueno_automatico_respeta_el_manual_y_registra_resultado_y_errores():
                     service.dream("memoria")
                     service.dream_if_due("memoria")
                     record.assert_not_called()
+        finally:
+            engine.close()
+
+
+def test_sueno_publica_en_la_boveda_elegida_y_conserva_notas_editadas():
+    import test_motor as tm
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp).resolve()
+        vault = root / "boveda"
+        (vault / ".obsidian").mkdir(parents=True)
+        engine = tm.make_engine(str(root / "memoria.db"))
+        try:
+            with (patch.object(mcp_client, "default_root", return_value=root),
+                  patch.object(service, "get_memory", return_value=engine),
+                  patch.object(tm.mem_engine, "DREAM_EVERY_HOURS", 10 / 60),
+                  patch.object(tm.mem_engine, "CONCLUSIONS_ON", True)):
+                save_obsidian_vault(vault)
+                engine.inject(tm.F1)
+                engine.inject(tm.F2)
+                engine._ask_llm_conclusion = lambda facts: tm.CONC
+                engine._ask_llm_support = lambda fact, conclusion: "RESPALDA"
+                generated = vault / "stonebot" / "generadas" / "default"
+                with patch.object(engine, "hours_since_dream", return_value=9 / 60):
+                    service.dream_if_due("memoria")
+                assert not list(generated.rglob("*.md"))
+                with patch.object(engine, "hours_since_dream", return_value=10 / 60):
+                    service.dream_if_due("memoria")
+                conclusion, = (generated / "conclusiones").glob("*.md")
+                assert tm.CONC in conclusion.read_text(encoding="utf-8")
+                edited = next((generated / "recuerdos").glob("*.md"))
+                edited.write_text("Nota editada por el usuario", encoding="utf-8")
+                with patch.object(engine, "hours_since_dream", return_value=10 / 60):
+                    service.dream_if_due("memoria")
+                assert edited.read_text(encoding="utf-8") == "Nota editada por el usuario"
+                assert "1 notas editadas conservadas" in read_log()
         finally:
             engine.close()
 

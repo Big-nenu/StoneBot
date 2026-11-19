@@ -45,7 +45,7 @@ CONFLICT_SIM = float(env_var("CONFLICT_SIM", "0.40"))  # arriba de esto, el sue�
 RELATED_SIM = 0.30  # arriba de esto, el sueño enlaza los recuerdos (sin relacion: negativo)
 BRIDGE_MIN_SIM = 0.15  # similitud minima con CADA uno de los dos temas para que un recuerdo cuente como puente (sin calibrar con datos reales)
 DREAM_MAX_CHECKS = 30  # revisiones de contradiccion con LLM por sueño
-DREAM_EVERY_HOURS = float(env_var("DREAM_HOURS", "12"))  # cada cuantas horas conviene soñar
+DREAM_EVERY_HOURS = float(env_var("DREAM_HOURS", str(10 / 60)))  # diez minutos entre sueños por defecto
 BACKUP_KEEP_DAYS = int(env_var("BACKUP_DAYS", "7"))  # dias de respaldos diarios que se conservan (0 = sin respaldos)
 BACKUP_NAME = re.compile(r"^(?P<stem>.+)-(?P<day>\d{4}-\d{2}-\d{2})\.db$")
 ANGLE_WEIGHT = 0.5     # peso de las piedras-angulo frente a la pregunta completa

@@ -204,13 +204,15 @@ El motor restringe SQLite a la carpeta de StoneBot. El validador bloquea las car
 
 ### Sueño automático
 
-Mientras StoneBot está en ejecución, también con la ventana oculta en la bandeja, comprueba cada 30 segundos si toca soñar y alterna los ámbitos `memoria` y `experiencias`. Por defecto requiere 10 minutos sin interacción y 12 horas desde el último sueño del ámbito, incluido el manual. Si el ámbito nunca ha soñado, basta con que tenga recuerdos y se cumpla la inactividad.
+Mientras StoneBot está en ejecución, también con la ventana oculta en la bandeja, comprueba cada 30 segundos si toca soñar y alterna los ámbitos `memoria` y `experiencias`. Por defecto espera 10 minutos sin interacción y al menos 10 minutos desde el último sueño del mismo ámbito, incluido el manual. Si el ámbito nunca ha soñado, basta con que tenga recuerdos y se cumpla la inactividad.
 
 El sueño usa el mismo motor que `/sueno` para clasificar recuerdos, enlazarlos, revisar contradicciones e intentar generar conclusiones. Un turno activo aplaza el sueño. Si envías un mensaje durante un sueño, el turno espera a que el motor quede libre antes de usar Ollama. **Salir** detiene las comprobaciones y deja terminar el trabajo en curso antes de liberar el candado de memoria.
 
 En **Diagnóstico** y en `%USERPROFILE%\.stonebot\diagnostics.log` quedan la hora de inicio, el resumen del motor y los errores detectados. La generación usa `STONEBOT_CONCLUSION_MODEL` (por defecto el modelo de síntesis, `qwen2.5:0.5b`). Las decisiones usan `STONEBOT_LLM_MODEL` (por defecto `d1:3b` mediante `/v1/systemone`). Un sueño puede terminar sin producir conclusiones.
 
-**Probar sin esperar 12 horas.** Selecciona **Salir** en la bandeja de la instancia habitual y abre una sesión aparte de PowerShell en el repositorio, con Ollama activo. Los comandos usan un perfil temporal. Al cerrar esa sesión también dejarán de aplicarse estas variables.
+Elige la bóveda en **+ → Memoria → Elegir carpeta de Obsidian…** para que cada sueño automático actualice las notas generadas del ámbito correspondiente. StoneBot conserva las notas editadas a mano y registra en **Diagnóstico** el resultado de la publicación.
+
+**Probar con intervalos cortos.** Selecciona **Salir** en la bandeja de la instancia habitual y abre una sesión aparte de PowerShell en el repositorio, con Ollama activo. Los comandos usan un perfil temporal. Al cerrar esa sesión también dejarán de aplicarse estas variables.
 
 ```powershell
 $perfilPrueba = Join-Path ([System.IO.Path]::GetTempPath()) ("stonebot-sueno-" + [guid]::NewGuid())
@@ -306,7 +308,7 @@ El panel se probó con servidores de ejemplo mediante STDIO y Streamable HTTP en
 
 ## Historial de conversaciones
 
-Usa **☰** para mostrar u ocultar el panel izquierdo. Arrastra su borde derecho para ajustar el ancho. StoneBot lo guarda al cerrar la ventana. Los títulos largos se muestran con puntos suspensivos. Pasa el cursor sobre uno para leerlo completo. **Nuevo chat** inicia una conversación vacía y genera un título a partir del primer mensaje. Haz clic en una conversación para retomarla. El buscador filtra por título o contenido.
+Usa **☰** para mostrar u ocultar el panel izquierdo. Arrastra su borde derecho para ajustar el ancho hasta 480 píxeles. StoneBot lo guarda al cerrar la ventana. Los títulos largos se muestran con puntos suspensivos. Pasa el cursor sobre uno para leerlo completo. **Nuevo chat** inicia una conversación vacía y genera un título a partir del primer mensaje. Haz clic en una conversación para retomarla. El buscador filtra por título o contenido.
 
 Las conversaciones se guardan en `%USERPROFILE%\.stonebot\conversations.sqlite3`. El historial almacena los mensajes del usuario y las respuestas visibles. Los permisos MCP se guardan en `mcp_permissions.sqlite3` y el diagnóstico en `diagnostics.log`. La memoria seleccionada de StoneBot continúa en `memoria.db` y se usa mediante sus herramientas existentes.
 
@@ -327,6 +329,8 @@ En el cuadro de mensaje, **Ampliar editor** y **Reducir editor** ajustan la altu
 El corrector local de Windows subraya posibles faltas en el borrador cuando hay un diccionario de español disponible. Haz clic derecho sobre una palabra marcada para ver sus sugerencias y elegir una. Los enlaces web se resaltan al escribir. Ábrelos con **Ctrl + clic** en el borrador o con un clic en el mensaje enviado.
 
 El selector junto a **Enviar** muestra el modo de razonamiento. **Automático** usa el ajuste habitual, **Rápido** pide una respuesta directa y **Activado** pide al modelo razonar antes de responder.
+
+Escribe `/` al inicio para ver comandos como `/buscar`, `/resumir` y `/tarea`. Usa `@` para adjuntar archivos, elegir un documento del proyecto o empezar un chat en otro proyecto con el borrador actual. Con `#` puedes mencionar un adjunto o el encargo actual. Usa `>` para abrir acciones del chat y `!` para abrir PowerShell por separado. Elige con clic o con flechas y Enter.
 
 Al pasar el cursor sobre una conversación, **⋯** abre las acciones **Renombrar** y **Eliminar**. También puedes abrir ese menú con clic derecho o con **Mayús + F10** sobre la fila seleccionada.
 
@@ -355,7 +359,7 @@ Esta etapa admite herramientas MCP de solo lectura y se inicia desde el chat. Ad
 
 ### Adjuntos del chat
 
-Pulsa **+ → Adjuntar archivos** junto al cuadro de mensaje y selecciona los archivos juntos. La lista se puede desplazar y permite quitarlos antes de enviar. El submenú **+ → MCP** permite activar o desactivar servidores configurados usando la misma configuración que el panel **MCP** de la cabecera. El menú también contiene Memoria y Skills. Se admiten imágenes PNG, JPG/JPEG y WebP, PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx) y archivos TXT, MD, CSV, TSV, LOG y JSON en UTF-8 o UTF-16 con BOM.
+Pulsa **+ → Adjuntar archivos** junto al cuadro de mensaje y selecciona los archivos juntos. Se muestran como tarjetas en una fila desplazable. Usa la **×** de cada tarjeta para quitarla antes de enviar. El submenú **+ → MCP** permite activar o desactivar servidores configurados usando la misma configuración que el panel **MCP** de la cabecera. El menú también contiene Memoria y Skills. Se admiten imágenes PNG, JPG/JPEG y WebP, PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx) y archivos TXT, MD, CSV, TSV, LOG y JSON en UTF-8 o UTF-16 con BOM.
 
 Los archivos de Office se leen localmente. Word aporta el texto de párrafos y tablas del cuerpo, Excel indica hojas y celdas y PowerPoint identifica las diapositivas con texto. Excel usa los resultados que están guardados junto a las fórmulas y avisa cuando un resultado falta. Los adjuntos de Office se abren para lectura. Si necesitas que StoneBot analice un gráfico, una imagen o el diseño de una página, exporta esa parte a PDF. El lector admite hasta 64 MB por archivo y 4 millones de caracteres de texto y referencias extraídos.
 
@@ -365,9 +369,11 @@ StoneBot prepara todas las páginas del PDF y agrupa los adjuntos en lotes de ha
 
 Con un solo adjunto en el chat, puedes acotar una consulta larga. Para Excel escribe «Revisa la hoja "Totales"». Para PDF escribe «Resume las páginas 5 a 8». El archivo completo queda disponible para otras preguntas.
 
-El historial local conserva el nombre, una copia de la imagen redimensionada o el texto extraído. Al reabrir o regenerar el chat, los adjuntos siguen disponibles aunque se mueva el original. Las rutas de origen quedan fuera del historial. Mientras el chat incluya adjuntos, los turnos de conversación usan Ollama local sin herramientas MCP ni de memoria permanente.
+El historial local conserva el nombre, una copia de la imagen redimensionada o el texto extraído. Al reabrir o regenerar el chat, los adjuntos siguen disponibles aunque se mueva el original. Las rutas de origen quedan fuera del historial. StoneBot consulta los adjuntos en Ollama local. Si pides explícitamente guardar algo en la memoria o crear un Markdown en una ruta de Windows, ofrece las herramientas necesarias para ese encargo. Para el Markdown busca una herramienta de escritura entre tus servidores MCP habilitados y, si falta, puede crear el archivo localmente. Pide confirmación y comprueba el contenido antes de reportarlo como guardado. Si el archivo ya existe, se conserva.
 
-Pega una captura o un archivo copiado desde el Explorador con **Ctrl+V**. Las imágenes se muestran como miniaturas y los documentos como tarjetas. Usa **Quitar** en el editor para retirar un adjunto antes de enviarlo.
+Puedes enviar primero la petición y después la captura que contiene el material. Si StoneBot ya enumeró ese material, puedes responder «Sí, esos comandos» para continuar con el guardado pendiente. Si el recuerdo se guardó y solo falta el archivo, «Intenta guardar el archivo de nuevo» retoma esa parte.
+
+Pega una captura o un archivo copiado desde el Explorador con **Ctrl+V**. Las tarjetas de imagen muestran una miniatura y las de documentos muestran el tipo de archivo.
 
 Al elegir una consulta de **Memoria** desde una conversación con adjuntos ya enviados, StoneBot la prepara en un chat nuevo. Si hay adjuntos pendientes de enviar, primero puedes enviarlos o quitarlos.
 
@@ -454,7 +460,7 @@ python -B stonebot_memory.py sonar experiencias
 python -B stonebot_memory.py conclusiones experiencias
 ```
 
-`integrar` importa únicamente los resultados observados de los IDs elegidos al ámbito `experiencias_mcp` de `memoria.db`. Cada observación se identifica por su procedencia y puede importarse una sola vez. Los recibos conservan la fecha y no incluyen argumentos ni respuestas brutas. Para revisar la memoria conversacional propia de StoneBot, usa `sonar memoria`. El sueño no exporta notas, incluso si está definida la antigua variable `STONEBOT_NOTES`.
+`integrar` importa únicamente los resultados observados de los IDs elegidos al ámbito `experiencias_mcp` de `memoria.db`. Cada observación se identifica por su procedencia y puede importarse una sola vez. Los recibos conservan la fecha y no incluyen argumentos ni respuestas brutas. Para revisar la memoria conversacional propia de StoneBot, usa `sonar memoria`. El comando manual deja la publicación para una revisión posterior. La publicación automática usa la bóveda elegida en **Memoria**.
 
 Para publicar en tu clon local de **Big-vault**, selecciona **Salir** en la bandeja de StoneBot e indica la raíz de la bóveda. Revisa la previsualización de cada ámbito y autoriza únicamente esa versión con el valor `aprobacion` que imprime el comando.
 

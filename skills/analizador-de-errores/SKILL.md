@@ -1,6 +1,6 @@
 ---
 name: analizador-de-errores
-description: Diagnostica errores técnicos de Windows, SQL Server, Godot, Python y otras aplicaciones usando mensajes, capturas o registros. Identifica el error, distingue hechos de hipótesis y propone una comprobación sencilla a la vez.
+description: Diagnostica un fallo técnico concreto cuando el usuario pide entenderlo o corregirlo. Identifica el error y propone una comprobación sencilla. Para solicitudes de guardar, copiar o confirmar información, elige el flujo del encargo.
 ---
 
 # Analizador de errores
@@ -9,7 +9,7 @@ description: Diagnostica errores técnicos de Windows, SQL Server, Godot, Python
 
 Úsala cuando el usuario muestre una captura, un mensaje de error, un registro o describa un fallo técnico y pida ayuda para diagnosticarlo o corregirlo.
 
-No la actives para conversaciones generales sobre tecnología sin un error concreto.
+Una captura que aporta datos a un encargo de escritura o guardado se usa como fuente en ese encargo. Reserva el formato de diagnóstico para cuando el usuario quiera investigar un fallo técnico.
 
 ## Procedimiento
 

@@ -1,4 +1,5 @@
-"""Instrucciones generales del chat guardadas en el perfil local."""
+"""Preferencias de StoneBot guardadas en el perfil local."""
+from pathlib import Path
 from PySide6.QtCore import QSettings
 
 from mcp_client import data_path
@@ -21,3 +22,20 @@ def save_instructions(text):
     settings.sync()
     if settings.status() != QSettings.Status.NoError:
         raise OSError("No se pudieron guardar las instrucciones.")
+
+
+def load_obsidian_vault():
+    settings = QSettings(str(data_path("chat.ini")), QSettings.Format.IniFormat)
+    return settings.value("obsidian_vault", "", type=str)
+
+
+def save_obsidian_vault(folder):
+    if folder:
+        from stonebot_memory import vault_folders
+
+        vault_folders(Path(folder))
+    settings = QSettings(str(data_path("chat.ini")), QSettings.Format.IniFormat)
+    settings.setValue("obsidian_vault", str(folder))
+    settings.sync()
+    if settings.status() != QSettings.Status.NoError:
+        raise OSError("No se pudo guardar la carpeta de Obsidian.")

@@ -4,10 +4,11 @@ import re
 from math import ceil
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import Qt, QStringListModel, QUrl, Signal
 from PySide6.QtGui import QColor, QContextMenuEvent, QImage, QPixmap, QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextOption
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QFileDialog, QHBoxLayout, QLabel, QMenu, QPlainTextEdit, QPushButton, QScrollArea,
+    QApplication, QCheckBox, QCompleter, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLayout, QMenu, QPlainTextEdit,
+    QPushButton, QScrollArea,
     QSizePolicy, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -21,6 +22,7 @@ from spellcheck import WindowsSpellChecker
 
 WEB_URL = r"""\bhttps?://[^\s<>"`]+"""
 UNCHECKED = re.compile(rf"`[^`]*`|(?P<url>{WEB_URL})|\b[A-Za-z]:[\\/]\S+|^/\w+", re.I)
+SHORTCUT_TOKEN = re.compile(r"(?:^|\s)([/@#>!])([^\s/@#>!]*)$")
 
 
 def utf16_length(text):
@@ -161,9 +163,19 @@ class Composer(ChatText):
         self.verticalScrollBar().setObjectName("composerScroll")
         self.expand_button = secondary_button(QPushButton())
         self.expand_button.setObjectName("composerExpand")
+        self.expand_button.setProperty("quiet", True)
         self.expand_button.setCheckable(True)
         self.expand_button.toggled.connect(self.expand_editor)
         self.expand_editor(False)
+        self.shortcut_source = None
+        self.shortcut_choices = {}
+        self.shortcut_model = QStringListModel(self)
+        self.shortcuts = QCompleter(self.shortcut_model, self)
+        self.shortcuts.setWidget(self)
+        self.shortcuts.setMaxVisibleItems(7)
+        self.shortcuts.popup().setObjectName("composerSuggestions")
+        self.shortcuts.popup().setAccessibleName("Sugerencias del chat")
+        self.shortcuts.activated[str].connect(self.apply_shortcut)
 
     def expand_editor(self, expanded):
         self.expand_button.setText("⤡" if expanded else "⤢")
@@ -172,6 +184,19 @@ class Composer(ChatText):
         self.expand_button.setToolTip(label)
         self.fit_height(self.document().size())
         self.ensureCursorVisible()
+
+    def set_theme(self, theme):
+        background, accent = theme["background"], theme["accent"]
+        self.highlights.set_link_background(background)
+        surface, edge, _, text = control_colors(background)
+        self.shortcuts.popup().setStyleSheet(f"""
+            QListView {{
+                background: {surface}; color: {text}; border: 1px solid {edge}; border-radius: 9px;
+                padding: 4px; outline: none;
+            }}
+            QListView::item {{ padding: 6px 9px; border-radius: 5px; }}
+            QListView::item:selected {{ background: {accent}; color: {readable_text(accent)}; }}
+        """)
 
     def fit_height(self, size):
         available = self.window().height()
@@ -182,12 +207,66 @@ class Composer(ChatText):
         self.setFixedHeight(height)
 
     def keyPressEvent(self, event):
+        if self.shortcuts.popup().isVisible() and event.key() in (
+            Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Tab, Qt.Key.Key_Backtab, Qt.Key.Key_Escape,
+        ):
+            event.ignore()
+            return
         if (event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
                 and event.modifiers() in (Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.KeypadModifier)):
             self.submitted.emit()
             event.accept()
             return
         super().keyPressEvent(event)
+        if event.text() or event.key() in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
+            self.suggest_shortcuts()
+
+    def shortcut_token(self):
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            return None
+        prefix = QTextCursor(cursor)
+        prefix.movePosition(QTextCursor.MoveOperation.StartOfBlock, QTextCursor.MoveMode.KeepAnchor)
+        match = SHORTCUT_TOKEN.search(prefix.selectedText())
+        if match is None or (match[1] in "/>!" and cursor.position() != utf16_length(match[1] + match[2])):
+            return None
+        return match
+
+    def suggest_shortcuts(self):
+        popup = self.shortcuts.popup()
+        match = self.shortcut_token()
+        if not match or self.shortcut_source is None:
+            popup.hide()
+            return
+        symbol, query = match[1], match[2].casefold()
+        self.shortcut_choices = {}
+        for label, replacement, action in self.shortcut_source(symbol):
+            name = label.casefold()
+            matches = name.startswith("/" + query) if symbol == "/" else query in name
+            if matches:
+                self.shortcut_choices[label] = replacement, action
+        if not self.shortcut_choices:
+            popup.hide()
+            return
+        self.shortcut_model.setStringList(list(self.shortcut_choices))
+        rect = self.cursorRect()
+        rect.setWidth(min(360, max(210, self.width())))
+        self.shortcuts.complete(rect)
+        popup.setCurrentIndex(self.shortcuts.completionModel().index(0, 0))
+
+    def apply_shortcut(self, label):
+        match = self.shortcut_token()
+        choice = self.shortcut_choices.get(label)
+        if match is None or choice is None:
+            return
+        self.shortcuts.popup().hide()
+        replacement, action = choice
+        cursor = self.textCursor()
+        cursor.setPosition(cursor.position() - utf16_length(match[1] + match[2]), QTextCursor.MoveMode.KeepAnchor)
+        cursor.insertText(replacement)
+        self.setTextCursor(cursor)
+        if action is not None:
+            action()
 
     def canInsertFromMimeData(self, source):
         return (source.hasImage() or any(url.isLocalFile() for url in source.urls())
@@ -205,17 +284,14 @@ class Composer(ChatText):
 
 
 class AttachmentCard(QWidget):
-    def __init__(self, file):
+    def __init__(self, file, *, draft=False):
         super().__init__()
-        self.setObjectName("attachmentCard")
+        self.setObjectName("draftAttachmentCard" if draft else "attachmentCard")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-        self.row = QHBoxLayout(self)
-        self.row.setContentsMargins(8, 5, 8, 5)
-        self.row.setSpacing(8)
         badge = QLabel()
         badge.setObjectName("attachmentBadge")
         badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        badge.setFixedSize(44, 36)
+        badge.setFixedSize(138 if draft else 44, 65 if draft else 36)
         if encoded := file.get("image"):
             pixmap = QPixmap()
             try:
@@ -231,13 +307,47 @@ class AttachmentCard(QWidget):
             suffix = Path(file["name"]).suffix[1:].upper()
             badge.setText(suffix if suffix in {"PDF", "TXT", "MD", "CSV", "TSV", "LOG", "JSON", "DOCX", "XLSX", "PPTX"}
                           else "DOC")
-        self.row.addWidget(badge)
         display = attachment_label(file) + (" · parcial" if file.get("partial") else "")
-        label = QLabel(display if len(display) <= 48 else display[:45] + "…")
+        label = QLabel()
         label.setTextFormat(Qt.TextFormat.PlainText)
         label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         label.setToolTip(display)
-        self.row.addWidget(label, 1)
+        label.setAccessibleName(display)
+        if draft:
+            self.setFixedSize(152, 100)
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(7, 5, 7, 5)
+            layout.setSpacing(3)
+            preview = QGridLayout()
+            preview.addWidget(badge, 0, 0)
+            self.remove = secondary_button(QPushButton("×"))
+            self.remove.setObjectName("removeDraftAttachment")
+            self.remove.setAccessibleName(f"Quitar {file['name']}")
+            self.remove.setToolTip("Quitar adjunto")
+            self.remove.setFixedSize(22, 22)
+            preview.addWidget(self.remove, 0, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+            self.remove.raise_()
+            layout.addLayout(preview)
+            label.setObjectName("draftAttachmentName")
+            label.setText(label.fontMetrics().elidedText(display, Qt.TextElideMode.ElideRight, 132))
+            layout.addWidget(label, 1)
+        else:
+            layout = QHBoxLayout(self)
+            layout.setContentsMargins(8, 5, 8, 5)
+            layout.setSpacing(8)
+            label.setText(display if len(display) <= 48 else display[:45] + "…")
+            layout.addWidget(badge)
+            layout.addWidget(label, 1)
+
+
+class AttachmentStrip(QScrollArea):
+    def wheelEvent(self, event):
+        bar = self.horizontalScrollBar()
+        if event.angleDelta().y() and not event.angleDelta().x() and bar.maximum():
+            bar.setValue(bar.value() - event.angleDelta().y())
+            event.accept()
+        else:
+            super().wheelEvent(event)
 
 
 class AttachmentTray(QWidget):
@@ -247,15 +357,26 @@ class AttachmentTray(QWidget):
         super().__init__()
         self.files = []
         body = QWidget()
-        self.rows = QVBoxLayout(body)
-        self.rows.setContentsMargins(3, 0, 3, 0)
-        self.scroll = QScrollArea()
+        body.setObjectName("attachmentStripBody")
+        self.rows = QHBoxLayout(body)
+        self.rows.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        self.rows.setContentsMargins(0, 0, 0, 0)
+        self.rows.setSpacing(8)
+        self.rows.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.scroll = AttachmentStrip()
+        self.scroll.setObjectName("attachmentStrip")
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setFixedHeight(110)
         self.scroll.setWidgetResizable(True)
         self.scroll.setWidget(body)
+        self.scroll.viewport().setAutoFillBackground(False)
+        body.setAutoFillBackground(False)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.scroll)
         self.add_button = secondary_button(QPushButton("+"))
+        self.add_button.setObjectName("composerAdd")
+        self.add_button.setProperty("quiet", True)
         self.add_button.setAccessibleName("Opciones del chat")
         self.add_button.setToolTip("Adjuntos, MCP y memoria")
         self.menu = QMenu(self.add_button)
@@ -283,19 +404,15 @@ class AttachmentTray(QWidget):
 
     def add_file(self, file):
         self.files.append(file)
-        row = AttachmentCard(file)
-        remove = secondary_button(QPushButton("Quitar"))
-        remove.setAccessibleName(f"Quitar {file['name']}")
-        remove.clicked.connect(lambda: self.remove_row(row))
-        row.row.addWidget(remove)
+        row = AttachmentCard(file, draft=True)
+        row.remove.clicked.connect(lambda: self.remove_row(row))
         self.rows.addWidget(row)
-        self.scroll.setFixedHeight(min(144, self.rows.sizeHint().height() + 2))
         self.show()
+        self.scroll.ensureWidgetVisible(row, 0, 0)
 
     def remove_row(self, row):
         del self.files[self.rows.indexOf(row)]
         self.rows.removeWidget(row)
-        self.scroll.setFixedHeight(min(144, self.rows.sizeHint().height() + 2))
         row.hide()
         row.deleteLater()
         self.setVisible(bool(self.files))
@@ -497,9 +614,29 @@ def chat_style(theme):
             }}
             QTextBrowser#codeText QScrollBar::add-line:horizontal, QTextBrowser#codeText QScrollBar::sub-line:horizontal {{ width: 0; }}
             QWidget#composerPanel {{
-                background: {surface}; border: 1px solid {subtle_edge}; border-radius: 16px;
+                background: {surface}; border: 1px solid {subtle_edge}; border-radius: 18px;
             }}
             QWidget#attachmentCard {{ background: {surface}; border: 1px solid {edge}; border-radius: 8px; }}
+            QWidget#draftAttachmentCard {{
+                background: {shade(surface, .045)}; border: 1px solid {subtle_edge}; border-radius: 11px;
+            }}
+            QWidget#draftAttachmentCard QLabel#attachmentBadge {{
+                background: {background}; color: {link_color(background)}; border-radius: 7px;
+                font-size: 13px; font-weight: 700;
+            }}
+            QLabel#draftAttachmentName {{ color: {text}; font-size: 12px; padding-left: 2px; }}
+            QPushButton#removeDraftAttachment {{ padding: 0; border-radius: 11px; font-size: 14px; }}
+            QWidget#attachmentStripBody, QScrollArea#attachmentStrip > QWidget#qt_scrollarea_viewport {{
+                background: transparent;
+            }}
+            QScrollArea#attachmentStrip QScrollBar:horizontal {{ height: 7px; background: transparent; }}
+            QScrollArea#attachmentStrip QScrollBar::handle:horizontal {{
+                min-width: 28px; border-radius: 3px; background: {shade(surface, .25)};
+            }}
+            QScrollArea#attachmentStrip QScrollBar::add-line:horizontal,
+            QScrollArea#attachmentStrip QScrollBar::sub-line:horizontal {{ width: 0; }}
+            QScrollArea#attachmentStrip QScrollBar::add-page:horizontal,
+            QScrollArea#attachmentStrip QScrollBar::sub-page:horizontal {{ background: transparent; }}
             QLabel#attachmentBadge {{
                 background: {shade(surface, .09)}; color: {text}; border-radius: 5px; font-size: 12px;
             }}
@@ -509,7 +646,10 @@ def chat_style(theme):
             QMenu#chatMenu::item {{ padding: 6px 24px 6px 10px; }}
             QMenu#chatMenu::item:selected {{ background: {accent}; color: {accent_text}; }}
             QMenu#chatMenu::item:disabled {{ color: {muted}; }}
-            QPushButton#sendMessage {{ padding: 5px 13px; font-size: 14px; }}
+            QPushButton#sendMessage {{ padding: 5px 14px; font-size: 14px; border-radius: 11px; }}
+            QPushButton#composerAdd {{ padding: 1px 8px; font-size: 19px; }}
+            QPushButton#composerAdd::menu-indicator {{ image: none; width: 0; }}
+            QPushButton#composerReasoning {{ padding: 4px 12px 4px 7px; font-size: 13px; }}
             QPushButton#composerExpand {{ padding: 2px 7px; }}
             QTextEdit#messageInput {{ color: {text}; placeholder-text-color: {shade(surface, .7)}; }}
             QScrollBar#composerScroll:vertical {{ width: 10px; background: transparent; }}

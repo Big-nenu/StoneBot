@@ -24,6 +24,7 @@ from appearance import (
     custom_themes, link_color, load_appearance, shade,
 )
 from history import History
+from history_ui import MAXIMUM_WIDTH
 from win_caption import CAPTION_COLOR, SYSTEM_COLOR, TEXT_COLOR, colorref, set_caption_colors
 
 
@@ -141,6 +142,51 @@ def test_draft_spelling_and_links():
         editor.deleteLater()
         scroll.deleteLater()
         QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+def test_composer_shortcuts(window):
+    editor = window.message
+    popup = editor.shortcuts.popup()
+
+    def pick(query, expected):
+        editor.clear()
+        editor.setFocus()
+        QTest.keyClicks(editor, query)
+        assert popup.isVisible() and popup.currentIndex().data().startswith(expected)
+        QTest.keyClick(popup, Qt.Key.Key_Return)
+        assert not popup.isVisible()
+
+    pick("/tar", "/tarea")
+    assert editor.toPlainText() == "/tarea " and window.chat_id is None
+    project = window.history.save_project("Obra Norte", "", "", "")
+    path = window.history.path.parent / "Informe.txt"
+    path.write_text("Documento del proyecto.", encoding="utf-8")
+    window.history.link_project_document(project, str(path))
+    window.refresh_projects()
+    window.attachments.add_file({"name": "Datos.txt", "text": "Archivo local."})
+    pick("Revisa @Obra", "Obra Norte")
+    assert window.project["id"] == project and editor.toPlainText() == "Revisa "
+    assert [file["name"] for file in window.attachments.files] == ["Datos.txt"]
+    pick("Compara @Informe", "Informe.txt")
+    assert [file["name"] for file in window.attachments.files] == ["Datos.txt", "Informe.txt"]
+    pick("Ver #Datos", "Datos.txt")
+    assert editor.toPlainText() == "Ver «Datos.txt» "
+    pick(">Buscar", "Buscar conversaciones")
+    assert window.history_panel.search.isVisible()
+    editor.setPlainText("/buscar presupuesto")
+    window.enviar()
+    assert window.history_panel.search.text() == "presupuesto" and len(window.attachments.files) == 2
+    if sys.platform == "win32":
+        with patch.object(app.subprocess, "Popen") as launched:
+            pick("!", "Abrir PowerShell")
+        assert Path(launched.call_args.args[0][0]).name == "powershell.exe"
+        assert launched.call_args.args[0][1:] == ["-NoLogo", "-NoProfile"]
+    window.new_chat()
+
+    window.resize(2480, 800)
+    window.history_splitter.moveSplitter(2100, 1)
+    assert window.sidebar_rail.width() == MAXIMUM_WIDTH
+    assert window.history_splitter.sizes()[1] > 1500
 
 
 def test_appearance(window):
@@ -450,4 +496,9 @@ if __name__ == "__main__":
             test_regeneration(window)
             test_button_styles(window)
             test_history_panel_and_timestamps(window)
+            window = app.StoneBot()
+            window.show()
+            with patch.object(app, "save_history_width"):
+                test_composer_shortcuts(window)
+                window.close()
     print("PASS: apariencia, Markdown, actividad, historial, botón Enviar, estados, ancho y horas.")
