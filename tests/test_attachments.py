@@ -167,6 +167,8 @@ def test_window(root):
         menu = window.attachments.add_button.menu()
         attach, project_document, mcp, memory, _, skills, instructions = menu.actions()
         assert not project_document.isVisible()
+        modes = window.reasoning_button.menu().actions()
+        assert [mode.data() for mode in modes] == [None, False, True] and modes[0].isChecked()
         assert attach.isEnabled() and mcp.isEnabled() and skills.isEnabled()
         with patch.object(app.SkillsDialog, "exec") as opened:
             skills.trigger()
@@ -234,6 +236,10 @@ def test_window(root):
         assert window.attachments.add_button.geometry().top() > window.message.geometry().bottom()
         with (patch.object(app, "Client", return_value=client),
               patch.object(app, "load_servers", side_effect=AssertionError("Los adjuntos no pasan a MCP."))):
+            modes[2].trigger()
+            assert window.reasoning_button.text() == "Activado"
+            assert (window.attachments.add_button.geometry().left() < window.reasoning_button.geometry().left()
+                    < window.send.geometry().left())
             compact = window.message.height()
             window.message.expand_button.click()
             QTest.qWait(20)
@@ -251,6 +257,7 @@ def test_window(root):
             assert len(saved[0]["attachments"]) == 3 and not window.attachments.files
             request = calls[0]
             assert request["model"] == app.MODEL and not request.get("tools")
+            assert request["think"] is True
             assert isinstance(request["messages"][-1]["images"][0], bytes)
             assert all(word in request["messages"][-1]["content"] for word in ("CEDRO-742", "LUNA-531"))
             assert str(root) not in repr(saved)

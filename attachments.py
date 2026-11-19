@@ -10,6 +10,7 @@ from PySide6.QtCore import QByteArray, QBuffer, QFile, QIODevice, QSize, Qt
 from PySide6.QtGui import QImage, QImageReader, QPainter
 from PySide6.QtPdf import QPdfDocument
 
+from office_attachments import OFFICE_SUFFIXES, read_office
 from stonebot_engine.safety import check_path
 
 MAX_IMAGES = 4
@@ -17,7 +18,8 @@ MAX_TEXT = 12_000
 MAX_IMAGE_PIXELS = 16_000_000
 IMAGE_SUFFIXES = {".png": b"png", ".jpg": b"jpeg", ".jpeg": b"jpeg", ".webp": b"webp"}
 TEXT_SUFFIXES = {".txt", ".md", ".csv", ".tsv", ".log", ".json"}
-FILE_FILTER = "Archivos compatibles (" + " ".join(f"*{ext}" for ext in sorted(IMAGE_SUFFIXES.keys() | TEXT_SUFFIXES | {".pdf"})) + ")"
+ATTACHMENT_SUFFIXES = IMAGE_SUFFIXES.keys() | TEXT_SUFFIXES | OFFICE_SUFFIXES | {".pdf"}
+FILE_FILTER = "Archivos compatibles (" + " ".join(f"*{ext}" for ext in sorted(ATTACHMENT_SUFFIXES)) + ")"
 
 
 def attachment_path(filename):
@@ -31,7 +33,7 @@ def attachment_path(filename):
     if not safe.is_file():
         raise ValueError("El archivo ya no está disponible en esa ubicación.")
     suffix = safe.suffix.lower()
-    if suffix not in IMAGE_SUFFIXES and suffix not in TEXT_SUFFIXES and suffix != ".pdf":
+    if suffix not in ATTACHMENT_SUFFIXES:
         raise ValueError("Formato de adjunto no compatible.")
     return safe
 
@@ -42,6 +44,8 @@ def read_attachment(filename, page_range=None):
     name = " ".join(safe.name.split())
     if suffix == ".pdf":
         return {"name": name, **pdf_pages(safe, page_range)}
+    if suffix in OFFICE_SUFFIXES:
+        return {"name": name, "sections": read_office(safe)}
     with safe.open("rb") as stream:
         raw = stream.read()
     if not raw:
@@ -161,7 +165,7 @@ def attachment_batches(messages):
     for message in messages:
         for file in message.get("attachments", []):
             partial |= bool(file.get("partial") and "pages" not in file)
-            for part in file.get("pages", [file]):
+            for part in file.get("pages", file.get("sections", [file])):
                 partial |= bool(part.get("partial"))
                 if "number" in part:
                     coverage.setdefault(file["pdf_id"], (file["name"], set()))[1].add(part["number"])
@@ -193,6 +197,8 @@ def attach_batch(message, batch):
         title = file["name"]
         if "number" in part:
             title += f" · página {part['number']}"
+        elif "location" in part:
+            title += f" · {part['location']}"
         if "image" in part:
             images.append(base64.b64decode(part["image"], validate=True))
             names.append(title)

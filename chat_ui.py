@@ -1,10 +1,11 @@
 """Vista del chat y estilo basado en las preferencias de apariencia."""
 import base64
+import re
 from math import ceil
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QImage, QPixmap, QTextOption
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QContextMenuEvent, QImage, QPixmap, QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextOption
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFileDialog, QHBoxLayout, QLabel, QMenu, QPlainTextEdit, QPushButton, QScrollArea,
     QSizePolicy, QTextEdit, QToolButton, QVBoxLayout, QWidget,
@@ -14,6 +15,53 @@ from appearance import button_style, control_colors, link_color, readable_text, 
 from attachments import (
     FILE_FILTER, attachment_label, clipboard_attachment, read_attachment,
 )
+from chat_markdown import open_web_link
+from spellcheck import WindowsSpellChecker
+
+
+WEB_URL = r"""\bhttps?://[^\s<>"`]+"""
+UNCHECKED = re.compile(rf"`[^`]*`|(?P<url>{WEB_URL})|\b[A-Za-z]:[\\/]\S+|^/\w+", re.I)
+
+
+def utf16_length(text):
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
+class ChatHighlights(QSyntaxHighlighter):
+    def __init__(self, editor, *, spelling):
+        super().__init__(editor.document())
+        self.checker = WindowsSpellChecker() if spelling else None
+        if self.checker is not None:
+            editor.destroyed.connect(self.checker.close)
+        self.mark = QTextCharFormat()
+        self.mark.setUnderlineStyle(QTextCharFormat.UnderlineStyle.WaveUnderline)
+        self.mark.setUnderlineColor(QColor("#e45b68"))
+        self.link = QTextCharFormat()
+        self.link.setAnchor(True)
+        self.link.setFontUnderline(True)
+        self.link.setForeground(editor.palette().link())
+
+    def set_link_background(self, background):
+        self.link.setForeground(QColor(link_color(background)))
+        self.rehighlight()
+
+    def highlightBlock(self, text):
+        # shortcut: limita cada párrafo para mantener la escritura fluida al pegar texto largo.
+        if self.checker is not None and len(text) <= 4000:
+            prose = UNCHECKED.sub(lambda match: " " * utf16_length(match[0]), text)
+            for start, length in self.checker.errors(prose):
+                self.setFormat(start, length, self.mark)
+        for match in UNCHECKED.finditer(text):
+            if (address := match["url"]) is None:
+                continue
+            address = address.rstrip(".,;:!?")
+            for opening, closing in ("()", "[]", "{}"):
+                while address.endswith(closing) and address.count(closing) > address.count(opening):
+                    address = address[:-1].rstrip(".,;:!?")
+            url = QUrl(address, QUrl.ParsingMode.StrictMode)
+            if url.isValid() and url.host():
+                self.link.setAnchorHref(address)
+                self.setFormat(utf16_length(text[:match.start()]), utf16_length(address), self.link)
 
 
 class ChatText(QTextEdit):
@@ -22,6 +70,8 @@ class ChatText(QTextEdit):
         self.scroll_area = scroll_area
         self.setAcceptRichText(False)
         self.setReadOnly(scroll_area is not None)
+        self.highlights = ChatHighlights(self, spelling=scroll_area is None)
+        self.pressed_link = None
         self.setTabChangesFocus(True)
         self.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -30,6 +80,60 @@ class ChatText(QTextEdit):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.document().documentLayout().documentSizeChanged.connect(self.fit_height)
         self.fit_height(self.document().size())
+
+    @staticmethod
+    def highlight_at(cursor):
+        position = cursor.positionInBlock()
+        return next((item for item in cursor.block().layout().formats()
+                     if item.start <= position < item.start + item.length), None)
+
+    def link_at(self, position):
+        item = self.highlight_at(self.cursorForPosition(position))
+        return item.format.anchorHref() if item else ""
+
+    def mousePressEvent(self, event):
+        self.pressed_link = None
+        if event.button() == Qt.MouseButton.LeftButton and (
+            self.isReadOnly() or event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
+            point = event.position().toPoint()
+            if link := self.link_at(point):
+                self.pressed_link = point, link
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        pressed, self.pressed_link = self.pressed_link, None
+        super().mouseReleaseEvent(event)
+        if pressed and event.button() == Qt.MouseButton.LeftButton:
+            start, link = pressed
+            point = event.position().toPoint()
+            if (point - start).manhattanLength() < QApplication.startDragDistance() and self.link_at(point) == link:
+                open_web_link(QUrl(link))
+
+    def contextMenuEvent(self, event):
+        menu = self.createStandardContextMenu(event.pos())
+        menu.setObjectName("chatMenu")
+        cursor = (self.textCursor() if event.reason() == QContextMenuEvent.Reason.Keyboard
+                  else self.cursorForPosition(event.pos()))
+        item = self.highlight_at(cursor)
+        first = next(iter(menu.actions()), None)
+        if item and (link := item.format.anchorHref()):
+            action = menu.addAction("Abrir enlace", lambda: open_web_link(QUrl(link)))
+            menu.insertAction(first, action)
+            menu.insertSeparator(first)
+        elif item and self.highlights.checker is not None:
+            start = cursor.block().position() + item.start
+            cursor.setPosition(start)
+            cursor.setPosition(start + item.length, QTextCursor.MoveMode.KeepAnchor)
+            choices = self.highlights.checker.suggestions(cursor.selectedText())
+            for choice in choices:
+                action = menu.addAction(choice.replace("&", "&&"),
+                                        lambda _checked=False, value=choice: cursor.insertText(value))
+                menu.insertAction(first, action)
+            if choices:
+                menu.insertSeparator(first)
+        menu.exec(event.globalPos())
+        menu.deleteLater()
 
     def fit_height(self, size):
         height = ceil(size.height()) + 2 * self.frameWidth()
@@ -125,7 +229,8 @@ class AttachmentCard(QWidget):
                                               Qt.TransformationMode.SmoothTransformation))
         else:
             suffix = Path(file["name"]).suffix[1:].upper()
-            badge.setText(suffix if suffix in {"PDF", "TXT", "MD", "CSV", "TSV", "LOG", "JSON"} else "DOC")
+            badge.setText(suffix if suffix in {"PDF", "TXT", "MD", "CSV", "TSV", "LOG", "JSON", "DOCX", "XLSX", "PPTX"}
+                          else "DOC")
         self.row.addWidget(badge)
         display = attachment_label(file) + (" · parcial" if file.get("partial") else "")
         label = QLabel(display if len(display) <= 48 else display[:45] + "…")
@@ -198,6 +303,11 @@ class AttachmentTray(QWidget):
     def clear(self):
         while self.rows.count():
             self.remove_row(self.rows.itemAt(0).widget())
+
+    def clear_project_documents(self):
+        for index in reversed(range(len(self.files))):
+            if "project_document" in self.files[index]:
+                self.remove_row(self.rows.itemAt(index).widget())
 
 
 class ActivityPanel(QWidget):

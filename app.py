@@ -55,7 +55,7 @@ from tasks import (
 from tasks_ui import TaskCorrectionDialog
 from win_caption import apply_native_caption
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QIcon, QTextCursor
+from PySide6.QtGui import QActionGroup, QColor, QIcon, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QSystemTrayIcon,
@@ -128,7 +128,7 @@ class Worker(QObject):
     continuity_saved = Signal(int, str)
 
     def __init__(self, messages, pool=None, *, identity_enabled=False, dream_thread=None, task=None, save_task=None,
-                 completed_task=None, project=None, save_continuity=None, project_document_path=None):
+                 completed_task=None, project=None, save_continuity=None, project_document_path=None, think=None):
         super().__init__()
         self.messages = messages
         self.pool = pool
@@ -141,6 +141,7 @@ class Worker(QObject):
         self.project = project
         self.save_continuity = save_continuity
         self.project_document_path = project_document_path
+        self.think = think
         self.ranking_scope = None
         self.ranking_hidden = None
         self.learned_server = None
@@ -685,7 +686,7 @@ class Worker(QObject):
                     options["temperature"] = 0
                 self.activity.emit("Esperando la respuesta de Ollama…")
                 response = await asyncio.to_thread(client.chat, model=MODEL, messages=messages,
-                                                   tools=specs, options=options)
+                                                   tools=specs, options=options, think=self.think)
                 reply = response.message
                 self.check_pause()
                 if thinking := getattr(reply, "thinking", None):
@@ -892,8 +893,11 @@ class Worker(QObject):
             payload[0] = {**payload[0], "content": payload[0]["content"] + "\n\n" + directive}
         else:
             payload.insert(0, {"role": "system", "content": directive})
-        result = await asyncio.to_thread(client.chat, model=MODEL, messages=payload, tools=[], think=False,
+        result = await asyncio.to_thread(client.chat, model=MODEL, messages=payload, tools=[],
+                                         think=self.think if self.think is not None else False,
                                          options={"num_ctx": 16384})
+        if thinking := getattr(result.message, "thinking", None):
+            self.reasoning.emit(thinking)
         if not (result.message.content or "").strip() or getattr(result.message, "tool_calls", None):
             raise TurnError(f"Ollama no dio una respuesta final para la Skill {name}.")
         return result.message.content
@@ -918,6 +922,10 @@ class Worker(QObject):
                        "Usa la cobertura de PDF solo para saber qué datos recibiste. "
                        "Si alguna página no es legible, indícalo. "
                        "Puedes citar resúmenes previos como tales, sin afirmar que releíste esas páginas.")
+        if any(file.get("sections") for batch in batches for file, _ in batch):
+            instruction += (" Para Office cita el archivo y la ubicación que respalda cada dato: párrafo, tabla, "
+                            "hoja y celdas, o diapositiva. En Excel distingue fórmulas de resultados guardados. "
+                            "Si falta un resultado, dilo. No des por recalculada una fórmula.")
         if project_files:
             instruction += " Al usar un documento del proyecto, cita su nombre y explica qué dato respalda."
         payload = [{"role": message["role"], "content": message["content"]} for message in messages]
@@ -948,10 +956,13 @@ class Worker(QObject):
                 attach_batch(payload[-1], batches[0])
             tools = {"tools": [Tool.model_validate(local_skills.tool_spec(skills))]} if skills else {}
             response = await asyncio.to_thread(client.chat, model=MODEL, messages=payload,
-                                               think=False, options={"num_ctx": model_context(
+                                               think=self.think if self.think is not None else False,
+                                               options={"num_ctx": model_context(
                                                    sum(len(item["content"]) for item in payload), 16384)}, **tools)
         except ResponseError as exc:
             raise TurnError(f"Ollama no pudo procesar los adjuntos con {MODEL}: {exc.error}") from exc
+        if thinking := getattr(response.message, "thinking", None):
+            self.reasoning.emit(thinking)
         answer = await self.use_skill(client, payload, response.message, skills) or response.message.content
         if not (answer or "").strip():
             raise TurnError("Ollama no devolvió una respuesta sobre los adjuntos.")
@@ -1045,6 +1056,7 @@ class StoneBot(QMainWindow):
         self.history_panel.diagnostics.connect(self.open_diagnostics)
         self.history_panel.projects_requested.connect(self.show_projects)
         self.history_panel.project_opened.connect(self.show_project)
+        self.history_panel.project_deleted.connect(self.delete_project)
         self.history_panel.move_requested.connect(self.move_chat_to_project)
         self.sidebar_rail = SidebarRail(self.history_panel)
         self.sidebar_rail.actions["new"].clicked.connect(self.history_panel.new_chat)
@@ -1098,6 +1110,7 @@ class StoneBot(QMainWindow):
         self.project_page.opened.connect(self.show_project)
         self.project_page.back.connect(self.show_projects)
         self.project_page.edited.connect(self.edit_project)
+        self.project_page.deleted.connect(self.delete_project)
         self.project_page.continuity_requested.connect(self.edit_continuity)
         self.project_page.document_requested.connect(self.link_project_document)
         self.project_page.document_unlinked.connect(self.unlink_project_document)
@@ -1160,6 +1173,26 @@ class StoneBot(QMainWindow):
         self.memory_menu.addSeparator()
         self.memory_menu.addAction("Ver y corregir recuerdos…", self.open_memory)
         self.memory_menu.triggered.connect(self.draft_memory_query)
+        self.reasoning_button = secondary_button(QPushButton("Automático"))
+        self.reasoning_button.setAccessibleName("Razonamiento · Automático")
+        self.reasoning_button.setToolTip("Razonamiento")
+        reasoning_menu = QMenu(self.reasoning_button)
+        self.reasoning_button.setMenu(reasoning_menu)
+        reasoning_menu.setObjectName("chatMenu")
+        self.reasoning_modes = QActionGroup(reasoning_menu)
+        for mode, value, tip in (
+            ("Automático", None, "Usa el ajuste habitual de Ollama."),
+            ("Rápido", False, "Pide una respuesta directa."),
+            ("Activado", True, "Pide que el modelo razone antes de responder."),
+        ):
+            action = reasoning_menu.addAction(mode)
+            action.setCheckable(True)
+            self.reasoning_modes.addAction(action)
+            action.setChecked(value is None)
+            action.setData(value)
+            action.setToolTip(tip)
+        reasoning_menu.setToolTipsVisible(True)
+        self.reasoning_modes.triggered.connect(self.update_reasoning_mode)
         menu.aboutToShow.connect(self.update_composer_menu)
         menu.addSeparator()
         menu.addAction("Skills…", self.open_skills)
@@ -1171,6 +1204,7 @@ class StoneBot(QMainWindow):
         row.addWidget(self.attachments.add_button)
         row.addStretch()
         row.addWidget(self.message.expand_button)
+        row.addWidget(self.reasoning_button)
         row.addWidget(self.send)
         composer_layout.addWidget(self.attachments)
         composer_layout.addWidget(self.message)
@@ -1415,6 +1449,42 @@ class StoneBot(QMainWindow):
         self.refresh_projects()
         self.show_project(project_id)
 
+    def delete_project(self, project_id):
+        if self.history is None or self.thread is not None:
+            return
+        project = next((item for item in self.projects if item["id"] == project_id), None)
+        if project is None:
+            return
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Eliminar proyecto")
+        dialog.setStyleSheet(dialog_style(self.appearance))
+        dialog.setTextFormat(Qt.TextFormat.PlainText)
+        dialog.setText(f"¿Eliminar «{project['name']}»?")
+        dialog.setInformativeText("Sus chats quedarán en Recientes y tus archivos seguirán en su carpeta.")
+        remove = dialog.addButton("Eliminar", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = dialog.addButton("Cancelar", QMessageBox.ButtonRole.RejectRole)
+        dialog.setDefaultButton(cancel)
+        dialog.exec()
+        confirmed = dialog.clickedButton() is remove
+        dialog.deleteLater()
+        if not confirmed:
+            return
+        try:
+            self.history.delete_project(project_id)
+        except (OSError, ValueError, RuntimeError, sqlite3.Error):
+            QMessageBox.warning(self, "Eliminar proyecto", "No se pudo eliminar el proyecto.")
+            return
+        if self.project and self.project["id"] == project_id:
+            self.project = None
+            self.attachments.clear_project_documents()
+            if self.pages.currentWidget() is self.chat_page:
+                self.show_chat_page()
+        if self.pages.currentWidget() is self.project_page:
+            self.show_projects()
+        else:
+            self.refresh_projects()
+        self.refresh_history()
+
     def link_project_document(self, project_id):
         project = next((item for item in self.projects if item["id"] == project_id), None)
         if project is None or self.history is None or self.thread is not None:
@@ -1606,6 +1676,7 @@ class StoneBot(QMainWindow):
         theme = self.appearance
         apply_palette(theme)
         self.centralWidget().setStyleSheet(chat_style(theme))
+        self.message.highlights.set_link_background(theme["background"])
         icon_color = QColor(readable_text(theme["background"]))
         self.history_panel.refresh_icons(icon_color)
         self.sidebar_rail.refresh_icons(icon_color)
@@ -1613,6 +1684,7 @@ class StoneBot(QMainWindow):
             [readable_text(theme["background"]), theme["background"], theme["accent"], theme["background"]],
             artist=True))
         for bubble in self.chat.findChildren(ChatText, "userMessage"):
+            bubble.highlights.set_link_background(theme["user_message"])
             self.fit_bubble(bubble)
         for bubble in self.chat.findChildren(MarkdownText):
             bubble.set_theme(theme)
@@ -1693,6 +1765,10 @@ class StoneBot(QMainWindow):
         attached_chat = has_chat_attachments(self.messages)
         self.memory_menu.setTitle("Memoria · en un chat nuevo" if attached_chat else "Memoria")
 
+    def update_reasoning_mode(self, action):
+        self.reasoning_button.setText(action.text())
+        self.reasoning_button.setAccessibleName(f"Razonamiento · {action.text()}")
+
     def open_memory(self):
         if self.thread is None:
             self.last_activity = time.monotonic()
@@ -1747,6 +1823,7 @@ class StoneBot(QMainWindow):
         body.ensurePolished()
         if user:
             body.document().setDocumentMargin(12)
+            body.highlights.set_link_background(self.appearance["user_message"])
             body.setPlainText(text)
         actions = QHBoxLayout()
         actions.setContentsMargins(4, 0, 4, 0)
@@ -1977,6 +2054,7 @@ class StoneBot(QMainWindow):
         self.last_activity = time.monotonic()
         self.message.setEnabled(False)
         self.attachments.add_button.setEnabled(False)
+        self.reasoning_button.setEnabled(False)
         self.send.setEnabled(False)
         self.mcp_button.setEnabled(False)
         self.history_panel.setEnabled(False)
@@ -2021,7 +2099,8 @@ class StoneBot(QMainWindow):
         self.worker = Worker(turn_messages, self.pool, identity_enabled=True, dream_thread=self.dream_thread,
                              task=task, save_task=save_task, completed_task=completed_task, project=project_context,
                              save_continuity=history.save_continuity if history is not None else None,
-                             project_document_path=history.project_document_path if history is not None else None)
+                             project_document_path=history.project_document_path if history is not None else None,
+                             think=self.reasoning_modes.checkedAction().data())
         self.worker.moveToThread(self.thread)
 
         self.thread.started.connect(self.worker.run)
@@ -2165,6 +2244,7 @@ class StoneBot(QMainWindow):
             self.activity_panel.add_event("Turno finalizado.")
         self.message.setEnabled(True)
         self.attachments.add_button.setEnabled(True)
+        self.reasoning_button.setEnabled(True)
         self.send.setEnabled(True)
         self.mcp_button.setEnabled(True)
         self.history_panel.setEnabled(True)

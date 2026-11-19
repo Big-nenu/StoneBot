@@ -4,7 +4,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+    QDialog, QDialogButtonBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu,
     QPushButton, QPlainTextEdit, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 
@@ -78,6 +78,7 @@ class ProjectPage(QScrollArea):
     opened = Signal(int)
     back = Signal()
     edited = Signal(int)
+    deleted = Signal(int)
     continuity_requested = Signal(int)
     document_requested = Signal(int)
     document_unlinked = Signal(int, int)
@@ -164,10 +165,19 @@ class ProjectPage(QScrollArea):
         self.clear_page()
         pid = project["id"]
         self.content.addWidget(self.action("‹ Proyectos", self.back.emit), alignment=Qt.AlignmentFlag.AlignLeft)
-        self.heading(project["name"],
-                     self.action("Desfijar" if project["pinned"] else "Fijar",
-                                 lambda: self.pinned.emit(pid, not project["pinned"])),
-                     self.action("Editar", lambda: self.edited.emit(pid)))
+        options = secondary_button(QPushButton("⋯"))
+        options.setProperty("quiet", True)
+        options.setAccessibleName("Opciones del proyecto")
+        options.setToolTip("Opciones del proyecto")
+        menu = QMenu(options)
+        menu.setObjectName("chatMenu")
+        menu.addAction("Editar proyecto…", lambda: self.edited.emit(pid))
+        menu.addAction("Desfijar" if project["pinned"] else "Fijar",
+                       lambda: self.pinned.emit(pid, not project["pinned"]))
+        menu.addSeparator()
+        menu.addAction("Eliminar proyecto…", lambda: self.deleted.emit(pid))
+        options.setMenu(menu)
+        self.heading(project["name"], options)
         if project["description"]:
             self.content.addWidget(label(project["description"]))
         self.content.addWidget(self.action("Nuevo chat", lambda: self.chat_started.emit(pid), primary=True),

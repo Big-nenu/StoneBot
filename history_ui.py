@@ -149,6 +149,8 @@ class ConversationList(QListWidget):
                 self.hide_options()
             else:
                 rect = self.visualItemRect(self.hovered)
+                project = self.hovered.data(PROJECT_ROLE) is not None
+                self.options.setAccessibleName("Opciones del proyecto" if project else "Opciones de la conversación")
                 self.options.move(rect.right() - self.options.width() - 4, rect.center().y() - self.options.height() // 2)
                 self.options.show()
         elif event.type() in (QEvent.Type.Leave, QEvent.Type.Resize):
@@ -181,6 +183,7 @@ class HistoryPanel(QWidget):
     diagnostics = Signal()
     projects_requested = Signal()
     project_opened = Signal(int)
+    project_deleted = Signal(int)
     move_requested = Signal(int)
 
     def __init__(self):
@@ -244,6 +247,7 @@ class HistoryPanel(QWidget):
 
     def fill_projects(self, projects, chats):
         self.projects = projects
+        self.expanded_projects.intersection_update(project["id"] for project in projects)
         self.project_chats = chats
         self.rebuild()
 
@@ -308,8 +312,12 @@ class HistoryPanel(QWidget):
             menu = QMenu(self)
             menu.setObjectName("chatMenu")
             opened = menu.addAction("Abrir proyecto")
-            if menu.exec(point) is opened:
+            remove = menu.addAction("Eliminar proyecto…")
+            choice = menu.exec(point)
+            if choice is opened:
                 self.project_opened.emit(project_id)
+            elif choice is remove:
+                self.project_deleted.emit(project_id)
             menu.deleteLater()
             return
         chat_id, title = item.data(Qt.ItemDataRole.UserRole), item.text()

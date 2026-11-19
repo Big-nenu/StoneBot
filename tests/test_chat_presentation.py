@@ -11,9 +11,9 @@ from unittest.mock import patch
 
 from ollama import Message
 from PySide6.QtCore import QEvent, QEventLoop, QPoint, QTimer, Qt, QUrl
-from PySide6.QtGui import QColor, QDesktopServices
+from PySide6.QtGui import QColor, QContextMenuEvent, QDesktopServices
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QInputDialog, QLabel, QMessageBox, QPushButton
+from PySide6.QtWidgets import QApplication, QInputDialog, QLabel, QMessageBox, QPushButton, QScrollArea
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
@@ -78,6 +78,69 @@ def wait_for_turn(window):
     timer.start(15_000)
     loop.exec()
     assert window.thread is None
+
+
+def test_draft_spelling_and_links():
+    editor = app.Composer()
+    scroll = QScrollArea()
+    bubble = app.ChatText(scroll)
+    scroll.setWidget(bubble)
+
+    def link_style(widget):
+        widget.highlights.rehighlight()
+        item = next(item for item in widget.document().firstBlock().layout().formats() if item.format.anchorHref())
+        return item.start, item.format.anchorHref()
+
+    try:
+        url = "https://docs.ollama.com/capabilities/thinking"
+        text = f"🙂 Hola, me fatlan letras y me equiboco. ({url})."
+        editor.resize(800, 90)
+        editor.show()
+        editor.setPlainText(text)
+        assert link_style(editor)[1] == url
+        if editor.highlights.checker.checker:
+            encoded = text.encode("utf-16-le")
+            marked = [item for item in editor.document().firstBlock().layout().formats() if not item.format.anchorHref()]
+            assert [encoded[item.start * 2:(item.start + item.length) * 2].decode("utf-16-le")
+                    for item in marked] == ["fatlan", "equiboco"]
+            cursor = editor.textCursor()
+            cursor.setPosition(marked[0].start + 1)
+            point = editor.cursorRect(cursor).center()
+
+            selected = []
+
+            def choose_fix():
+                menu = QApplication.activePopupWidget()
+                selected.append(menu.actions()[0].text())
+                menu.actions()[0].trigger()
+                menu.close()
+
+            QTimer.singleShot(0, choose_fix)
+            editor.contextMenuEvent(QContextMenuEvent(QContextMenuEvent.Reason.Mouse, point,
+                                                      editor.viewport().mapToGlobal(point)))
+            assert selected == ["faltan"] and editor.toPlainText() == text.replace("fatlan", "faltan")
+            editor.undo()
+            assert editor.toPlainText() == text
+        bubble.setPlainText(text)
+        scroll.resize(800, 160)
+        scroll.show()
+        QApplication.processEvents()
+        with patch.object(QDesktopServices, "openUrl") as browser:
+            for widget in (editor, bubble):
+                cursor = widget.textCursor()
+                cursor.setPosition(link_style(widget)[0] + 9)
+                point = widget.cursorRect(cursor).center()
+                if widget is editor:
+                    QTest.mouseClick(widget.viewport(), Qt.MouseButton.LeftButton, pos=point)
+                    browser.assert_not_called()
+                modifier = Qt.KeyboardModifier.ControlModifier if widget is editor else Qt.KeyboardModifier.NoModifier
+                QTest.mouseClick(widget.viewport(), Qt.MouseButton.LeftButton, modifier, pos=point)
+                assert browser.call_args.args == (QUrl(url),)
+            assert browser.call_count == 2
+    finally:
+        editor.deleteLater()
+        scroll.deleteLater()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 def test_appearance(window):
@@ -378,6 +441,7 @@ if __name__ == "__main__":
             test_default_and_legacy()
             test_existing_theme_named_xcode()
             test_caption_colors()
+            test_draft_spelling_and_links()
             assert History().messages(1)[0]["created"] is None
             window = app.StoneBot()
             window.show()

@@ -37,6 +37,10 @@ class History:
                     path TEXT NOT NULL,
                     UNIQUE(project_id, path)
                 );
+                CREATE TABLE IF NOT EXISTS project_sequence (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1), last_id INTEGER NOT NULL
+                );
+                INSERT OR IGNORE INTO project_sequence SELECT 1, COALESCE(MAX(id), 0) FROM project;
             """)
             columns = {row[1] for row in conn.execute("PRAGMA table_info(message)")}
             if "created" not in columns:
@@ -113,11 +117,20 @@ class History:
             raise ValueError("Escribe un nombre para el proyecto.")
         with self.connect() as conn:
             if project_id is None:
-                return conn.execute("INSERT INTO project(name, description, instructions, folder) VALUES (?, ?, ?, ?)",
-                                    (name, description, instructions, folder)).lastrowid
-            conn.execute("UPDATE project SET name=?, description=?, instructions=?, folder=? WHERE id=?",
-                         (name, description, instructions, folder, project_id))
+                # Las correcciones guardadas usan el ID del proyecto y no deben heredarse al volver a crearlo.
+                project_id, = conn.execute("""UPDATE project_sequence SET last_id =
+                    MAX(last_id, (SELECT COALESCE(MAX(id), 0) FROM project)) + 1
+                    WHERE singleton = 1 RETURNING last_id""").fetchone()
+                conn.execute("INSERT INTO project(id, name, description, instructions, folder) VALUES (?, ?, ?, ?, ?)",
+                             (project_id, name, description, instructions, folder))
+            else:
+                conn.execute("UPDATE project SET name=?, description=?, instructions=?, folder=? WHERE id=?",
+                             (name, description, instructions, folder, project_id))
             return project_id
+
+    def delete_project(self, project_id):
+        with self.connect() as conn:
+            conn.execute("DELETE FROM project WHERE id=?", (project_id,))
 
     def pin_project(self, project_id, pinned):
         with self.connect() as conn:

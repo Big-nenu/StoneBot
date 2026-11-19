@@ -54,6 +54,11 @@ PROSE_STYLE = """
 """
 
 
+def open_web_link(url):
+    if url.isValid() and url.scheme() in ("http", "https") and url.host():
+        QDesktopServices.openUrl(url)
+
+
 def response_parts(source):
     env = {}
     pending, opened = [], []
@@ -81,7 +86,7 @@ class ResponseText(QTextBrowser):
         super().__init__()
         self.scroll_area = scroll_area
         self.setOpenLinks(False)
-        self.anchorClicked.connect(self.open_link)
+        self.anchorClicked.connect(open_web_link)
         self.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded if code else Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -93,10 +98,6 @@ class ResponseText(QTextBrowser):
 
     def loadResource(self, kind, url):
         return None
-
-    def open_link(self, url):
-        if url.scheme() in ("http", "https") and url.host():
-            QDesktopServices.openUrl(url)
 
     def fit_height(self, *_):
         bar = self.horizontalScrollBar()

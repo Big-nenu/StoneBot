@@ -296,6 +296,32 @@ def test_projects():
         related = task_results({"objective": "¿Dónde me quedé?", "project_id": pid + 1})
         assert related[0]["mismo_encargo"] == 0 and "read_file" in related[0]["methods"]
         assert not task_results({"objective": "Busca el pronóstico del clima"})
+
+        history = History()
+        attached = history.append(None, "user", "Conversación que debe conservarse", project_id=pid)
+        path = history.path.parent / "original.md"
+        path.write_text("Documento original", encoding="utf-8")
+        history.link_project_document(pid, str(path))
+        window.show_project(pid)
+        options, = (button for button in window.project_page.findChildren(QPushButton)
+                    if button.menu() and button.isVisible())
+        remove = options.menu().actions()[-1]
+        assert remove.text() == "Eliminar proyecto…"
+
+        def confirm(role):
+            dialog = QApplication.activeModalWidget()
+            assert isinstance(dialog, QMessageBox)
+            next(button for button in dialog.buttons() if dialog.buttonRole(button) == role).click()
+
+        QTimer.singleShot(0, lambda: confirm(QMessageBox.ButtonRole.RejectRole))
+        remove.trigger()
+        assert history.chat_project(attached)["id"] == pid
+        QTimer.singleShot(0, lambda: confirm(QMessageBox.ButtonRole.DestructiveRole))
+        remove.trigger()
+        assert history.projects() == [] and not history.project_documents(pid)
+        assert history.chat_project(attached) is None and history.messages(attached)[0]["content"].startswith("Conversación")
+        assert path.read_text(encoding="utf-8") == "Documento original"
+        assert History().save_project("Atom-Fusion", "", "", "") > pid
     finally:
         window.close()
         window.deleteLater()

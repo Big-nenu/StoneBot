@@ -312,6 +312,8 @@ Las conversaciones se guardan en `%USERPROFILE%\.stonebot\conversations.sqlite3`
 
 La columna izquierda mantiene los iconos visibles con la barra expandida o recogida. Al expandirla aparecen los nombres de las acciones, los proyectos desplegables con sus conversaciones y los chats recientes. El icono **Proyectos** abre la lista de proyectos locales. Puedes crear uno con nombre, descripción, instrucciones y una carpeta opcional, fijarlo arriba y abrir su ficha desde el menú de su fila. Para asociar un chat existente, usa **Mover a proyecto…** en su menú.
 
+El menú **⋯** de la ficha permite editar, fijar o eliminar el proyecto. También puedes eliminarlo desde el menú de su fila en la barra izquierda. Al confirmar, los chats pasan a **Recientes** y los archivos originales siguen en su carpeta.
+
 Cada ficha incluye un **Punto de continuidad** editable para recordar dónde te quedaste y qué sigue. Puedes escribirlo a mano o decir «Guarda el resumen» tras completar una tarea en ese proyecto. Los chats del proyecto reciben la nota como contexto anterior, además de las instrucciones y la carpeta vinculada. Los permisos MCP se aplican según su configuración.
 
 En **Documentos → Vincular archivo…** puedes añadir un PDF, un README u otro archivo compatible. En cualquier chat de ese proyecto, abre **+ → Usar documento del proyecto…**, elige el archivo y envía tu pregunta. StoneBot lee la versión que esté guardada en ese momento y muestra el nombre del documento consultado. Ese turno se procesa en Ollama local como una consulta de adjuntos. Si mueves el archivo, vuelve a vincularlo desde su nueva ubicación. **Desvincular** quita el acceso desde el proyecto y conserva el archivo original.
@@ -321,6 +323,10 @@ Queda pendiente la prueba manual con un documento del usuario y Ollama.
 Los mensajes con hora registrada la muestran en formato local. Las respuestas muestran Markdown con títulos, listas, enlaces HTTP(S) y expresiones matemáticas sencillas en línea. Cada bloque de código tiene su lenguaje, resaltado cuando el lenguaje es compatible y un botón **Copiar** que copia solo ese bloque.
 
 En el cuadro de mensaje, **Ampliar editor** y **Reducir editor** ajustan la altura. El texto largo se desplaza dentro del editor y deja **+** y **Enviar** en la fila inferior. Al enviar, el editor vuelve al tamaño compacto.
+
+El corrector local de Windows subraya posibles faltas en el borrador cuando hay un diccionario de español disponible. Haz clic derecho sobre una palabra marcada para ver sus sugerencias y elegir una. Los enlaces web se resaltan al escribir. Ábrelos con **Ctrl + clic** en el borrador o con un clic en el mensaje enviado.
+
+El selector junto a **Enviar** muestra el modo de razonamiento. **Automático** usa el ajuste habitual, **Rápido** pide una respuesta directa y **Activado** pide al modelo razonar antes de responder.
 
 Al pasar el cursor sobre una conversación, **⋯** abre las acciones **Renombrar** y **Eliminar**. También puedes abrir ese menú con clic derecho o con **Mayús + F10** sobre la fila seleccionada.
 
@@ -349,7 +355,9 @@ Esta etapa admite herramientas MCP de solo lectura y se inicia desde el chat. Ad
 
 ### Adjuntos del chat
 
-Pulsa **+ → Adjuntar archivos** junto al cuadro de mensaje y selecciona los archivos juntos. La lista se puede desplazar y permite quitarlos antes de enviar. El submenú **+ → MCP** permite activar o desactivar servidores configurados usando la misma configuración que el panel **MCP** de la cabecera. El menú también contiene Memoria y Skills. Se admiten imágenes PNG, JPG/JPEG y WebP, PDF y archivos TXT, MD, CSV, TSV, LOG y JSON en UTF-8 o UTF-16 con BOM.
+Pulsa **+ → Adjuntar archivos** junto al cuadro de mensaje y selecciona los archivos juntos. La lista se puede desplazar y permite quitarlos antes de enviar. El submenú **+ → MCP** permite activar o desactivar servidores configurados usando la misma configuración que el panel **MCP** de la cabecera. El menú también contiene Memoria y Skills. Se admiten imágenes PNG, JPG/JPEG y WebP, PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx) y archivos TXT, MD, CSV, TSV, LOG y JSON en UTF-8 o UTF-16 con BOM.
+
+Los archivos de Office se leen localmente. Word aporta el texto de párrafos y tablas del cuerpo, Excel indica hojas y celdas y PowerPoint identifica las diapositivas con texto. Excel usa los resultados que están guardados junto a las fórmulas y avisa cuando un resultado falta. Los adjuntos de Office se abren para lectura. Si necesitas que StoneBot analice un gráfico, una imagen o el diseño de una página, exporta esa parte a PDF. El lector rechaza archivos de más de 64 MB o con más de 240 000 caracteres de texto y referencias extraídos.
 
 Las imágenes de hasta 16 megapíxeles se redimensionan para Ollama y se envían al modelo local `nemotron-3.5-bolt:e4b`. StoneBot comprueba que Ollama anuncie capacidad visual y avisa si el modelo carece de ella. En un PDF mixto extrae el texto disponible por página y renderiza las páginas sin texto como imágenes para ese mismo modelo.
 
