@@ -20,17 +20,25 @@ TEXT_SUFFIXES = {".txt", ".md", ".csv", ".tsv", ".log", ".json"}
 FILE_FILTER = "Archivos compatibles (" + " ".join(f"*{ext}" for ext in sorted(IMAGE_SUFFIXES.keys() | TEXT_SUFFIXES | {".pdf"})) + ")"
 
 
-def read_attachment(filename, page_range=None):
+def attachment_path(filename):
     path = Path(filename)
     if not path.is_absolute() or str(path).startswith(("\\\\", "//")):
         raise ValueError("Selecciona un archivo local con una ruta absoluta.")
     path = Path(os.path.abspath(path))
     safe = Path(check_path(path))
-    if path != safe or not safe.is_file():
+    if path != safe:
         raise ValueError("El archivo debe ser local, regular y sin redirecciones.")
+    if not safe.is_file():
+        raise ValueError("El archivo ya no está disponible en esa ubicación.")
     suffix = safe.suffix.lower()
     if suffix not in IMAGE_SUFFIXES and suffix not in TEXT_SUFFIXES and suffix != ".pdf":
         raise ValueError("Formato de adjunto no compatible.")
+    return safe
+
+
+def read_attachment(filename, page_range=None):
+    safe = attachment_path(filename)
+    suffix = safe.suffix.lower()
     name = " ".join(safe.name.split())
     if suffix == ".pdf":
         return {"name": name, **pdf_pages(safe, page_range)}
@@ -132,11 +140,17 @@ def pdf_pages(path, page_range):
 
 
 def attachment_label(file):
+    if "project_document" in file:
+        return f"{file['name']} · documento del proyecto"
     if "pages" in file and len(file["pages"]) != file["page_count"]:
         first, last = file["pages"][0]["number"], file["pages"][-1]["number"]
         span = str(first) if first == last else f"{first}–{last}"
         return f"{file['name']} · págs. {span} de {file['page_count']}"
     return file["name"]
+
+
+def has_chat_attachments(messages):
+    return any("project_document" not in file for message in messages for file in message.get("attachments", ()))
 
 
 def attachment_batches(messages):

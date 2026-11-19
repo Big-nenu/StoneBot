@@ -31,6 +31,12 @@ class History:
                     instructions TEXT NOT NULL, folder TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0,
                     continuity TEXT NOT NULL DEFAULT ''
                 );
+                CREATE TABLE IF NOT EXISTS project_document (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+                    path TEXT NOT NULL,
+                    UNIQUE(project_id, path)
+                );
             """)
             columns = {row[1] for row in conn.execute("PRAGMA table_info(message)")}
             if "created" not in columns:
@@ -122,6 +128,26 @@ class History:
             updated = conn.execute("UPDATE project SET continuity=? WHERE id=?", (text.strip(), project_id))
             if not updated.rowcount:
                 raise ValueError("El proyecto ya no está disponible.")
+
+    def project_documents(self, project_id):
+        with self.connect() as conn:
+            return conn.execute("SELECT id, path FROM project_document WHERE project_id=? ORDER BY id",
+                                (project_id,)).fetchall()
+
+    def link_project_document(self, project_id, path):
+        with self.connect() as conn:
+            conn.execute("INSERT INTO project_document(project_id, path) VALUES (?, ?) "
+                         "ON CONFLICT(project_id, path) DO NOTHING", (project_id, path))
+
+    def unlink_project_document(self, project_id, document_id):
+        with self.connect() as conn:
+            conn.execute("DELETE FROM project_document WHERE project_id=? AND id=?", (project_id, document_id))
+
+    def project_document_path(self, project_id, document_id):
+        with self.connect() as conn:
+            row = conn.execute("SELECT path FROM project_document WHERE project_id=? AND id=?",
+                               (project_id, document_id)).fetchone()
+            return row[0] if row else None
 
     def project_chats(self):
         with self.connect() as conn:

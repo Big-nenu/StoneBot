@@ -1,4 +1,6 @@
 """Vistas de proyectos y diálogo de edición."""
+from pathlib import Path
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import (
@@ -77,6 +79,8 @@ class ProjectPage(QScrollArea):
     back = Signal()
     edited = Signal(int)
     continuity_requested = Signal(int)
+    document_requested = Signal(int)
+    document_unlinked = Signal(int, int)
     pinned = Signal(int, bool)
     chat_started = Signal(int)
     chat_opened = Signal(int)
@@ -156,7 +160,7 @@ class ProjectPage(QScrollArea):
         self.content.addStretch()
         self.verticalScrollBar().setValue(0)
 
-    def show_project(self, project, chats):
+    def show_project(self, project, chats, documents):
         self.clear_page()
         pid = project["id"]
         self.content.addWidget(self.action("‹ Proyectos", self.back.emit), alignment=Qt.AlignmentFlag.AlignLeft)
@@ -184,6 +188,27 @@ class ProjectPage(QScrollArea):
             preview = preview[:579].rstrip() + "…"
         summary.addWidget(label(preview or "Guarda aquí en qué te quedaste y qué sigue."))
         self.content.addWidget(continuity)
+        documents_card = QWidget()
+        documents_card.setObjectName("projectCard")
+        document_list = QVBoxLayout(documents_card)
+        document_list.setContentsMargins(14, 12, 14, 12)
+        row = QHBoxLayout()
+        row.addWidget(label("Documentos", "projectSection"), 1)
+        row.addWidget(self.action("Vincular archivo…", lambda: self.document_requested.emit(pid)))
+        document_list.addLayout(row)
+        if not documents:
+            document_list.addWidget(label("Vincula un archivo para consultarlo desde los chats del proyecto."))
+        for document_id, path in documents:
+            row = QHBoxLayout()
+            name = label(Path(path).name)
+            name.setToolTip(path)
+            row.addWidget(name, 1)
+            unlink = self.action("Desvincular",
+                                 lambda _checked=False, did=document_id: self.document_unlinked.emit(pid, did))
+            unlink.setAccessibleName(f"Desvincular {name.text()}")
+            row.addWidget(unlink)
+            document_list.addLayout(row)
+        self.content.addWidget(documents_card)
         context = QWidget()
         context.setObjectName("projectCard")
         details = QVBoxLayout(context)

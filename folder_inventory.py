@@ -17,6 +17,14 @@ RANKING = re.compile(
 PATH = re.compile(r'(?:^|\s)(?:"([A-Za-z]:[\\/][^"\r\n]+)"|([A-Za-z]:[\\/][^\r\n]+)$)')
 DIRECT = re.compile(r"\b(?:solo archivos directos|sin subcarpetas|excluye las subcarpetas)\b", re.I)
 RECURSIVE = re.compile(r"\b(?:incluy\w*|revisa|con|tambi[eé]n)\s+(?:(?:las|sus)\s+)?subcarpetas\b", re.I)
+HIDDEN = re.compile(r"\b(sin|excluy\w*|omit\w*|no incluy\w*|con|incluy\w*)\s+"
+                    r"(?:(?:los|las|archivos|carpetas|subcarpetas|y)\s+)*ocult[oa]s\b", re.I)
+# shortcut: el aviso en lenguaje natural cubre el conteo de ocultos; ampliar al verificar otros casos.
+HIDDEN_MISTAKE = re.compile(
+    r"^\s*(?:(?:el|ese|este|tu)\s+(?:conteo|resultado|recuento|revisi[oó]n)\s+)?"
+    r"(?:inclu[ií]a|incluy[oó]|incluiste|contaste)\s+"
+    r"(?:(?:los|las|archivos|carpetas|subcarpetas|y)\s+)*ocult[oa]s\b", re.I,
+)
 DOWNLOADS_REPLY = re.compile(r"^\s*(?:(?:en|es)\s+)?(?:(?:mi|la)\s+)?(?:carpeta\s+)?(?:Descargas|Downloads)[.!]?\s*$", re.I)
 
 
@@ -56,7 +64,15 @@ def uses_mcp(text):
 
 
 def inventory_followup(text):
-    return bool(PATH.search(text) or DIRECT.search(text) or RECURSIVE.search(text) or DOWNLOADS_REPLY.fullmatch(text))
+    return bool(PATH.search(text) or DIRECT.search(text) or RECURSIVE.search(text) or HIDDEN.search(text)
+                or DOWNLOADS_REPLY.fullmatch(text))
+
+
+def hidden_filter(text):
+    decision = None
+    for match in HIDDEN.finditer(text):
+        decision = match[1].casefold().startswith(("sin", "excluy", "omit", "no "))
+    return decision
 
 
 def ranking_request(objective, user_input, previous_folder="", previous_recursive=None):
@@ -80,7 +96,7 @@ def ranking_request(objective, user_input, previous_folder="", previous_recursiv
     return folder, count, recursive
 
 
-def largest_files(folder, count, recursive, check_pause):
+def largest_files(folder, count, recursive, check_pause, *, exclude_hidden=False):
     root = Path(folder)
     if not root.is_absolute() or str(root).startswith(("\\\\", "//")):
         raise ValueError("Indica una ruta absoluta de una carpeta local.")
@@ -105,6 +121,9 @@ def largest_files(folder, count, recursive, check_pause):
                     check_pause()
                     try:
                         info = entry.stat(follow_symlinks=False)
+                        if exclude_hidden and (entry.name.startswith(".") or
+                                               getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_HIDDEN):
+                            continue
                         redirected = getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
                         if redirected or stat.S_ISLNK(info.st_mode):
                             omit(entry.path)

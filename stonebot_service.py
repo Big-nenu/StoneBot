@@ -222,6 +222,35 @@ def integrate_experience(engine, observation_id):
 MEMORY_TOOLS = {tool.__name__: tool for tool in (query_memory, inject_memory, bridge_memory, query_conclusions)}
 
 
+@_locked
+def list_memories():
+    try:
+        engine = get_memory()
+    except FileNotFoundError:
+        return []
+    return [(archived, fact_id, content) for archived in (False, True)
+            for fact_id, content, _, _ in engine.list_facts(archived=archived)]
+
+
+@_locked
+def change_memory(memory, new_content=None):
+    archived, fact_id, expected = memory
+    engine = get_memory()
+    if not any(fid == fact_id and content == expected for fid, content, _, _ in engine.list_facts(archived=archived)):
+        raise ValueError("El recuerdo cambió. Vuelve a elegirlo en la lista.")
+    if new_content is None:
+        result = engine.forget(fact_id, archived=archived)
+        if result["status"] == "deleted":
+            return None
+    else:
+        result = engine.update_memory(fact_id, _memory_text(new_content), archived=archived)
+        if result["status"] == "updated":
+            return False, result["id"], result["new"]
+        if result["status"] == "error":
+            raise ValueError("No pude guardar la corrección. Comprueba que Ollama esté disponible e inténtalo otra vez.")
+    raise ValueError(result["message"])
+
+
 # ----------------------------------------------------------------------
 # Operaciones explícitas (comandos /sueno y /integrar, y la línea de comandos)
 # ----------------------------------------------------------------------

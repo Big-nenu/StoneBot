@@ -190,6 +190,8 @@ El paquete local `stonebot_engine/` contiene la copia de `mem_engine.py`, `llm.p
 
 El puente presenta conexiones semánticas durante la consulta. El sueño manual y el automático mantienen las relaciones persistentes mediante el motor local.
 
+Abre **+ → Memoria → Ver y corregir recuerdos…** para buscar por palabras, leer un recuerdo completo y elegir **Corregir** o **Quitar**. Corregir actualiza el recuerdo que StoneBot consultará después. Quitar lo retira de las consultas y lo deja en la papelera interna del motor.
+
 ### Servicio de memoria (`stonebot_service.py`)
 
 `stonebot_service.py` abre y cierra el motor local de `stonebot_engine` para `memoria.db`. Las herramientas del chat (`query_memory`, `inject_memory`, `bridge_memory`, `query_conclusions`), `/sueno`, `/integrar` y los comandos de la CLI que usan esa base pasan por el servicio.
@@ -312,6 +314,10 @@ La columna izquierda mantiene los iconos visibles con la barra expandida o recog
 
 Cada ficha incluye un **Punto de continuidad** editable para recordar dónde te quedaste y qué sigue. Puedes escribirlo a mano o decir «Guarda el resumen» tras completar una tarea en ese proyecto. Los chats del proyecto reciben la nota como contexto anterior, además de las instrucciones y la carpeta vinculada. Los permisos MCP se aplican según su configuración.
 
+En **Documentos → Vincular archivo…** puedes añadir un PDF, un README u otro archivo compatible. En cualquier chat de ese proyecto, abre **+ → Usar documento del proyecto…**, elige el archivo y envía tu pregunta. StoneBot lee la versión que esté guardada en ese momento y muestra el nombre del documento consultado. Ese turno se procesa en Ollama local como una consulta de adjuntos. Si mueves el archivo, vuelve a vincularlo desde su nueva ubicación. **Desvincular** quita el acceso desde el proyecto y conserva el archivo original.
+
+Queda pendiente la prueba manual con un documento del usuario y Ollama.
+
 Los mensajes con hora registrada la muestran en formato local. Las respuestas muestran Markdown con títulos, listas, enlaces HTTP(S) y expresiones matemáticas sencillas en línea. Cada bloque de código tiene su lenguaje, resaltado cuando el lenguaje es compatible y un botón **Copiar** que copia solo ese bloque.
 
 En el cuadro de mensaje, **Ampliar editor** y **Reducir editor** ajustan la altura. El texto largo se desplaza dentro del editor y deja **+** y **Enviar** en la fila inferior. Al enviar, el editor vuelve al tamaño compacto.
@@ -331,6 +337,8 @@ En un chat sin adjuntos, pide un encargo de lectura con varios pasos en lenguaje
 - StoneBot guarda automáticamente el resultado de estas clasificaciones en su base de experiencias y busca ejecuciones de la misma carpeta, alcance y cantidad de resultados antes de elegir el método. **Actividad** muestra las experiencias recuperadas y el método elegido. Si la última ejecución verificada usó Desktop Commander, StoneBot puede repetir ese método cuando estén autorizadas sus lecturas. Ante resultados parciales, errores o falta de evidencia, usa el recorrido local. La experiencia guarda una huella del alcance y el número de entradas omitidas cuando se conoce.
 - Si la tarea espera un dato, reabre el mismo chat y responde con el dato, por ejemplo la ruta absoluta. La tarea recupera su objetivo y los resultados guardados.
 - **Actividad** muestra el estado y los pasos registrados. **Pausar** deja terminar la operación actual y detiene el siguiente paso. Usa `/reanudar` para retomar una tarea pausada o interrumpida, o `/cancelar` para cerrarla. Tras un cierre inesperado, un paso sin resultado queda marcado como incierto.
+- Junto a **Actividad**, usa **Guardar corrección…** después de recibir el resultado de una tarea. Anota qué salió mal, qué prefieres y cómo corregirlo. StoneBot consulta la corrección al preparar otro encargo con el mismo objetivo o una revisión parecida dentro del mismo proyecto.
+- En una clasificación por tamaño, también puedes decir «Ese conteo incluía carpetas ocultas» para abrir el formulario con una propuesta. Si confirmas **Omitir los ocultos**, las próximas clasificaciones locales de esa carpeta en el mismo proyecto los dejarán fuera. Puedes pedir «incluye carpetas ocultas» para una consulta concreta. **Actividad** muestra cuando se aplicó la corrección guardada.
 - El historial local conserva el objetivo, el estado y los resultados acotados de las lecturas de la tarea más reciente de cada chat. Se reutiliza una lectura idéntica durante la tarea. Para volver a consultar datos que hayan cambiado, inicia otra. Los mensajes anteriores siguen en la conversación. Usa conversaciones sin tarea para editar y regenerar.
 
 **Qué significa Completada.** StoneBot revisa si las lecturas respaldan el objetivo y las aclaraciones. Un recorte, páginas pendientes, una lectura sin resultado o un presupuesto agotado pueden dejar el encargo pendiente. `/reanudar` conserva las lecturas y abre otro turno. Si la evidencia acumulada cubre el objetivo, la tarea puede completarse. Para una clasificación grande, usa una fuente que pueda demostrar que calculó sobre todo el conjunto, o comprueba lotes con alcance explícito.

@@ -724,9 +724,13 @@ class StoneBotEngine:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.timestamp()
 
-    def list_facts(self, namespace="default"):
+    def list_facts(self, namespace="default", *, archived=False):
         """Recuerdos activos como (id, contenido, energia, fijo): fijos primero y luego por energia."""
         with closing(sqlite3.connect(self.db_path)) as conn:
+            if archived:
+                return [(fid, content, float(energy), False) for fid, content, energy in conn.execute(
+                    "SELECT id, content, COALESCE(energy, 0) FROM archived_facts WHERE namespace=? "
+                    "AND COALESCE(reason, '') != 'contradiccion' ORDER BY id DESC", (namespace,))]
             rows = conn.execute(
                 "SELECT id, content, COALESCE(energy, 0), COALESCE(pinned, 0) FROM facts WHERE namespace=? "
                 "ORDER BY COALESCE(pinned,0) DESC, energy DESC", (namespace,)).fetchall()
@@ -753,7 +757,7 @@ class StoneBotEngine:
             removed = cur.rowcount
         return {"status": "deleted", "id": fid, "content": content, "where": "biblioteca", "archived_removed": removed}
 
-    def forget(self, fact_id_or_text, namespace="default"):
+    def forget(self, fact_id_or_text, namespace="default", *, archived=False):
         """Olvida UN recuerdo, por ID (numero) o por texto (igual, o casi igual por similitud).
 
         Devuelve un dict con 'status':
@@ -768,6 +772,18 @@ class StoneBotEngine:
             key = int(key.strip())
         if isinstance(key, bool) or not isinstance(key, (int, str)):
             return {"status": "error", "message": "forget necesita un ID (numero) o el texto del recuerdo."}
+
+        if archived:
+            with closing(sqlite3.connect(self.db_path)) as conn, conn:
+                row = conn.execute("SELECT content, energy, embedding FROM archived_facts WHERE id=? AND namespace=?",
+                                   (key, namespace)).fetchone()
+                if row is None:
+                    return {"status": "not_found", "message": "El recuerdo archivado ya no está disponible."}
+                content, energy, embedding = row
+                self._to_trash(conn, namespace, content, energy, embedding, "olvidado")
+                removed = conn.execute("DELETE FROM archived_facts WHERE namespace=? AND content=?",
+                                       (namespace, content)).rowcount
+            return {"status": "deleted", "id": key, "content": content, "where": "sotano", "archived_removed": removed}
 
         if isinstance(key, int):
             with closing(sqlite3.connect(self.db_path)) as conn:
@@ -807,7 +823,7 @@ class StoneBotEngine:
                     "candidates": [(c[0], c[1]) for c in candidates]}
         return self._delete_fact(candidates[0][0], candidates[0][1], namespace)
 
-    def update_memory(self, fact_id, new_content, namespace="default"):
+    def update_memory(self, fact_id, new_content, namespace="default", *, archived=False):
         """Corrige el texto de un recuerdo por ID. Conserva su energia y si es fijo; recalcula su vector.
 
         Devuelve un dict con 'status': 'updated' (trae 'id', 'old', 'new' y 'similar_to' si ya hay otro casi igual),
@@ -820,23 +836,33 @@ class StoneBotEngine:
         new_content = (new_content or "").strip() if isinstance(new_content, str) else ""
         if not new_content:
             return {"status": "error", "message": "new_content no puede estar vacio."}
+        table = "archived_facts" if archived else "facts"
         with closing(sqlite3.connect(self.db_path)) as conn:
-            row = conn.execute("SELECT content FROM facts WHERE id=? AND namespace=?", (fid, namespace)).fetchone()
+            row = conn.execute(f"SELECT content, energy, embedding FROM {table} WHERE id=? AND namespace=?",
+                               (fid, namespace)).fetchone()
         if row is None:
             return {"status": "not_found", "message": f"No hay un recuerdo activo con ID {fid} en '{namespace}'."}
         vec = self.get_embedding(new_content)
         if vec is None:
             return {"status": "error", "message": "No se obtuvo embedding; el recuerdo no se modifico."}
         ids, sims = self._sims(vec, namespace)
-        twins = [i for i, _s in self._top(ids, sims, 3, DUPLICATE_SIM) if i != fid]
+        twins = [i for i, _s in self._top(ids, sims, 3, DUPLICATE_SIM) if archived or i != fid]
+        content, energy, old_embedding = row
         with closing(sqlite3.connect(self.db_path)) as conn, conn:
-            old = conn.execute("SELECT energy, embedding FROM facts WHERE id=?", (fid,)).fetchone()
-            if old and self._norm_text(row[0]) != self._norm_text(new_content):  # el texto viejo queda en la papelera como 'reemplazado'
-                self._to_trash(conn, namespace, row[0], old[0], old[1], "reemplazado", fid)
-            conn.execute("UPDATE facts SET content=?, embedding=?, last_used=?, reasoned=0 WHERE id=?", (new_content, json.dumps(vec), time.time(), fid))
-            conn.execute("DELETE FROM fact_topics WHERE fact_id=?", (fid,))  # el sueño lo vuelve a clasificar
-            conn.execute("DELETE FROM links WHERE fact_a=? OR fact_b=?", (fid, fid))  # y a enlazar
-        return {"status": "updated", "id": fid, "old": row[0], "new": new_content, "similar_to": twins[0] if twins else None}
+            if archived:
+                fid = conn.execute("INSERT INTO facts (namespace, content, energy, embedding, last_used) "
+                                   "VALUES (?, ?, ?, ?, ?)",
+                                   (namespace, new_content, max(0.5, energy or 0), json.dumps(vec), time.time())).lastrowid
+            else:
+                conn.execute("UPDATE facts SET content=?, embedding=?, last_used=?, reasoned=0 WHERE id=?",
+                             (new_content, json.dumps(vec), time.time(), fid))
+                conn.execute("DELETE FROM fact_topics WHERE fact_id=?", (fid,))
+                conn.execute("DELETE FROM links WHERE fact_a=? OR fact_b=?", (fid, fid))
+            if archived or self._norm_text(content) != self._norm_text(new_content):
+                conn.execute("DELETE FROM archived_facts WHERE namespace=? AND content=?", (namespace, content))
+            if self._norm_text(content) != self._norm_text(new_content):
+                self._to_trash(conn, namespace, content, energy, old_embedding, "reemplazado", fid)
+        return {"status": "updated", "id": fid, "old": content, "new": new_content, "similar_to": twins[0] if twins else None}
 
     # ------------------------------------------------------------------
     # Papelera (trash): lo olvidado y lo reemplazado. Solo informa; nunca resucita sola.

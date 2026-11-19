@@ -165,7 +165,8 @@ def test_window(root):
     client = SimpleNamespace(show=lambda model: SimpleNamespace(capabilities=["vision"]), chat=respond)
     try:
         menu = window.attachments.add_button.menu()
-        attach, mcp, memory, _, skills, instructions = menu.actions()
+        attach, project_document, mcp, memory, _, skills, instructions = menu.actions()
+        assert not project_document.isVisible()
         assert attach.isEnabled() and mcp.isEnabled() and skills.isEnabled()
         with patch.object(app.SkillsDialog, "exec") as opened:
             skills.trigger()
@@ -312,6 +313,73 @@ def live(root):
     assert all(word in answer.casefold() for word in ("rojo", "azul", "cedro-742", "luna-531"))
 
 
+def test_project_documents(root):
+    window = app.StoneBot()
+    path = root / "notas.txt"
+    history = window.history
+    project = history.save_project("Proyecto con documentos", "", "", str(root))
+    other_project = history.save_project("Otro proyecto", "", "", "")
+    calls = []
+
+    def respond(**request):
+        calls.append(request)
+        return SimpleNamespace(message=SimpleNamespace(content="El documento respalda el código indicado.", tool_calls=[]))
+
+    client = SimpleNamespace(chat=respond)
+    try:
+        window.show_projects()
+        with patch.object(QFileDialog, "getOpenFileName", return_value=(str(path), "")):
+            window.project_page.document_requested.emit(project)
+            window.project_page.document_requested.emit(project)
+        [(document_id, saved_path)] = History().project_documents(project)
+        assert saved_path == str(path)
+
+        for code in ("LUNA-531", "ACTUALIZADO-842"):
+            path.write_text(code, encoding="utf-8")
+            window.new_project_chat(project)
+            assert window.project_document_action.isVisible()
+            with patch.object(app.QInputDialog, "getItem", return_value=(path.name, True)):
+                window.project_document_action.trigger()
+            window.message.setPlainText("¿Qué código dice el documento?")
+            pending = app.new_task("Encargo pendiente")
+            pending["status"] = "paused"
+            window.task = pending
+            with patch.object(window, "start_turn") as turn:
+                window.enviar()
+            turn.assert_called_once_with(task=None)
+            assert window.task is pending
+            messages = window.messages
+            assert messages[-1]["attachments"] == [{"name": path.name, "project_document": document_id}]
+            assert history.messages(window.chat_id)[0]["attachments"] == messages[-1]["attachments"]
+            context = {"project": window.project, "project_document_path": history.project_document_path}
+            with (patch.object(app, "Client", return_value=client),
+                  patch.object(app.Worker, "enabled_skills", return_value={})):
+                answer = asyncio.run(app.Worker(messages, **context).chat())
+                assert path.name in answer and code in calls[-1]["messages"][-1]["content"]
+                followup = [*messages, {"role": "assistant", "content": answer}, {"role": "user", "content": "Gracias"}]
+                asyncio.run(app.Worker(followup, **context).chat())
+                assert calls[-1]["tools"] and not any("attachments" in row for row in calls[-1]["messages"])
+                assert code not in calls[-1]["messages"][-1]["content"]
+
+        with patch.object(app.Worker, "enabled_skills", return_value={}):
+            for invalid_project in (other_project, project):
+                if invalid_project == project:
+                    window.project_page.document_unlinked.emit(project, document_id)
+                    assert path.is_file() and not history.project_documents(project)
+                worker = app.Worker(messages, project={"id": invalid_project},
+                                    project_document_path=history.project_document_path)
+                try:
+                    asyncio.run(worker.chat())
+                except app.TurnError as exc:
+                    assert "ya no está vinculado" in str(exc)
+                else:
+                    raise AssertionError("El documento debe pertenecer al proyecto del chat.")
+    finally:
+        window.close()
+        window.deleteLater()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 if __name__ == "__main__":
     qt = QApplication([])
     with tempfile.TemporaryDirectory() as directory:
@@ -323,4 +391,5 @@ if __name__ == "__main__":
             else:
                 test_files(root)
                 test_window(root)
+                test_project_documents(root)
     print("PASS: adjuntos de StoneBot.")

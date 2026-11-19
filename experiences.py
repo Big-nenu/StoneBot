@@ -45,6 +45,10 @@ def connect():
             db.execute("ALTER TABLE task_result ADD COLUMN family TEXT NOT NULL DEFAULT ''")
         db.execute("CREATE INDEX IF NOT EXISTS task_result_scope ON task_result(scope, id)")
         db.execute("CREATE INDEX IF NOT EXISTS task_result_family ON task_result(family, id)")
+        db.execute("""CREATE TABLE IF NOT EXISTS task_correction (
+            scope TEXT PRIMARY KEY, mistake TEXT NOT NULL, preference TEXT NOT NULL,
+            method TEXT NOT NULL, exclude_hidden INTEGER CHECK(exclude_hidden IN (0, 1))
+        )""")
         yield db
 
 
@@ -83,8 +87,41 @@ def task_results(task):
         )]
 
 
-def ranking_scope(folder, count, recursive):
+def correction_scope(task):
+    project_id = task.get("project_id")
+    if folder := task.get("inventory_folder"):
+        scope = ["clasificacion", project_id, os.path.normcase(os.path.abspath(folder))]
+    else:
+        objective = " ".join(task["objective"].casefold().split())
+        scope = ["encargo", project_id, (task_family(task) if project_id is not None else "") or objective]
+    return hashlib.sha256(json.dumps(scope).encode()).hexdigest()
+
+
+def task_correction(task):
+    with connect() as db:
+        row = db.execute("SELECT mistake, preference, method, exclude_hidden FROM task_correction WHERE scope=?",
+                         (correction_scope(task),)).fetchone()
+        return dict(row) if row else None
+
+
+def save_task_correction(task, mistake, preference, method, exclude_hidden=None):
+    mistake, preference, method = (value.strip() for value in (mistake, preference, method))
+    if not mistake or not method or any(len(value) > 600 for value in (mistake, preference, method)):
+        raise ValueError("Escribe qué salió mal y cómo corregirlo. Cada campo admite hasta 600 caracteres.")
+    if exclude_hidden is not None and (type(exclude_hidden) is not bool or not task.get("inventory_folder")):
+        raise ValueError("La opción de archivos ocultos requiere haber revisado una carpeta.")
+    with connect() as db:
+        db.execute("""INSERT INTO task_correction(scope, mistake, preference, method, exclude_hidden)
+            VALUES (?, ?, ?, ?, ?) ON CONFLICT(scope) DO UPDATE SET
+            mistake=excluded.mistake, preference=excluded.preference, method=excluded.method,
+            exclude_hidden=excluded.exclude_hidden""",
+                   (correction_scope(task), mistake, preference, method, exclude_hidden))
+
+
+def ranking_scope(folder, count, recursive, *, exclude_hidden=False):
     scope = [os.path.normcase(os.path.abspath(folder)), count, recursive]
+    if exclude_hidden:
+        scope.append("sin ocultos")
     return hashlib.sha256(json.dumps(scope).encode()).hexdigest()
 
 

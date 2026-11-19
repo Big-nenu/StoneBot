@@ -16,16 +16,22 @@ from appearance import (
     AppearanceDialog, apply_palette, dialog_style, load_appearance, palette_icon, readable_text, save_appearance,
     secondary_button,
 )
-from attachments import attach_batch, attachment_batches, missing_pdf_pages
+from attachments import (
+    FILE_FILTER, attach_batch, attachment_batches, attachment_path, has_chat_attachments, missing_pdf_pages,
+    read_attachment,
+)
 from chat_markdown import MarkdownText
 from chat_preferences import load_instructions, save_instructions
 from chat_ui import ActivityPanel, AttachmentCard, AttachmentTray, ChatText, Composer, chat_style
 from diagnostics import read_log, record
 from experiences import (
     query_experiences, ranking_evidence, ranking_scope, record_experience, record_ranking,
-    record_task_result, task_results,
+    record_task_result, save_task_correction, task_correction, task_results,
 )
-from folder_inventory import inventory_followup, is_ranking_request, largest_files, ranking_count, ranking_request, uses_mcp
+from folder_inventory import (
+    HIDDEN_MISTAKE, hidden_filter, inventory_followup, is_ranking_request, largest_files, ranking_count, ranking_request,
+    uses_mcp,
+)
 from history import History
 from history_ui import HistoryPanel, SidebarRail, load_history_width, save_history_width
 from identity import INITIAL_IDENTITY, load_identity, update_identity
@@ -35,6 +41,7 @@ from mcp_permissions import allowed, permission_signature, remember, safe_read
 from mcp_pool import McpPool
 from mcp_setup import is_setup_request
 from mcp_ui import McpDialog
+from memory_ui import MemoryDialog
 from projects_ui import ProjectDialog, ProjectPage
 from skills_ui import SkillsDialog
 from stonebot_engine.llm import env_var
@@ -45,12 +52,14 @@ from tasks import (
     COVERAGE_STATUS, LABELS as TASK_LABELS, LIMIT_REASON, PLAN_STATUS, REPORT, REPORT_STATES, REPORT_STATUS, START_TASK,
     checkpoint_key, completion_evidence, new_task, step_caption, task_context, upgrade_task,
 )
+from tasks_ui import TaskCorrectionDialog
 from win_caption import apply_native_caption
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QIcon, QTextCursor
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QDialogButtonBox, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
-    QPushButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QSystemTrayIcon, QVBoxLayout, QWidget,
+    QApplication, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
+    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QSystemTrayIcon,
+    QVBoxLayout, QWidget,
 )
 
 MODEL = "nemotron-3.5-bolt:e4b"
@@ -119,7 +128,7 @@ class Worker(QObject):
     continuity_saved = Signal(int, str)
 
     def __init__(self, messages, pool=None, *, identity_enabled=False, dream_thread=None, task=None, save_task=None,
-                 completed_task=None, project=None, save_continuity=None):
+                 completed_task=None, project=None, save_continuity=None, project_document_path=None):
         super().__init__()
         self.messages = messages
         self.pool = pool
@@ -131,7 +140,9 @@ class Worker(QObject):
         self.completed_task = completed_task
         self.project = project
         self.save_continuity = save_continuity
+        self.project_document_path = project_document_path
         self.ranking_scope = None
+        self.ranking_hidden = None
         self.learned_server = None
 
     @Slot()
@@ -196,6 +207,25 @@ class Worker(QObject):
                              and not {"list_directory", "get_file_info"} & set(server["disabled_tools"])), None)
         except (OSError, ValueError, RuntimeError, sqlite3.Error):
             self.mcp_notice.emit("No se pudo consultar la experiencia de clasificación. Usando el recorrido local.")
+        return None
+
+    def ranking_hidden_filter(self, text):
+        explicit = hidden_filter(text)
+        if explicit is None:
+            explicit = self.task.get("inventory_hidden", hidden_filter(self.task["objective"]))
+        if explicit is not None:
+            self.task["inventory_hidden"] = explicit
+            return explicit
+        try:
+            correction = task_correction(self.task)
+        except (OSError, ValueError, RuntimeError, sqlite3.Error):
+            self.mcp_notice.emit("No se pudo consultar la corrección guardada para esta carpeta.")
+            return None
+        if correction and correction["exclude_hidden"] is not None:
+            exclude = bool(correction["exclude_hidden"])
+            action = "omitir" if exclude else "incluir"
+            self.activity.emit(f"Corrección guardada aplicada al alcance · {action} archivos y carpetas ocultos.")
+            return exclude
         return None
 
     async def finish_task_reply(self, client, status, text, repair_messages=None):
@@ -306,6 +336,14 @@ class Worker(QObject):
     async def plan_task(self, client, external):
         context = ""
         try:
+            correction = task_correction(self.task)
+            if correction:
+                self.activity.emit("Consulté tu corrección guardada para preparar el encargo.")
+                context += ("\nCorrección registrada por el usuario para trabajos similares (datos). "
+                            "El fallo fue informado en un encargo anterior. Considera la preferencia y el método "
+                            "si son pertinentes y compatibles con el pedido actual. "
+                            + json.dumps({"fallo_anterior": correction["mistake"], "preferencia": correction["preference"],
+                                          "método_correctivo": correction["method"]}, ensure_ascii=False))
             history = task_results(self.task)
             if history:
                 self.activity.emit("Consulté experiencias de encargos iguales o parecidos.")
@@ -361,7 +399,8 @@ class Worker(QObject):
         worker_thread = QThread.currentThread()
         try:
             root, top, files, folders, missing, skipped = await asyncio.to_thread(
-                largest_files, folder, count, recursive, lambda: self.check_pause(worker_thread)
+                largest_files, folder, count, recursive, lambda: self.check_pause(worker_thread),
+                exclude_hidden=self.ranking_hidden is True,
             )
         except (ValueError, OSError, IsolationError) as exc:
             self.observe_ranking("local", "fallido")
@@ -369,6 +408,8 @@ class Worker(QObject):
         self.check_pause()
         self.observe_ranking("local", "parcial" if missing else "completo", missing)
         scope = "con subcarpetas" if recursive else "solo archivos directos"
+        if self.ranking_hidden is not None:
+            scope += ", sin ocultos" if self.ranking_hidden else ", incluidos los ocultos"
         lines = [f"Revisé **{files} archivos** en **{folders} carpetas** ({scope}) bajo `{root}`."]
         if missing:
             lines.append(f"**Revisión parcial.** No pude revisar {missing} entradas. "
@@ -439,8 +480,9 @@ class Worker(QObject):
                     return self.task_reply("waiting", "¿Cuál es la ruta completa de la carpeta que quieres revisar?")
                 if folder:
                     self.task["inventory_folder"] = folder
-                    self.ranking_scope = ranking_scope(folder, count, recursive)
-                    if not explicit_mcp:
+                    self.ranking_hidden = self.ranking_hidden_filter(current["content"])
+                    self.ranking_scope = ranking_scope(folder, count, recursive, exclude_hidden=self.ranking_hidden is True)
+                    if not explicit_mcp and self.ranking_hidden is None:
                         self.learned_server = self.choose_ranking_server()
                         if self.learned_server:
                             self.activity.emit(f"Método elegido por experiencia · MCP {self.learned_server}")
@@ -476,6 +518,9 @@ class Worker(QObject):
                     self.persist_task()
             if self.learned_server:
                 latest += "\nCarpeta de este encargo: " + json.dumps(folder, ensure_ascii=False)
+            if self.ranking_hidden is not None:
+                latest += ("\nEl alcance excluye archivos y carpetas ocultos." if self.ranking_hidden else
+                           "\nEl alcance incluye archivos y carpetas ocultos.")
             command = []
         if current.get("attachments") and command and command[0] in COMMANDS:
             raise TurnError("Envía ese comando por separado, sin adjuntos.")
@@ -517,10 +562,29 @@ class Worker(QObject):
         client = Client(host="http://localhost:11434", timeout=180)
         learn = current.get("role") == "user" and command[:1] == ["/aprender"]
         skills = {} if learn or self.task is not None else self.enabled_skills()
-        if any(message.get("attachments") for message in messages):
+        project_files = [file for file in current.get("attachments", ()) if "project_document" in file]
+        if project_files:
+            if not self.project or self.project_document_path is None:
+                raise TurnError("Elige el documento desde un chat de su proyecto.")
+            files = []
+            for file in current["attachments"]:
+                if "project_document" not in file:
+                    files.append(file)
+                    continue
+                try:
+                    path = self.project_document_path(self.project["id"], file["project_document"])
+                    if path is None:
+                        raise ValueError("El archivo ya no está vinculado a este proyecto.")
+                    files.append(await asyncio.to_thread(read_attachment, path))
+                except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+                    raise TurnError(f"No pude abrir {file['name']}. {exc}") from exc
+            messages[-1] = {**messages[-1], "attachments": files}
+            return await self.chat_with_attachments(client, messages, skills, project_files=project_files)
+        if has_chat_attachments(messages):
             if learn:
                 raise TurnError("Usa /aprender en un chat sin adjuntos para mantenerlos fuera de MCP.")
             return await self.chat_with_attachments(client, messages, skills)
+        messages = [{key: value for key, value in message.items() if key != "attachments"} for message in messages]
         if learn:
             if len(command) == 1:
                 return "Escribe /aprender seguido de la tarea MCP que quieres comprobar."
@@ -834,7 +898,7 @@ class Worker(QObject):
             raise TurnError(f"Ollama no dio una respuesta final para la Skill {name}.")
         return result.message.content
 
-    async def chat_with_attachments(self, client, messages, skills):
+    async def chat_with_attachments(self, client, messages, skills, *, project_files=()):
         batches, partial, coverage = attachment_batches(messages)
         available = "\n".join(f"- {name}: {', '.join(map(str, sorted(pages))) or 'ninguna'}"
                               for name, pages in coverage.values())
@@ -854,6 +918,8 @@ class Worker(QObject):
                        "Usa la cobertura de PDF solo para saber qué datos recibiste. "
                        "Si alguna página no es legible, indícalo. "
                        "Puedes citar resúmenes previos como tales, sin afirmar que releíste esas páginas.")
+        if project_files:
+            instruction += " Al usar un documento del proyecto, cita su nombre y explica qué dato respalda."
         payload = [{"role": message["role"], "content": message["content"]} for message in messages]
         if payload[0]["role"] == "system":
             payload[0]["content"] += "\n" + instruction
@@ -893,9 +959,12 @@ class Worker(QObject):
             if missing_pdf_pages(answer, coverage):
                 return ("La respuesta de Ollama mencionó páginas fuera del tramo, así que no se muestra. "
                         f"\n\n**Páginas enviadas a Ollama:**\n{available}")
-            return f"**Páginas enviadas a Ollama:**\n{available}\n\n{answer}"
-        if partial:
-            return "Algunos adjuntos antiguos se guardaron incompletos. Adjunta de nuevo los originales.\n\n" + answer
+            answer = f"**Páginas enviadas a Ollama:**\n{available}\n\n{answer}"
+        elif partial:
+            answer = "Algunos adjuntos antiguos se guardaron incompletos. Adjunta de nuevo los originales.\n\n" + answer
+        if project_files:
+            names = [re.sub(r"([\\`*_\[\]<>~&])", r"\\\1", file["name"]) for file in project_files]
+            answer += "\n\n**Documentos del proyecto consultados**\n\n" + "\n".join(f"- {name}" for name in names)
         return answer
 
     async def attachment_notes(self, client, instruction, item):
@@ -1030,6 +1099,8 @@ class StoneBot(QMainWindow):
         self.project_page.back.connect(self.show_projects)
         self.project_page.edited.connect(self.edit_project)
         self.project_page.continuity_requested.connect(self.edit_continuity)
+        self.project_page.document_requested.connect(self.link_project_document)
+        self.project_page.document_unlinked.connect(self.unlink_project_document)
         self.project_page.pinned.connect(self.pin_project)
         self.project_page.chat_started.connect(self.new_project_chat)
         self.project_page.chat_opened.connect(self.open_chat)
@@ -1077,6 +1148,8 @@ class StoneBot(QMainWindow):
         self.message.pasted_paths.connect(self.attachments.add_paths)
         self.message.pasted_image.connect(self.attachments.add_clipboard_image)
         menu = self.attachments.menu
+        self.project_document_action = menu.addAction("Usar documento del proyecto…", self.choose_project_document)
+        self.project_document_action.setVisible(False)
         self.mcp_menu = menu.addMenu("MCP")
         self.mcp_menu.setObjectName("chatMenu")
         self.mcp_menu.aboutToShow.connect(self.refresh_mcp_menu)
@@ -1084,6 +1157,8 @@ class StoneBot(QMainWindow):
         self.memory_menu.setObjectName("chatMenu")
         self.memory_menu.addAction("Consultar recuerdos…").setData("Busca en la memoria: ")
         self.memory_menu.addAction("Consultar conclusiones…").setData("Consulta las conclusiones de la memoria: ")
+        self.memory_menu.addSeparator()
+        self.memory_menu.addAction("Ver y corregir recuerdos…", self.open_memory)
         self.memory_menu.triggered.connect(self.draft_memory_query)
         menu.aboutToShow.connect(self.update_composer_menu)
         menu.addSeparator()
@@ -1250,6 +1325,7 @@ class StoneBot(QMainWindow):
     def show_chat_page(self):
         self.pages.setCurrentWidget(self.chat_page)
         self.header_title.setText(f"StoneBot  /  {self.project['name']}" if self.project else "StoneBot")
+        self.project_document_action.setVisible(self.project is not None)
         self.message.setFocus()
 
     def refresh_projects(self):
@@ -1277,10 +1353,11 @@ class StoneBot(QMainWindow):
             return
         try:
             chats = self.history.find(project_id=project_id)
+            documents = self.history.project_documents(project_id)
         except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
             QMessageBox.warning(self, "Proyectos", str(exc))
             return
-        self.project_page.show_project(project, chats)
+        self.project_page.show_project(project, chats, documents)
         self.history_panel.expand_project(project_id)
         self.pages.setCurrentWidget(self.project_page)
         self.header_title.setText(f"Proyectos  /  {project['name']}")
@@ -1337,6 +1414,52 @@ class StoneBot(QMainWindow):
             return
         self.refresh_projects()
         self.show_project(project_id)
+
+    def link_project_document(self, project_id):
+        project = next((item for item in self.projects if item["id"] == project_id), None)
+        if project is None or self.history is None or self.thread is not None:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Vincular archivo", project["folder"], FILE_FILTER)
+        if not path:
+            return
+        try:
+            self.history.link_project_document(project_id, str(attachment_path(path)))
+        except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+            QMessageBox.warning(self, "Documentos del proyecto", str(exc))
+            return
+        self.show_project(project_id)
+
+    def unlink_project_document(self, project_id, document_id):
+        if self.history is None or self.thread is not None:
+            return
+        try:
+            self.history.unlink_project_document(project_id, document_id)
+        except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+            QMessageBox.warning(self, "Documentos del proyecto", str(exc))
+            return
+        self.show_project(project_id)
+
+    def choose_project_document(self):
+        if self.project is None or self.history is None or self.thread is not None:
+            return
+        try:
+            documents = self.history.project_documents(self.project["id"])
+        except (OSError, ValueError, RuntimeError, sqlite3.Error):
+            self.show_problem("No pude abrir la lista de documentos del proyecto.")
+            return
+        if not documents:
+            self.show_problem("Abre la ficha del proyecto y usa Documentos → Vincular archivo.")
+            return
+        names = [Path(path).name for _, path in documents]
+        choices = {name if names.count(name) == 1 else path: (did, name)
+                   for (did, path), name in zip(documents, names)}
+        choice, accepted = QInputDialog.getItem(self, "Usar documento del proyecto", "Archivo", list(choices), editable=False)
+        if not accepted:
+            return
+        document_id, name = choices[choice]
+        if all(file.get("project_document") != document_id for file in self.attachments.files):
+            self.attachments.add_file({"name": " ".join(name.split()), "project_document": document_id})
+            self.message.setFocus()
 
     def new_project_chat(self, project_id):
         if self.thread is None:
@@ -1411,6 +1534,7 @@ class StoneBot(QMainWindow):
                     self.task_panel = panel
                     self.transcript.insertWidget(self.transcript.count() - 1, panel)
                     self.show_task_progress(panel, self.task)
+                    self.update_task_correction(panel, self.task)
             except (OSError, ValueError, RuntimeError, sqlite3.Error):
                 self.show_problem("No se pudo recuperar el estado de la tarea.")
         self.refresh_history()
@@ -1566,13 +1690,22 @@ class StoneBot(QMainWindow):
 
     def update_composer_menu(self):
         self.memory_menu.setEnabled(not self.attachments.files)
-        attached_chat = any(message.get("attachments") for message in self.messages)
+        attached_chat = has_chat_attachments(self.messages)
         self.memory_menu.setTitle("Memoria · en un chat nuevo" if attached_chat else "Memoria")
 
+    def open_memory(self):
+        if self.thread is None:
+            self.last_activity = time.monotonic()
+            dialog = MemoryDialog(self, self.appearance)
+            dialog.exec()
+            dialog.deleteLater()
+            self.last_activity = time.monotonic()
+
     def draft_memory_query(self, action):
-        if self.thread is not None or self.attachments.files:
+        prefix = action.data()
+        if not prefix or self.thread is not None or self.attachments.files:
             return
-        if any(message.get("attachments") for message in self.messages):
+        if has_chat_attachments(self.messages):
             if self.message.toPlainText().strip():
                 buttons = QMessageBox.StandardButton
                 if QMessageBox.question(self, "Consulta de memoria",
@@ -1580,7 +1713,6 @@ class StoneBot(QMainWindow):
                                         buttons.Yes | buttons.No, buttons.No) != buttons.Yes:
                     return
             self.new_chat()
-        prefix = action.data()
         draft = self.message.toPlainText()
         if not draft.startswith(prefix):
             self.message.setPlainText(prefix + draft)
@@ -1669,7 +1801,13 @@ class StoneBot(QMainWindow):
         command = words[0] if words else ""
         task = self.task
         active_task = task is not None and task["status"] not in {"completed", "cancelled"}
-        has_attachments = files or any(row.get("attachments") for row in self.messages)
+        has_attachments = bool(files) or has_chat_attachments(self.messages)
+        document_query = files and all("project_document" in file for file in files)
+        if (not files and task and task["status"] in {"completed", "paused"} and task.get("inventory_folder")
+                and HIDDEN_MISTAKE.match(texto) and "?" not in texto):
+            if self.correct_task(mistake=texto[:600]):
+                self.message.clear()
+            return
         inventory_task = (task is not None and ranking_count(task["objective"]) is not None
                           and not uses_mcp(task["objective"]))
         setup_request = is_setup_request(texto)
@@ -1682,7 +1820,7 @@ class StoneBot(QMainWindow):
             and inventory_followup(texto)
         )
         task_turn = (command in TASK_COMMANDS or new_inventory or continue_inventory
-                     or (active_task and not inventory_task and ordinary))
+                     or (active_task and not inventory_task and ordinary and not document_query))
         if task_turn:
             if has_attachments:
                 self.show_problem("Usa las tareas reanudables en una conversación sin adjuntos.")
@@ -1803,6 +1941,38 @@ class StoneBot(QMainWindow):
         summary = panel.task_status(TASK_LABELS[task["status"]], len(task["steps"]))
         panel.add_event(summary)
 
+    def update_task_correction(self, panel, task):
+        if task["status"] in {"completed", "paused"} and task.get("message"):
+            panel.correction_button.clicked.connect(self.correct_task)
+            panel.correction_button.show()
+
+    def correct_task(self, *, mistake=""):
+        if self.thread is not None or self.task is None or self.task["status"] not in {"completed", "paused"}:
+            return
+        task = {**self.task, "project_id": self.project["id"] if self.project else None}
+        try:
+            saved = task_correction(task)
+        except (OSError, ValueError, RuntimeError, sqlite3.Error):
+            self.show_problem("No se pudo abrir la corrección guardada.")
+            return
+        if mistake:
+            saved = {**(saved or {"preference": "Omitir archivos y carpetas ocultos.",
+                                 "method": "Comprobar cuáles están ocultos y excluirlos antes de contar.",
+                                 "exclude_hidden": True}), "mistake": mistake}
+        dialog = TaskCorrectionDialog(self, self.appearance, task, saved)
+        try:
+            while dialog.exec() == QDialog.DialogCode.Accepted:
+                try:
+                    save_task_correction(task, *dialog.fields())
+                except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+                    QMessageBox.warning(dialog, "Guardar corrección", str(exc))
+                else:
+                    if self.task_panel is not None:
+                        self.task_panel.add_event("Corrección guardada para próximos encargos parecidos.")
+                    return True
+        finally:
+            dialog.deleteLater()
+
     def start_turn(self, *, task=None):
         self.last_activity = time.monotonic()
         self.message.setEnabled(False)
@@ -1850,7 +2020,8 @@ class StoneBot(QMainWindow):
                           and self.task["status"] == "completed" else None)
         self.worker = Worker(turn_messages, self.pool, identity_enabled=True, dream_thread=self.dream_thread,
                              task=task, save_task=save_task, completed_task=completed_task, project=project_context,
-                             save_continuity=history.save_continuity if history is not None else None)
+                             save_continuity=history.save_continuity if history is not None else None,
+                             project_document_path=history.project_document_path if history is not None else None)
         self.worker.moveToThread(self.thread)
 
         self.thread.started.connect(self.worker.run)
@@ -1988,6 +2159,8 @@ class StoneBot(QMainWindow):
         if task is not None:
             self.activity_panel.finish_task(TASK_LABELS[task["status"]], len(task["steps"]),
                                             saved=self.history_write_ok)
+            if self.history_write_ok:
+                self.update_task_correction(self.activity_panel, task)
         elif not self.activity_panel.latest.startswith("Error del turno"):
             self.activity_panel.add_event("Turno finalizado.")
         self.message.setEnabled(True)
