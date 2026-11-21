@@ -159,6 +159,35 @@ def has_chat_attachments(messages):
     return any("project_document" not in file for message in messages for file in message.get("attachments", ()))
 
 
+def attachment_parts(file):
+    return file.get("pages", file.get("sections", [file]))
+
+
+def without_attachment_images(messages):
+    """Omite las imágenes del contexto y conserva el texto de los documentos mixtos."""
+    result = []
+    for message in messages:
+        if not message.get("attachments"):
+            result.append(message)
+            continue
+        files = []
+        for file in message["attachments"]:
+            parts = attachment_parts(file)
+            if not any("image" in part for part in parts):
+                files.append(file)
+                continue
+            readable = [{key: value for key, value in part.items() if key != "image"}
+                        for part in parts if "text" in part]
+            if readable:
+                if "pages" in file or "sections" in file:
+                    field = "pages" if "pages" in file else "sections"
+                    files.append({**file, field: readable, "partial": True})
+                else:
+                    files.extend(readable)
+        result.append({**message, "attachments": files})
+    return result
+
+
 def pdf_ranges(text):
     for match in PDF_PAGE_RANGE.finditer(text):
         first = int(match[1])
@@ -208,7 +237,7 @@ def attachment_batches(messages):
     for message in messages:
         for file in message.get("attachments", []):
             partial |= bool(file.get("partial") and "pages" not in file)
-            for part in file.get("pages", file.get("sections", [file])):
+            for part in attachment_parts(file):
                 partial |= bool(part.get("partial"))
                 if "number" in part:
                     coverage.setdefault(file["pdf_id"], (file["name"], set()))[1].add(part["number"])

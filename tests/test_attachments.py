@@ -324,6 +324,62 @@ def test_window(root):
         QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
+def test_continue_after_unsupported_image(root):
+    window = app.StoneBot()
+    window.show()
+    window.ai = app.AISettings("openrouter", "test/text-model")
+    calls = []
+
+    def respond(**request):
+        calls.append(request)
+        return SimpleNamespace(message=SimpleNamespace(role="assistant", content="Puedo continuar.", tool_calls=[]))
+
+    client = SimpleNamespace(chat=respond, show=lambda model: SimpleNamespace(
+        capabilities=["vision"] if model == "test/vision-model" else [],
+    ))
+    try:
+        with (patch.object(app, "OpenRouter", return_value=client),
+              patch.object(app, "automatic_memory_enabled", return_value=False)):
+            window.attachments.add_paths([str(root / "figura.png")])
+            window.message.setPlainText("Mira esta captura.")
+            window.enviar()
+            wait_for_turn(window)
+            assert "no admite imágenes" in window.problem.text()
+            assert window.message.isEnabled() and window.send.isEnabled() and not calls
+            chat_id = window.chat_id
+
+            for text in ("Podemos seguir hablando.", "Este es otro mensaje de texto."):
+                window.message.setPlainText(text)
+                window.enviar()
+                wait_for_turn(window)
+                assert window.chat_id == chat_id and window.messages[-1]["content"] == "Puedo continuar."
+                assert calls[-1]["messages"][-1]["content"] == text
+                assert all("images" not in row for row in calls[-1]["messages"])
+            saved = window.history.messages(chat_id)
+            assert saved[0]["attachments"][0]["name"] == "figura.png"
+            assert saved[0]["attachments"][0]["image"]
+
+            window.ai = app.AISettings("openrouter", "test/vision-model")
+            window.message.setPlainText("¿Ahora puedes ver la captura?")
+            window.enviar()
+            wait_for_turn(window)
+            assert calls[-1]["messages"][-1]["images"]
+
+            mixed = attachments.read_attachment(root / "mixto.pdf")
+            messages = [{"role": "user", "content": "Revisa el PDF.", "attachments": [mixed]},
+                        {"role": "user", "content": "¿Qué código aparece en el documento?"}]
+            assert "Puedo continuar." in asyncio.run(app.Worker(messages, ai=app.AISettings("openrouter", "test/text-model")).chat())
+            assert "CEDRO-742" in calls[-1]["messages"][-1]["content"]
+            assert "images" not in calls[-1]["messages"][-1] and "image" in mixed["pages"][-1]
+            messages[-1] = {"role": "user", "content": "Resume la página 2."}
+            result = asyncio.run(app.Worker(messages, ai=app.AISettings("openrouter", "test/text-model")).chat())
+            assert "modelo con visión" in result
+    finally:
+        window.close()
+        window.deleteLater()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 def live(root):
     files = [attachments.read_attachment(root / name) for name in ("figura.png", "figura.jpg", "mixto.pdf", "notas.txt")]
     prompt = ("¿De qué color son los círculos de las imágenes PNG y JPG, y de qué color es el rectángulo de la página 2 "
@@ -536,6 +592,7 @@ if __name__ == "__main__":
                 test_files(root)
                 test_window(root)
                 make_files(root)
+                test_continue_after_unsupported_image(root)
                 test_project_documents(root)
                 asyncio.run(test_save_from_capture(root))
     print("PASS: adjuntos de StoneBot.")
