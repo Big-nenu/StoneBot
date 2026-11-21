@@ -120,7 +120,7 @@ def save_servers(servers):
 
 
 @asynccontextmanager
-async def session_for(name, server, *, message_handler=None):
+async def session_for(name, server, *, message_handler=None, stdio_environment=None):
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
     from mcp.client.streamable_http import streamable_http_client
@@ -135,6 +135,8 @@ async def session_for(name, server, *, message_handler=None):
         if is_desktop_commander(server):
             # Una descarga interrumpida puede dejar npm-cache/_npx incompleta.
             env["npm_config_cache"] = str(data_path("mcp", name, "npm-cache-stonebot"))
+        if stdio_environment is not None:
+            env.update(stdio_environment)
         params = StdioServerParameters(command=server["command"], args=server["args"], cwd=folder, env=env)
         # pythonw no tiene consola. Algunos servidores escriben en stderr antes de responder.
         stderr = nullcontext(sys.stderr) if sys.stderr is not None else open(os.devnull, "w")

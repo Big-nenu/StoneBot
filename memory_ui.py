@@ -1,52 +1,42 @@
-"""Consulta y edición de los recuerdos de StoneBot."""
-import sqlite3
+"""Consulta y edición de recuerdos mediante el servidor MCP de StoneWave."""
+import asyncio
 from threading import Thread
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-    QPlainTextEdit, QVBoxLayout,
+    QDialog, QDialogButtonBox, QInputDialog, QLabel, QMessageBox, QPlainTextEdit, QVBoxLayout,
 )
 
 from appearance import dialog_style
-from stonebot_service import change_memory, list_memories
+from stonewave_memory import MemoryUnavailable
 
 
 class MemoryDialog(QDialog):
-    loaded = Signal(object, object, str, str)
+    loaded = Signal(str, str)
 
-    def __init__(self, parent, theme):
+    def __init__(self, parent, theme, memory):
         super().__init__(parent)
-        self.setWindowTitle("Mis recuerdos")
+        self.setWindowTitle("Recuerdos de StoneWave")
         self.setStyleSheet(dialog_style(theme))
         self.resize(570, 440)
-        self.memories = []
+        self.memory = memory
         self.busy = False
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Buscar en mis recuerdos…")
-        self.search.setAccessibleName("Buscar recuerdos")
-        self.search.textChanged.connect(self.fill)
-        self.list = QListWidget()
-        self.list.setAccessibleName("Recuerdos de StoneBot")
-        self.list.currentItemChanged.connect(self.show_memory)
-        self.preview = QPlainTextEdit()
-        self.preview.setReadOnly(True)
-        self.preview.setAccessibleName("Texto del recuerdo seleccionado")
-        self.preview.setMaximumHeight(105)
+        self.list = QPlainTextEdit()
+        self.list.setReadOnly(True)
+        self.list.setAccessibleName("Recuerdos vigentes de StoneWave")
         self.status = QLabel()
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.status.setWordWrap(True)
         buttons = QDialogButtonBox()
-        self.edit = buttons.addButton("Corregir…", QDialogButtonBox.ButtonRole.ActionRole)
-        self.remove = buttons.addButton("Quitar…", QDialogButtonBox.ButtonRole.ActionRole)
-        self.close_button = buttons.addButton("Cerrar", QDialogButtonBox.ButtonRole.RejectRole)
+        role = QDialogButtonBox.ButtonRole
+        self.edit = buttons.addButton("Corregir por ID…", role.ActionRole)
+        self.remove = buttons.addButton("Olvidar por ID…", role.ActionRole)
+        self.close_button = buttons.addButton("Cerrar", role.RejectRole)
         self.edit.clicked.connect(self.edit_memory)
         self.remove.clicked.connect(self.remove_memory)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
-        layout.addWidget(self.search)
-        layout.addWidget(self.list, 1)
-        layout.addWidget(self.preview)
+        layout.addWidget(self.list)
         layout.addWidget(self.status)
         layout.addWidget(buttons)
         self.loaded.connect(self.finish)
@@ -56,75 +46,46 @@ class MemoryDialog(QDialog):
         if not self.busy:
             super().reject()
 
-    def run(self, memory=None, new_content=None):
+    def run(self, tool=None, **arguments):
         self.busy = True
-        for control in (self.search, self.list, self.edit, self.remove, self.close_button):
-            control.setEnabled(False)
-        self.status.setText("Guardando el cambio…" if memory else "Cargando recuerdos…")
+        for button in (self.edit, self.remove, self.close_button):
+            button.setEnabled(False)
+        self.status.setText("Consultando StoneWave…")
+
+        async def refresh():
+            result = await self.memory.call(tool, **arguments) if tool else ""
+            try:
+                self.loaded.emit(await self.memory.call("list_memories", limit=1000), result)
+            except MemoryUnavailable as exc:
+                self.loaded.emit("", f"{result}\n{exc}".strip())
 
         def work():
-            selected, status, error, rows = None, "", "", None
-            if memory:
-                try:
-                    selected = change_memory(memory, new_content)
-                    status = "Recuerdo corregido." if selected else "Recuerdo quitado de la memoria."
-                except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
-                    error = str(exc)
             try:
-                rows = list_memories()
-            except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
-                error = error or str(exc)
-            self.loaded.emit(rows, selected, status, error)
+                asyncio.run(refresh())
+            except MemoryUnavailable as exc:
+                self.loaded.emit("", str(exc))
 
-        Thread(target=work, name="StoneBot recuerdos").start()
+        Thread(target=work, name="StoneWave recuerdos", daemon=True).start()
 
-    def finish(self, rows, selected, status, error):
+    def finish(self, records, result):
         self.busy = False
-        self.memories = rows if rows is not None else self.memories
-        self.search.setEnabled(True)
-        self.list.setEnabled(True)
+        if records:
+            self.list.setPlainText(records)
+        self.status.setText(result)
+        self.edit.setEnabled(bool(records))
+        self.remove.setEnabled(bool(records))
         self.close_button.setEnabled(True)
-        if selected and self.search.text():
-            self.search.clear()
-        self.fill(selected=selected)
-        self.status.setText(error or status or ("Aún no hay recuerdos." if not self.memories else ""))
-
-    def fill(self, _text="", *, selected=None):
-        terms = self.search.text().casefold().split()
-        self.list.clear()
-        for memory in self.memories:
-            archived, _, content = memory
-            if not all(term in content.casefold() for term in terms):
-                continue
-            title = " ".join(content.split())
-            if len(title) > 110:
-                title = title[:109] + "…"
-            item = QListWidgetItem(f"Archivado · {title}" if archived else title)
-            item.setData(Qt.ItemDataRole.UserRole, memory)
-            self.list.addItem(item)
-            if memory == selected:
-                self.list.setCurrentItem(item)
-        if self.list.currentItem() is None:
-            self.list.setCurrentRow(0)
-
-    def show_memory(self, item):
-        memory = item.data(Qt.ItemDataRole.UserRole) if item else None
-        self.preview.setPlainText(memory[2] if memory else "")
-        self.edit.setEnabled(bool(memory) and not self.busy)
-        self.remove.setEnabled(bool(memory) and not self.busy)
 
     def edit_memory(self):
-        memory = self.list.currentItem().data(Qt.ItemDataRole.UserRole)
-        text, accepted = QInputDialog.getMultiLineText(self, "Corregir recuerdo", "¿Qué debe recordar StoneBot?", memory[2])
-        if accepted and text.strip() != memory[2]:
-            if text.strip():
-                self.run(memory, text)
-            else:
-                self.status.setText("Escribe el recuerdo corregido o usa Quitar para olvidarlo.")
+        fact_id, accepted = QInputDialog.getInt(self, "Corregir recuerdo", "ID del recuerdo", 1, 1)
+        if accepted:
+            text, accepted = QInputDialog.getMultiLineText(self, "Corregir recuerdo", f"Texto nuevo del recuerdo {fact_id}")
+            if accepted and text.strip():
+                self.run("update_memory", fact_id=fact_id, new_content=text.strip())
 
     def remove_memory(self):
-        memory = self.list.currentItem().data(Qt.ItemDataRole.UserRole)
+        fact_id, accepted = QInputDialog.getInt(self, "Olvidar recuerdo", "ID del recuerdo", 1, 1)
         buttons = QMessageBox.StandardButton
-        if QMessageBox.question(self, "Quitar recuerdo", "¿Quieres que StoneBot deje de usar este recuerdo?",
-                                buttons.Yes | buttons.No, buttons.No) == buttons.Yes:
-            self.run(memory)
+        if accepted and QMessageBox.question(self, "Olvidar recuerdo", f"¿Olvidar el recuerdo {fact_id} de StoneWave?",
+                                             buttons.Yes | buttons.No, buttons.No) == buttons.Yes:
+            self.run("forget_memory", fact_id=fact_id)

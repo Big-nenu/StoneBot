@@ -99,7 +99,9 @@ def stage(root, phase, live):
 
     with (patch.object(mcp_client, "default_root", return_value=root),
           patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)),
-          patch.object(app.memory_service, "query_memory", return_value="Preferencia de prueba")):
+          patch.object(app, "automatic_memory_enabled", return_value=False),
+          patch.object(app.StoneWaveMemory, "entries", return_value={}),
+          patch.object(app.StoneWaveMemory, "call", return_value="Preferencia de prueba")):
         window = app.StoneBot()
         window.show()
         approval_timer = QTimer(window)
@@ -156,14 +158,14 @@ def stage(root, phase, live):
                 if not live:
                     assert task_results(task)[0]["outcome"] == "completo"
                 if not live:
-                    with patch.object(app.memory_service, "inject_memory", return_value="📍 NUEVA ONDA.") as save:
+                    with patch.object(app.StoneWaveMemory, "call", return_value="📍 NUEVA ONDA.") as save:
                         window.message.setPlainText("Guarda el resumen")
                         window.send.click()
                         window.thread.finished.connect(loop.quit)
                         timer.start(10_000)
                         loop.exec()
                         assert window.thread is None
-                        assert "Resultado de prueba verificado." in save.call_args.args[0]
+                        assert "Resultado de prueba verificado." in save.call_args.kwargs["content"]
                         assert History().task(window.chat_id)["status"] == "completed"
                 if live:
                     names = re.findall(r"\b[a-z]+\.txt\b", task["message"].casefold())
@@ -193,6 +195,7 @@ def inventory_stage(root, phase):
     assert not app.is_ranking_request("Busca los cinco archivos más pesados usando Desktop Commander.")
     with (patch.object(mcp_client, "default_root", return_value=root),
           patch("folder_inventory.downloads_folder", return_value=root / "archivos"),
+          patch.object(app, "automatic_memory_enabled", return_value=False),
           patch.object(app, "Client", side_effect=AssertionError("La clasificación local no necesita Ollama."))):
         window = app.StoneBot()
         try:

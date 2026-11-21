@@ -25,7 +25,8 @@ class SessionProxy:
 
 
 class McpPool:
-    def __init__(self):
+    def __init__(self, *, open_session=None):
+        self.open_session = open_session
         self.slots = {}
         self.thread = None
         self.loop = None
@@ -103,7 +104,8 @@ class McpPool:
 
         try:
             # La misma tarea abre y cierra los contextos de cancelación del SDK.
-            async with session_for(name, slot.config, message_handler=incoming) as session:
+            open_session = self.open_session or session_for
+            async with open_session(name, slot.config, message_handler=incoming) as session:
                 entries = await discover(session, name, slot.config)
                 proxy = SessionProxy(self, slot, session)
                 slot.ready.set_result({alias: (proxy, server, tool, auto)

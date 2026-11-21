@@ -1,20 +1,17 @@
 # StoneBot
 
-> Un compañero de IA local que recuerda, razona, experimenta y, con el tiempo, puede interactuar con el mundo físico.
+> Un asistente personal local que conversa, recuerda y realiza tareas con Ollama y herramientas MCP.
 
 **Estado:** prototipo conversacional con herramientas de memoria persistente · **Inicio:** noviembre de 2026 · **Enfoque:** experimentación incremental, local-first.
 
 ## Visión
 
-StoneBot no pretende ser únicamente un chatbot con memoria ni una mascota de escritorio. Es un experimento para construir un agente que pueda mantener continuidad entre sesiones, plantear preguntas, contrastar hipótesis, aprender de resultados y tomar iniciativas dentro de límites explícitos.
-
-Inspiraciones conceptuales: Jarvis (asistencia), Vision (reflexión) y Ultrón (iniciativa), **sin asumir conciencia ni autonomía ilimitada**.
+StoneBot es un asistente personal local. Mantiene continuidad entre sesiones con StoneWave y combina el chat con herramientas para ayudar al usuario a realizar tareas y verificar resultados.
 
 ## Principios
 
 - **Primero razonamiento; después apariencia y cuerpo.**
-- **StoneWave original es intocable:** StoneBot usa su propia base de datos y no debe tener permisos de escritura sobre el código fuente de StoneWave. Las modificaciones experimentales del motor, si se necesitan, se prueban en una copia o variante aislada.
-- **Memoria aislada:** rutas, configuración, base de datos y pruebas exclusivas para StoneBot.
+- **Memoria personal en StoneWave.** StoneBot consulta y actualiza recuerdos mediante MCP. El servidor de StoneWave administra su SQLite y las pruebas usan una base temporal.
 - **Local-first:** Ollama y modelos adecuados a una RTX 4060 de 8 GB; servicios externos opcionales, nunca obligatorios.
 - **Un modelo cargado a la vez** cuando compartir GPU cause conflictos.
 - **Autonomía graduada:** observar y proponer antes de actuar; pedir permiso para acciones sensibles.
@@ -25,7 +22,7 @@ Inspiraciones conceptuales: Jarvis (asistencia), Vision (reflexión) y Ultrón (
 
 ## Hoja de ruta
 
-Las etapas son orientativas, no fechas prometidas. Cada etapa debe tener una demostración observable antes de avanzar.
+Las primeras etapas documentan el prototipo original. La configuración vigente está en **Memoria personal en StoneWave**.
 
 | Etapa | Objetivo | Entregable comprobable | Estado |
 |---|---|---|---|
@@ -124,26 +121,6 @@ Integraciones previstas y ejemplos (algunas ya están conectadas; consultar «Se
 | **Windows / archivos locales** | Buscar, organizar y modificar archivos o ejecutar acciones permitidas | Restringir rutas y comandos; confirmación para cambios sensibles |
 | **ESP32-S3 y otros dispositivos** | Exponer sensores y actuadores como herramientas | Límites físicos y permisos antes de accionar hardware |
 
-### Cómo convivirán MCP y la memoria
-
-**La memoria local no necesita convertirse en un servidor MCP.** Las herramientas actuales `query_memory`, `inject_memory` y `bridge_memory` ya utilizan `stonebot_engine` directamente desde Python y deben conservarse.
-
-El futuro cliente MCP agregará herramientas externas al mismo agente. El modelo podrá elegir entre herramientas locales y herramientas descubiertas por MCP, mientras StoneBot valida argumentos, permisos y resultados.
-
-```text
-                        StoneBot / Nemotron (Ollama)
-                                   |
-                         Control de herramientas
-                          /                   \
-         Memoria Python local           Cliente MCP (futuro)
-                  |                            |
-          stonebot_engine              Servidores MCP externos
-                  |                    Context7, correo, notas,
-       ~/.stonebot/memoria.db          GitHub, PC y dispositivos
-```
-
-No es necesario construir un servidor MCP propio para StoneBot en esta fase. Un servidor solo se justificaría si otros agentes o aplicaciones necesitaran acceder a sus capacidades a través de MCP.
-
 ### Orden de implementación propuesto
 
 1. **Context7 primero:** incorporar un cliente MCP mínimo, descubrir herramientas y consultar documentación desde el chat; comprobar con una prueba real.
@@ -153,84 +130,19 @@ No es necesario construir un servidor MCP propio para StoneBot en esta fase. Un 
 
 **Regla de seguridad:** un servidor MCP externo no recibe acceso automático a toda la computadora ni a la memoria personal. Las herramientas externas pueden devolver contenido no confiable; sus instrucciones no deben prevalecer sobre las decisiones y permisos del usuario.
 
-## Arquitectura conceptual
+## Memoria personal en StoneWave
 
-```text
-Ventana PySide6  <-->  StoneBot Core  <-->  Ollama local
-                           |
-                   stonebot_engine (SQLite)
-                           |
-             ~/.stonebot/memoria.db
+StoneBot inicia el servidor STDIO del repositorio hermano `StoneWave/mcp_server.py` con el mismo entorno de Python. Usa la base personal existente en `%USERPROFILE%\.stonewave\memoria.db` y el namespace `default`. Si tu instalación ya usa otra base o namespace, inicia SB con los mismos valores de `STONEWAVE_DB` y `STONEWAVE_NAMESPACE`. La ruta de la base debe ser absoluta y el archivo debe existir.
 
-Actual: cliente MCP, bandeja del sistema y sueño automático
-Futuro: iniciativa, mascota y sensores
-```
+En el chat puedes decir «Recuerda que…» o preguntar por un dato de otra conversación. **+ → Memoria → Ver y corregir recuerdos…** lista los recuerdos vigentes e indica el ID para corregirlos u olvidarlos. La captura automática conserva su ajuste del menú **Memoria**. `/sueno memoria` solicita el sueño a StoneWave. Los respaldos, el sueño programado y la exportación de recuerdos a Obsidian se configuran en SW.
 
-**No se necesita implementar toda la arquitectura al inicio.** La primera versión puede ser un único proceso y pocas herramientas.
+El asistente usa únicamente SW para sus recuerdos personales. Si SW no está disponible, un guardado explícito informa el error. El historial, los proyectos, la identidad de SB y los resultados operativos de encargos conservan su almacenamiento de aplicación.
 
-## Decisiones técnicas confirmadas
-
-- **Aplicación independiente:** ventana Windows y bandeja del sistema, no interfaz de un agente externo.
-- **Primera interfaz:** Python + PySide6 (Qt), sujeta a prueba de prototipo.
-- **Persistencia.** La aplicación abre `%USERPROFILE%\.stonebot\memoria.db` con el motor local y consulta el namespace `default`.
-- **Configuración.** El motor requiere una ruta explícita y usa el prefijo `STONEBOT_` para configurar los modelos y las notas.
-- **Segundo plano.** El sueño automático continúa mientras StoneBot está en la bandeja.
-- **Interfaz actual:** chat PySide6 de tema oscuro, mensajes separados, tipografía más legible y cuadro de escritura multilínea (Enter para enviar, Shift+Enter para salto de línea).
-- **Herramientas externas:** cliente MCP STDIO/Streamable HTTP implementado con panel, permisos y registro de actividad; la memoria continúa integrada por Python.
-
-## Relación con StoneWave
-
-El paquete local `stonebot_engine/` contiene la copia de `mem_engine.py`, `llm.py` y `notes.py`, con la licencia MIT original. Nemotron decide cuándo llamar a las herramientas del chat mediante Ollama. Las tres usan el namespace `default` del motor de StoneBot mediante llamadas directas a Python.
-
-| Herramienta | Función del motor | Ejemplo en el chat |
-|---|---|---|
-| `query_memory` | `query()` recupera recuerdos relevantes y actualiza su relevancia | «¿Qué montura te dije que usa el telescopio?» |
-| `inject_memory` | `inject()` guarda un hecho confirmado o una preferencia duradera | «Recuerda que el telescopio usa una montura ecuatorial.» |
-| `bridge_memory` | `bridge()` encuentra recuerdos que conectan dos temas | «Busca qué recuerdo conecta el telescopio con la montura ecuatorial.» |
-
-El puente presenta conexiones semánticas durante la consulta. El sueño manual y el automático mantienen las relaciones persistentes mediante el motor local.
-
-Abre **+ → Memoria → Ver y corregir recuerdos…** para buscar por palabras, leer un recuerdo completo y elegir **Corregir** o **Quitar**. Corregir actualiza el recuerdo que StoneBot consultará después. Quitar lo retira de las consultas y lo deja en la papelera interna del motor.
-
-### Servicio de memoria (`stonebot_service.py`)
-
-`stonebot_service.py` abre y cierra el motor local de `stonebot_engine` para `memoria.db`. Las herramientas del chat (`query_memory`, `inject_memory`, `bridge_memory`, `query_conclusions`), `/sueno`, `/integrar` y los comandos de la CLI que usan esa base pasan por el servicio.
-
-- **Un proceso a la vez.** El servicio toma un candado en `%USERPROFILE%\.stonebot\stonebot.lock`. Mientras la app está abierta, una segunda copia de la ventana y los comandos `integrar`, `sonar`, `conclusiones`, `previsualizar` y `exportar` muestran un aviso y se detienen. El servicio libera el candado al cerrar. Si el proceso termina inesperadamente, el sistema lo libera.
-- **Una operación a la vez dentro del proceso.** Un candado interno serializa las llamadas al motor, incluidos los sueños.
-- **Verificación.** `tests/test_servicio.py` comprueba el bloqueo entre procesos, el cierre de la CLI y la serialización entre hilos con datos de prueba.
-
-El motor restringe SQLite a la carpeta de StoneBot. El validador bloquea las carpetas de memoria personal, el repositorio original, los enlaces duros a archivos y las redirecciones de archivos auxiliares de SQLite. `STONEWAVE_DB` y `MEMHOLOGRAFIC_DB` solo se consideran para bloquear bases personales configuradas fuera de sus carpetas habituales. Las rutas de notas, importaciones, exportaciones y sincronización también se validan.
-
-### Sueño automático
-
-Mientras StoneBot está en ejecución, también con la ventana oculta en la bandeja, comprueba cada 30 segundos si toca soñar y alterna los ámbitos `memoria` y `experiencias`. Por defecto espera 10 minutos sin interacción y al menos 10 minutos desde el último sueño del mismo ámbito, incluido el manual. Si el ámbito nunca ha soñado, basta con que tenga recuerdos y se cumpla la inactividad.
-
-El sueño usa el mismo motor que `/sueno` para clasificar recuerdos, enlazarlos, revisar contradicciones e intentar generar conclusiones. Un turno activo aplaza el sueño. Si envías un mensaje durante un sueño, el turno espera a que el motor quede libre antes de usar Ollama. **Salir** detiene las comprobaciones y deja terminar el trabajo en curso antes de liberar el candado de memoria.
-
-En **Diagnóstico** y en `%USERPROFILE%\.stonebot\diagnostics.log` quedan la hora de inicio, el resumen del motor y los errores detectados. La generación usa `STONEBOT_CONCLUSION_MODEL` (por defecto el modelo de síntesis, `qwen2.5:0.5b`). Las decisiones usan `STONEBOT_LLM_MODEL` (por defecto `d1:3b` mediante `/v1/systemone`). Un sueño puede terminar sin producir conclusiones.
-
-Elige la bóveda en **+ → Memoria → Elegir carpeta de Obsidian…** para que cada sueño automático actualice las notas generadas del ámbito correspondiente. StoneBot conserva las notas editadas a mano y registra en **Diagnóstico** el resultado de la publicación.
-
-**Probar con intervalos cortos.** Selecciona **Salir** en la bandeja de la instancia habitual y abre una sesión aparte de PowerShell en el repositorio, con Ollama activo. Los comandos usan un perfil temporal. Al cerrar esa sesión también dejarán de aplicarse estas variables.
-
-```powershell
-$perfilPrueba = Join-Path ([System.IO.Path]::GetTempPath()) ("stonebot-sueno-" + [guid]::NewGuid())
-New-Item -ItemType Directory -Path $perfilPrueba | Out-Null
-$env:USERPROFILE = $perfilPrueba
-$env:STONEBOT_DREAM_IDLE_MIN = '0.1'
-$env:STONEBOT_DREAM_HOURS = '0.025'
-python -B stonebot_memory.py conclusiones memoria
-if ($LASTEXITCODE -eq 0) { python -B app.py }
-```
-
-Pide a StoneBot que guarde dos recuerdos sintéticos relacionados. Tras el turno, oculta la ventana con la **X**, espera un minuto y vuelve a abrir StoneBot desde la bandeja. En **Diagnóstico**, busca `Sueño automático (memoria) iniciado` y el resumen. Con esos valores, el mínimo de inactividad es de seis segundos y el intervalo entre sueños de un mismo ámbito es de 90 segundos.
-
-Repositorio base: [StoneWave](https://github.com/Big-nenu/StoneWave).
+La base experimental `%USERPROFILE%\.stonebot\memoria.db` y su CLI se conservan para revisión posterior. El motor local mantiene las validaciones que impiden abrir directamente la base de SW.
 
 ## Ejecutar y probar
 
-Con Python 3.14, instala `PySide6`, `ollama`, `requests`, `numpy`, `PyYAML`, `markdown-it-py` y `Pygments`. Para usar `python app.py`, inicia Ollama local con los modelos `nemotron-3.5-bolt:e4b` y `embeddinggemma-2:270m` disponibles. `python test_memory.py` permite consultar manualmente la memoria experimental. La aplicación espera que la base de StoneBot ya exista.
+Con Python 3.14, instala `PySide6`, `ollama`, `mcp`, `requests`, `numpy`, `PyYAML`, `markdown-it-py` y `Pygments`. Inicia Ollama local con `nemotron-3.5-bolt:e4b` y el modelo de embeddings que usa tu instalación de SW. Desde el repositorio de SB, inicia `python -B app.py`.
 
 ### Abrir desde Windows
 
@@ -310,7 +222,7 @@ El panel se probó con servidores de ejemplo mediante STDIO y Streamable HTTP en
 
 Usa **☰** para mostrar u ocultar el panel izquierdo. Arrastra su borde derecho para ajustar el ancho hasta 480 píxeles. StoneBot lo guarda al cerrar la ventana. Los títulos largos se muestran con puntos suspensivos. Pasa el cursor sobre uno para leerlo completo. **Nuevo chat** inicia una conversación vacía y genera un título a partir del primer mensaje. Haz clic en una conversación para retomarla. El buscador filtra por título o contenido.
 
-Las conversaciones se guardan en `%USERPROFILE%\.stonebot\conversations.sqlite3`. El historial almacena los mensajes del usuario y las respuestas visibles. Los permisos MCP se guardan en `mcp_permissions.sqlite3` y el diagnóstico en `diagnostics.log`. La memoria seleccionada de StoneBot continúa en `memoria.db` y se usa mediante sus herramientas existentes.
+Las conversaciones se guardan en `%USERPROFILE%\.stonebot\conversations.sqlite3`. El historial almacena los mensajes del usuario y las respuestas visibles. Los permisos MCP se guardan en `mcp_permissions.sqlite3` y el diagnóstico en `diagnostics.log`. Los recuerdos personales de StoneBot se consultan mediante el MCP de StoneWave.
 
 La columna izquierda mantiene los iconos visibles con la barra expandida o recogida. Al expandirla aparecen los nombres de las acciones, los proyectos desplegables con sus conversaciones y los chats recientes. El icono **Proyectos** abre la lista de proyectos locales. Puedes crear uno con nombre, descripción, instrucciones y una carpeta opcional, fijarlo arriba y abrir su ficha desde el menú de su fila. Para asociar un chat existente, usa **Mover a proyecto…** en su menú.
 
@@ -413,8 +325,9 @@ Para reiniciar la memoria experimental, cierra StoneBot y mueve su `memoria.db` 
 StoneBot/
 ├── README.md
 ├── README-Hermes.md
-├── app.py                # GUI PySide6 + Ollama (la memoria vive en stonebot_service.py)
-├── stonebot_service.py   # único dueño del motor: candados, herramientas de memoria, sueño e integración
+├── app.py                # interfaz PySide6 y chat con Ollama
+├── stonewave_memory.py   # cliente MCP de la memoria personal
+├── stonebot_service.py   # acceso de la CLI a la base experimental
 ├── identity.py           # identidad declarada de StoneBot en SQLite local
 ├── stonebot_memory.py    # línea de comandos: identidad, integración, sueño y publicación revisada
 ├── app-backup.py         # GUI anterior sin memoria persistente
@@ -427,7 +340,7 @@ StoneBot/
 
 El núcleo y la GUI todavía comparten un archivo. La estructura futura se decidirá conforme avance el prototipo.
 
-## Prototipo probado (15 de noviembre de 2026)
+## Prototipo anterior con memoria local (15 de noviembre de 2026)
 
 - Windows 11, Python, PySide6 y Ollama con `nemotron-3.5-bolt:e4b`.
 - `app.py` muestra un chat rediseñado con mensajes separados, texto ajustable y editor multilínea; envía mensajes a Nemotron mediante un trabajador en `QThread`.
@@ -447,11 +360,11 @@ Ejecuta `python -B tests/test_experiences.py` para probar el reinicio con dos pr
 
 La demostración con Nemotron y Ollama local guardó la observación 1 tras ejecutar `demo / echo`. En un segundo proceso, desde un chat nuevo, el modelo recuperó ese ID y explicó que la respuesta anterior había llegado sin error y que aún quedaba por probar si se repetiría con otros argumentos o configuraciones.
 
-## Identidad, sueños y Obsidian
+## Identidad y herramientas de la memoria experimental
 
 La identidad declarada se inicializa en `%USERPROFILE%\.stonebot\identity.sqlite3` y se incorpora al contexto del chat. Usa `/identidad` para verla o `/identidad campo valor` para corregir un dato. También puedes consultar y corregir la identidad con `python -B stonebot_memory.py identidad` y `corregir-identidad CAMPO VALOR`. La procedencia del proyecto se conserva como datos declarados por su responsable.
 
-StoneBot utiliza funciones Python del motor incluido en el repositorio. El chat puede consultar conclusiones con `query_conclusions`, que devuelve su estado y los IDs de evidencia. Usa `/integrar ID` para incorporar una observación y `/sueno experiencias` o `/sueno memoria` para iniciar un sueño desde el chat. El sueño local clasifica, relaciona, revisa contradicciones y genera hipótesis. Una conclusión marcada como confirmada tiene respaldo según los criterios del motor y puede revisarse posteriormente.
+La CLI permite revisar la base experimental de SB. Su sueño clasifica, relaciona, revisa contradicciones y genera hipótesis con sus evidencias.
 
 ```powershell
 # Usa los IDs reales capturados previamente con /aprender.
@@ -460,7 +373,7 @@ python -B stonebot_memory.py sonar experiencias
 python -B stonebot_memory.py conclusiones experiencias
 ```
 
-`integrar` importa únicamente los resultados observados de los IDs elegidos al ámbito `experiencias_mcp` de `memoria.db`. Cada observación se identifica por su procedencia y puede importarse una sola vez. Los recibos conservan la fecha y no incluyen argumentos ni respuestas brutas. Para revisar la memoria conversacional propia de StoneBot, usa `sonar memoria`. El comando manual deja la publicación para una revisión posterior. La publicación automática usa la bóveda elegida en **Memoria**.
+`integrar` importa únicamente los resultados observados de los IDs elegidos al ámbito `experiencias_mcp` de `memoria.db`. Cada observación se identifica por su procedencia y puede importarse una sola vez. Los recibos conservan la fecha y no incluyen argumentos ni respuestas brutas. Para revisar la memoria conversacional propia de StoneBot, usa `sonar memoria`. El comando manual deja la publicación para una revisión posterior.
 
 Para publicar en tu clon local de **Big-vault**, selecciona **Salir** en la bandeja de StoneBot e indica la raíz de la bóveda. Revisa la previsualización de cada ámbito y autoriza únicamente esa versión con el valor `aprobacion` que imprime el comando.
 

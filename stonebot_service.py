@@ -175,7 +175,7 @@ def query_memory(text: str) -> str:
 
 @_locked
 def inject_memory(content: str) -> str:
-    """Guarda un hecho o una preferencia duradera que el usuario haya confirmado."""
+    """Guarda un hecho o una preferencia duradera cuando el usuario pide recordarlo."""
     return get_memory().inject(_memory_text(content), source="chat", reinforce=False)
 
 

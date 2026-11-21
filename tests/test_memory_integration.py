@@ -15,7 +15,6 @@ from ollama import Message
 from test_motor import CONC, F1, F2, make_engine
 import app
 import mcp_client
-import stonebot_service as memory_service
 from experiences import record_experience
 from identity import load_identity
 from stonebot_engine.safety import IsolationError
@@ -85,9 +84,7 @@ def test_notes_and_dream(root):
         assert engine.list_conclusions()[0]["content"] == CONC
         ids = [record_experience("demo", "echo", "response") for _ in range(3)]
         assert "NUEVA" in integrate_experience(engine, ids[0])
-        with patch.object(memory_service, "get_memory", return_value=engine):
-            command = [{"role": "user", "content": f"/integrar {ids[1]}"}]
-            assert "NUEVA" in asyncio.run(app.Worker(command).chat())
+        assert "NUEVA" in integrate_experience(engine, ids[1])
         assert "YA EXISTE" in integrate_experience(engine, ids[0])
         def propose(prompt, **kwargs):
             assert prompt.count("Evidencia MCP #") >= 2 and "Limita la conclusión" in prompt
@@ -97,9 +94,7 @@ def test_notes_and_dream(root):
         engine.generator.generate = propose
         engine._ask_llm_support = lambda fact, conclusion: "RESPALDA"
         with patch.dict(os.environ, {"STONEBOT_NOTES": str(vault / "stonewave")}):
-            with patch.object(memory_service, "get_memory", return_value=engine):
-                command = [{"role": "user", "content": "/sueno experiencias"}]
-                assert "Sleeptime" in asyncio.run(app.Worker(command).chat())
+            assert "Sleeptime" in engine.dream(EXPERIENCES)
         assert not (vault / "stonebot").exists()
         before = engine.list_conclusions(EXPERIENCES)
         assert len(before) == 1 and before[0]["status"] == "hipotesis" and len(before[0]["sources"]) >= 2

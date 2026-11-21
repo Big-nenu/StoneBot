@@ -1,19 +1,16 @@
 """Comprueba edición de recuerdos y aplicación de correcciones con un perfil temporal."""
 import asyncio
-import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, call, patch
 
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication, QDialog, QInputDialog, QMessageBox
 
 import app
 import mcp_client
-import stonebot_service as memory_service
 from experiences import save_task_correction, task_correction
-from test_motor import age, make_engine
 
 
 def wait_for_memories(dialog):
@@ -27,34 +24,36 @@ def wait_for_memories(dialog):
 
 
 def test_memory_editor(root):
-    engine = make_engine(str(root / "memoria.db"))
     old = "La carpeta de mis proyectos está en Carpeta Antigua"
     new = "La carpeta de mis proyectos está en Carpeta Nueva"
+    memory = SimpleNamespace(call=AsyncMock(side_effect=[
+        f"Memoria (1 recuerdos):\n- [ID 1] {old}",
+        "Recuerdo actualizado.", f"Memoria (1 recuerdos):\n- [ID 2] {new}",
+        "Olvidado: [ID 2]", "La memoria está vacía todavía.",
+    ]))
+    dialog = app.MemoryDialog(None, app.load_appearance(), memory)
     try:
-        engine.inject(old)
-        age(engine.db_path, 200)
-        assert engine.decay() == 1
-        engine.inject("Prefiero el editor con tema claro")
-        with patch.object(memory_service, "get_memory", return_value=engine):
-            dialog = app.MemoryDialog(None, app.load_appearance())
-            wait_for_memories(dialog)
-            assert dialog.list.count() == 2
-            dialog.search.setText("Carpeta")
-            assert dialog.list.count() == 1 and dialog.list.currentItem().text().startswith("Archivado")
-            assert dialog.preview.toPlainText() == old
-            with patch.object(QInputDialog, "getMultiLineText", return_value=(new, True)):
-                dialog.edit.click()
-            wait_for_memories(dialog)
-            assert dialog.preview.toPlainText() == new
-            assert [row["content"] for row in json.loads(memory_service.query_memory(new))] == [new]
-            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
-                dialog.remove.click()
-            wait_for_memories(dialog)
-            assert dialog.list.count() == 1 and "Nueva" not in memory_service.query_memory(new)
-            assert not engine.list_facts(archived=True)
-            dialog.close()
+        wait_for_memories(dialog)
+        assert old in dialog.list.toPlainText()
+        with (patch.object(QInputDialog, "getInt", return_value=(1, True)),
+              patch.object(QInputDialog, "getMultiLineText", return_value=(new, True))):
+            dialog.edit.click()
+        wait_for_memories(dialog)
+        assert new in dialog.list.toPlainText()
+        with (patch.object(QInputDialog, "getInt", return_value=(2, True)),
+              patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes)):
+            dialog.remove.click()
+        wait_for_memories(dialog)
+        assert new not in dialog.list.toPlainText()
+        assert memory.call.await_args_list == [
+            call("list_memories", limit=1000),
+            call("update_memory", fact_id=1, new_content=new),
+            call("list_memories", limit=1000),
+            call("forget_memory", fact_id=2),
+            call("list_memories", limit=1000),
+        ]
     finally:
-        engine.close()
+        dialog.close()
 
 
 async def test_inventory_correction(root):

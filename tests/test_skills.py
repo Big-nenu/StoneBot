@@ -87,7 +87,7 @@ def test_progressive():
     local_skills.set_enabled(EXAMPLE, True)
     with (patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)),
           patch.object(local_skills, "read_body", wraps=local_skills.read_body) as loaded,
-          patch.object(app.memory_service, "get_memory", side_effect=AssertionError("La Skill no guarda memoria."))):
+          patch.object(app.StoneWaveMemory, "call", side_effect=AssertionError("La Skill no guarda memoria."))):
         assert turn("¿Cuánto es 7 por 8?") == "56"
         assert loaded.call_count == 0 and len(calls) == 1
         assert turn("Genera una ficha Faro SB sobre astronomía.") == SEAL

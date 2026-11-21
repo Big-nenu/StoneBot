@@ -74,6 +74,7 @@ def test_context7_results_are_used_to_finish_after_empty_ollama_response():
     confirm = AsyncMock(return_value=True)
     with (patch.object(app, "load_servers", return_value={"context7": {"enabled": True, "read_tools": []}}),
           patch.object(app, "session_for", connected),
+          patch.object(worker, "enabled_skills", return_value={}),
           patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)),
           patch.object(worker, "confirm_external", confirm)):
         worker.run()
@@ -130,6 +131,7 @@ def test_empty_reply_retries_selection_across_active_servers():
                for name in ("docs", "offline", "web", "disabled")}
     with (patch.object(app, "load_servers", return_value=servers),
           patch.object(app, "session_for", connected),
+          patch.object(worker, "enabled_skills", return_value={}),
           patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)),
           patch.object(worker, "confirm_external", confirm)):
         worker.run()
@@ -183,7 +185,7 @@ def test_stdio_chat_and_permissions():
                 transcript = kwargs["messages"]
                 if rounds == 1:
                     assert {tool.__name__ for tool in kwargs["tools"] if callable(tool)} == {
-                        *app.MEMORY_TOOLS, "query_experiences",
+                        "query_experiences",
                     }
                     requests = [(echo, {}), (echo, {"text": str(personal)}),
                                 (echo, {"text": "hola"}), (mark, {"text": "rechazado"})]

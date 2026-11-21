@@ -72,7 +72,7 @@ def check_continuity(live):
             return SimpleNamespace(message=reply)
 
         with (patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)),
-              patch.object(app, "MEMORY_TOOLS", {}),
+              patch.object(app.StoneWaveMemory, "entries", return_value={}),
               patch.object(app.Worker, "enabled_skills", return_value={})):
             window = app.StoneBot()
             window.show()

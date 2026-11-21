@@ -3,11 +3,9 @@ import asyncio
 import sqlite3
 import sys
 import tempfile
-import time
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
-from threading import Event
 from unittest.mock import AsyncMock, patch
 
 from mcp.types import Tool, ToolAnnotations
@@ -29,55 +27,23 @@ from mcp_permissions import allowed, list_permissions, permission_signature, rem
 from mcp_pool import McpPool
 
 
-def test_sueno_espera_inactividad_y_se_serializa_con_el_turno():
+def test_turno_no_activa_el_motor_anterior():
     window = app.StoneBot()
-    sueno_iniciado, liberar_sueno, conversacion = Event(), Event(), Event()
-
-    def dream(scope):
-        assert scope == "memoria"
-        sueno_iniciado.set()
-        liberar_sueno.wait(10)
 
     async def chat(worker):
-        conversacion.set()
         return "Turno sintético."
 
     try:
         window.show()
-        with (patch.object(memory_service, "dream_if_due", side_effect=dream) as automatic,
-              patch.object(app.Worker, "chat", chat)):
-            window.check_automatic_dream()
-            automatic.assert_not_called()
-            window.last_activity = time.monotonic() - window.dream_idle_seconds - 1
-            window.dream_timer.timeout.emit()
-            assert sueno_iniciado.wait(5)
-            window.check_automatic_dream()
-            automatic.assert_called_once()
-
-            window.message.setPlainText("Mensaje durante un sueño")
+        with (patch.object(memory_service, "get_memory", side_effect=AssertionError("Motor anterior")),
+              patch.object(app.Worker, "chat", chat),
+              patch.object(app.Worker, "capture_user_memories")):
+            window.message.setPlainText("Mensaje de prueba")
             window.enviar()
-            assert not conversacion.wait(0.1)
-            liberar_sueno.set()
             wait_for_turn(window)
-            assert conversacion.is_set()
             assert History().messages(window.chat_id)[-1]["content"] == "Turno sintético."
-
-            conversacion.clear()
-            window.message.setPlainText("Segundo mensaje")
-            window.enviar()
-            window.last_activity = time.monotonic() - window.dream_idle_seconds - 1
-            window.check_automatic_dream()
-            automatic.assert_called_once()
-            wait_for_turn(window)
-            assert time.monotonic() - window.last_activity < 5
     finally:
-        liberar_sueno.set()
-        if window.dream_thread is not None:
-            window.dream_thread.join()
-        if window.thread is not None:
-            wait_for_turn(window)
         window.close()
-    assert not window.dream_timer.isActive()
     window.deleteLater()
     QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
@@ -395,7 +361,7 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as directory, patch.object(mcp_client, "default_root", return_value=Path(directory)):
         test_history_and_gui(qt_app)
         test_projects()
-        test_sueno_espera_inactividad_y_se_serializa_con_el_turno()
+        test_turno_no_activa_el_motor_anterior()
         asyncio.run(test_permissions())
         client = McpPool()
         try:

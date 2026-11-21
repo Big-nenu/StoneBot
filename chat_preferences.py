@@ -8,6 +8,19 @@ from mcp_client import data_path
 MAX_INSTRUCTIONS = 4000
 
 
+def automatic_memory_enabled():
+    settings = QSettings(str(data_path("chat.ini")), QSettings.Format.IniFormat)
+    return settings.value("automatic_memory", True, type=bool)
+
+
+def save_automatic_memory(enabled):
+    settings = QSettings(str(data_path("chat.ini")), QSettings.Format.IniFormat)
+    settings.setValue("automatic_memory", enabled)
+    settings.sync()
+    if settings.status() != QSettings.Status.NoError:
+        raise OSError("No se pudo guardar el ajuste de memoria automática.")
+
+
 def load_instructions():
     settings = QSettings(str(data_path("chat.ini")), QSettings.Format.IniFormat)
     return settings.value("instructions", "", type=str)[:MAX_INSTRUCTIONS]

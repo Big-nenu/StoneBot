@@ -346,9 +346,17 @@ async def test_save_from_capture(root):
     config = {"enabled": True, "read_tools": [], "disabled_tools": []}
     memory = []
 
-    def inject_memory(content: str):
-        memory.append(content)
-        return "📍 NUEVA ONDA."
+    async def inject_memory(name, arguments):
+        assert name == "inject_memory"
+        memory.append(arguments["content"])
+        return CallToolResult(content=[TextContent(type="text", text="📍 NUEVA ONDA.")])
+
+    saver = Tool(name="inject_memory", inputSchema={
+        "type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"],
+    })
+    provider = SimpleNamespace(entries=AsyncMock(return_value={
+        saver.name: (SimpleNamespace(call_tool=inject_memory), "stonewave", saver, False),
+    }))
 
     async def run(filename, *, approve=True, write=True, followup=False, split=False, confirmations=(), local=False):
         path = root / filename
@@ -376,7 +384,8 @@ async def test_save_from_capture(root):
             assert not any(isinstance(row, dict) and row.get("images") for row in request["messages"])
             if followup or split or local:
                 assert "Petición original del usuario" in request["messages"][-1]["content"]
-            alias, = (tool.function.name for tool in request["tools"] if isinstance(tool, app.Tool))
+            alias, = (tool.function.name for tool in request["tools"]
+                      if isinstance(tool, app.Tool) and tool.function.name != "inject_memory")
             tool_calls = [{"function": {"name": alias, "arguments": {"path": str(path), "content": payload}}}]
             if local:
                 assert alias == "save_markdown" and len(request["tools"]) == 1
@@ -402,13 +411,12 @@ async def test_save_from_capture(root):
             messages.extend([{"role": "assistant", "content": "**Memoria.** Guardada en StoneBot.\n\n"
                                                             "**Archivo.** No encontré una herramienta activa."},
                              {"role": "user", "content": "Intenta guardar el archivo de nuevo"}])
-        worker = app.Worker(messages)
+        worker = app.Worker(messages, memory=provider)
         worker.confirm_external = AsyncMock(return_value=approve)
         client = SimpleNamespace(chat=chat, show=lambda _: SimpleNamespace(capabilities=["vision"]))
         memory_count = len(memory)
         with (patch.object(app, "Client", return_value=client), patch.object(app, "session_for", session),
-              patch.object(app, "load_servers", return_value={} if local else {"desktop": config}),
-              patch.dict(app.MEMORY_TOOLS, {"inject_memory": inject_memory})):
+              patch.object(app, "load_servers", return_value={} if local else {"desktop": config})):
             response = await worker.chat()
             if split and write and approve:
                 repeated = [*messages, {"role": "assistant", "content": response},
@@ -422,7 +430,8 @@ async def test_save_from_capture(root):
             assert len(memory) == memory_count
         assert ("Guardado y verificado" in response) == (approve and write)
         assert len(calls) == int(approve and not local)
-        assert "Guardada en StoneBot" in response and memory[-1] == "/tarea y /resumir"
+        assert ("Guardada en StoneBot" if local else "Guardada en StoneWave") in response
+        assert memory[-1] == "/tarea y /resumir"
         if approve and write:
             assert path.read_text(encoding="utf-8") == payload and str(path) in response
         else:
@@ -526,6 +535,7 @@ if __name__ == "__main__":
             else:
                 test_files(root)
                 test_window(root)
+                make_files(root)
                 test_project_documents(root)
                 asyncio.run(test_save_from_capture(root))
     print("PASS: adjuntos de StoneBot.")

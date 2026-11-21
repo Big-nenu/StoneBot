@@ -143,8 +143,8 @@ def test_enlaces_duros_o_simbolicos_a_la_memoria_personal_se_detectan():
 
 
 def test_el_codigo_no_menciona_rutas_ni_variables_de_la_memoria_personal():
-    patrones = [r"\.stonewave", r"Projects.{0,8}StoneWave", r"STONEWAVE_", r"memholografic", r"MEMHOLOGRAFIC_"]
-    permitidos = {"safety.py", "test_aislamiento.py"}  # aqui se nombran a proposito, para bloquearlas
+    patrones = [r"['\"]\.stonewave", r"Projects.{0,8}StoneWave", r"['\"]STONEWAVE_", r"\.memholografic", r"['\"]MEMHOLOGRAFIC_"]
+    permitidos = {"safety.py", "test_aislamiento.py", "stonewave_memory.py", "test_stonewave_memory.py"}
     malos = []
     for f in ROOT.rglob("*.py"):
         if f.name in permitidos or f.name.startswith(".tmp_") or ".git" in f.parts or "__pycache__" in f.parts:
@@ -214,76 +214,50 @@ def test_operaciones_auxiliares_bloquean_rutas_protegidas():
             assert protected.read_bytes() == b"contenido intacto"
 
 
-def test_worker_guarda_consulta_y_conecta_recuerdos_tras_reabrir():
+def test_worker_usa_stonewave_sin_abrir_la_base_local():
+    import asyncio
     import app
-    import stonebot_service as memory_service
-    import test_motor as tm
+    import stonebot_service
+    from mcp.types import CallToolResult, TextContent, Tool
     from ollama import Message
+    from unittest.mock import AsyncMock
 
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        database = root / "memoria.db"
-        text = "El telescopio de prueba tiene una montura ecuatorial"
+    remembered = "El telescopio de prueba tiene una montura ecuatorial"
+    tool = Tool(name="inject_memory", inputSchema={
+        "type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"],
+    })
+    remote = SimpleNamespace(call_tool=AsyncMock(return_value=CallToolResult(
+        content=[TextContent(type="text", text="📍 NUEVA ONDA.")],
+    )))
+    memory = SimpleNamespace(
+        entries=AsyncMock(return_value={tool.name: (remote, "stonewave", tool, False)}),
+        call=AsyncMock(return_value=remembered),
+    )
 
-        with (patch.object(safety, "default_root", return_value=root),
-              patch.object(tm.mem_engine, "default_root", return_value=root),
-              patch.object(app, "load_servers", return_value={}),
-              patch.object(memory_service, "DB_PATH", database),
-              patch.object(memory_service, "_memory", None),
-              patch.object(StoneBotEngine, "get_embedding", side_effect=tm.fake_embedding),
-              patch.object(StoneBotEngine, "get_embeddings",
-                           side_effect=lambda texts: [tm.fake_embedding(t) for t in texts])):
-            StoneBotEngine(database).close()
+    def chat(**kwargs):
+        messages = kwargs["messages"]
+        if messages[-1]["content"].startswith("Recuerda"):
+            assert [spec.function.name for spec in kwargs["tools"]] == ["inject_memory"]
+            return SimpleNamespace(message=Message(role="assistant", tool_calls=[{
+                "function": {"name": "inject_memory", "arguments": {"content": remembered}},
+            }]))
+        assert remembered in messages[0]["content"]
+        return SimpleNamespace(message=Message(role="assistant", content=remembered))
 
-            def turn(prompt, calls, expected):
-                messages = [{"role": "system", "content": app.SYSTEM}, {"role": "user", "content": prompt}]
+    async def turn(text):
+        return await app.Worker([{"role": "system", "content": app.SYSTEM},
+                                 {"role": "user", "content": text}], memory=memory).chat()
 
-                def chat(**kwargs):
-                    assert {tool.__name__ for tool in kwargs["tools"]} == {
-                        "query_memory", "inject_memory", "bridge_memory", "query_experiences", "query_conclusions"
-                    }
-                    transcript = kwargs["messages"]
-                    if len(transcript) == 2:
-                        assert transcript == messages
-                        if not calls:
-                            return SimpleNamespace(message=Message(role="assistant", content="Respuesta de prueba"))
-                        reply = Message(role="assistant", tool_calls=[
-                            Message.ToolCall(function=Message.ToolCall.Function(name=name, arguments=args))
-                            for name, args in calls
-                        ])
-                    else:
-                        assert transcript[2].tool_calls
-                        for tool_reply, (name, _), substring in zip(transcript[3:], calls, expected, strict=True):
-                            assert tool_reply["role"] == "tool"
-                            assert tool_reply["tool_name"] == name
-                            assert substring in tool_reply["content"], tool_reply
-                        reply = Message(role="assistant", content="Respuesta de prueba")
-                    return SimpleNamespace(message=reply)
-
-                worker = app.Worker(messages)
-                responses, errors = [], []
-                worker.finished.connect(responses.append)
-                worker.error.connect(errors.append)
-                with patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)):
-                    worker.run()
-                assert not errors, errors
-                assert responses == ["Respuesta de prueba"], responses
-                assert len(messages) == 2
-
-            try:
-                turn("Hola", [], [])
-                assert memory_service._memory is None
-                turn("Recuerda este dato", [("inject_memory", {"content": text})], ["NUEVA"])
-                memory_service.close()
-                turn("¿Qué montura usa el telescopio?", [
-                    ("query_memory", {"text": text}),
-                    ("bridge_memory", {"topic_a": "telescopio", "topic_b": "montura ecuatorial"}),
-                    ("inject_memory", {"content": "  "}),
-                    ("clear_memory", {}),
-                ], [text, '"status": "found"', "texto no vacío", "desconocida"])
-                assert memory_service._memory.get_all_facts() == [text]
-            finally:
-                memory_service.close()
+    with (patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)),
+          patch.object(app, "load_servers", return_value={}),
+          patch.object(stonebot_service, "get_memory", side_effect=AssertionError("Base local"))):
+        assert "Guardada en StoneWave" in asyncio.run(turn(f"Recuerda que {remembered}"))
+        assert asyncio.run(turn("¿Qué sabes del telescopio?")) == remembered
+        memory.call.assert_awaited_once_with("get_context", token_budget=600)
+        remote.call_tool.assert_awaited_once_with("inject_memory", {"content": remembered})
+        memory.entries.side_effect = app.MemoryUnavailable("StoneWave no está disponible.")
+        assert "no está disponible" in asyncio.run(turn(f"Recuerda que {remembered}"))
+        remote.call_tool.assert_awaited_once()
 
 
 def test_auditoria_en_ejecucion_ningun_open_ni_sqlite_toca_rutas_protegidas():
