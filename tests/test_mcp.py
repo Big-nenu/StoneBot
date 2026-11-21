@@ -28,6 +28,52 @@ def example_stdio():
     return ["--command", sys.executable, "--arg=-B", "--arg=-c", "--arg", code]
 
 
+def test_reads_link_referenced_in_chat():
+    url = "https://example.test/proyecto"
+    history = [{"role": "system", "content": app.SYSTEM},
+               {"role": "assistant", "content": f"El repositorio es **{url}**. [README]({url})."}]
+    question = {"role": "user", "content": "no puedes entrar al Enlace porque ahi viene el readme de que es"}
+    assert app.requested_web_link([*history, question]) == url
+    assert app.requested_web_link([*history, {**question, "content": "No abras el enlace."}]) is None
+    assert app.requested_web_link([*history, {**question, "content": "No puedes entrar al enlace porque es privado."}]) is None
+    assert app.requested_web_link([*history, {**question, "content": "El enlace tiene un README."}]) is None
+    ambiguous = {"role": "assistant", "content": f"{url} o https://example.test/otro"}
+    assert app.requested_web_link([ambiguous, question]) == ""
+
+    fetch = Tool(name="web_fetch_exa", inputSchema={"type": "object", "required": ["urls"],
+                "properties": {"urls": {"type": "array", "items": {"type": "string"}}}})
+    disk = Tool(name="list_directory", inputSchema={"type": "object"})
+    session = SimpleNamespace(list_tools=AsyncMock(return_value=ListToolsResult(tools=[fetch, disk])),
+                              call_tool=AsyncMock(return_value=CallToolResult(content=[
+                                  TextContent(type="text", text="README: descripción sintética"),
+                              ])))
+
+    @contextlib.asynccontextmanager
+    async def connected(name, _):
+        assert name == "exa"
+        yield session
+
+    def summarize(**kwargs):
+        assert kwargs["tools"] == []
+        assert url in kwargs["messages"][-1]["content"] and "README: descripción sintética" in kwargs["messages"][-1]["content"]
+        return SimpleNamespace(message=Message(role="assistant", content="Resumen del README."))
+
+    with (patch.object(app, "load_servers", return_value={"exa": {"enabled": True, "read_tools": []}}),
+          patch.object(app, "session_for", connected), patch.object(app, "OpenRouter") as client,
+          patch.object(app.Worker, "enabled_skills", return_value={})):
+        client.return_value.chat.side_effect = summarize
+        worker = app.Worker([*history, question], ai=AISettings("openrouter", "nvidia/nemotron-3.5-lightning:free"))
+        worker.confirm_external = AsyncMock(return_value=True)
+        assert asyncio.run(worker.chat()) == "Resumen del README."
+        session.call_tool.assert_awaited_once_with("web_fetch_exa", {"urls": [url]})
+        worker.confirm_external.assert_awaited_once_with("exa", "web_fetch_exa", {"urls": [url]})
+
+        worker.confirm_external.return_value = False
+        assert "no autorizó" in asyncio.run(worker.chat())
+        session.call_tool.assert_awaited_once()
+        client.return_value.chat.assert_called_once()
+
+
 def test_cloud_chat_keeps_mcp_out_of_conversation_and_stops_repeated_calls():
     search = Tool(name="web_search_exa", inputSchema={"type": "object"})
     session = SimpleNamespace(list_tools=AsyncMock(return_value=ListToolsResult(tools=[search])),
@@ -308,6 +354,8 @@ def test_stdio_chat_and_permissions():
 
 
 if __name__ == "__main__":
+    test_reads_link_referenced_in_chat()
+    print("PASS: enlace contextual, lectura web exacta y autorización.")
     test_cloud_chat_keeps_mcp_out_of_conversation_and_stops_repeated_calls()
     print("PASS: chat sin MCP externo y cierre de solicitudes repetidas en OpenRouter simulado.")
     test_context7_results_are_used_to_finish_after_empty_ollama_response()
