@@ -2273,7 +2273,7 @@ class StoneBot(QMainWindow):
 
     def mcp_manager(self):
         if self.mcp_dialog is None:
-            self.mcp_dialog = McpDialog(self)
+            self.mcp_dialog = McpDialog(self, memory=self.memory)
             self.mcp_dialog.connection_changed.connect(self.pool.invalidate)
             self.mcp_dialog.set_appearance(self.appearance)
         return self.mcp_dialog

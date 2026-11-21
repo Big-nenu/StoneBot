@@ -21,11 +21,13 @@ from mcp_credentials import credential_target, delete_key, read_key, store_key
 from mcp_permissions import list_permissions, permission_signature, remember_many, revoke, revoke_many, safe_read, saved_permissions
 from mcp_setup import ensure_new, prepare
 from mcp_tool_groups import category, operation
+from stonewave_memory import MemoryUnavailable, REVIEWED_WRITES, TOOLS
 
 
 TRANSPORTS = {"stdio": "STDIO", "http": "Streamable HTTP"}
 STATUS_COLORS = {"Correcta": "#86efac", "Falló": "#fca5a5"}
 TOOL_NAMES = Qt.ItemDataRole.UserRole
+INTEGRATED_MEMORY = "StoneWave · Integrado"
 
 
 class Toggle(QCheckBox):
@@ -140,18 +142,23 @@ class ServerForm(QDialog):
 class ConnectionTest(QThread):
     result = Signal(object)
 
-    def __init__(self, parent, name, server):
+    def __init__(self, parent, name, server, *, memory=None):
         super().__init__(parent)
         self.name = name
         self.server = server
+        self.memory = memory
 
     async def probe(self):
+        if self.memory is not None:
+            return [entry[2] for entry in (await self.memory.entries()).values()]
         async with asyncio.timeout(startup_timeout(self.server)):
             return await probe_server(self.name, self.server, include_definitions=True)
 
     def run(self):
         try:
             tools = asyncio.run(self.probe())
+        except MemoryUnavailable as exc:
+            self.result.emit(([], str(exc)))
         except Exception as exc:
             self.result.emit(([], connection_error(exc)))
         else:
@@ -161,7 +168,7 @@ class ConnectionTest(QThread):
 class McpDialog(QDialog):
     connection_changed = Signal(str)
 
-    def __init__(self, parent):
+    def __init__(self, parent, *, memory=None):
         super().__init__(parent)
         self.setObjectName("mcpManager")
         self.setWindowTitle("Servidores MCP")
@@ -170,11 +177,12 @@ class McpDialog(QDialog):
         self.theme = COLORS
         self.setStyleSheet(dialog_style(self.theme))
         self.servers = {}
+        self.memory = memory
         self.results = {}
         self.test = None
 
         self.table = QTreeWidget()
-        self.table.setAccessibleName("Servidores configurados")
+        self.table.setAccessibleName("Servidores MCP")
         self.table.setHeaderLabels(["Servidor", "Transporte", "Activación", "Última prueba"])
         self.table.setRootIsDecorated(False)
         self.table.currentItemChanged.connect(self.refresh_selection)
@@ -197,7 +205,7 @@ class McpDialog(QDialog):
         self.notice.setObjectName("mcpNotice")
 
         servers_header = QHBoxLayout()
-        servers_title = QLabel("Servidores configurados")
+        servers_title = QLabel("Servidores MCP")
         servers_title.setProperty("sectionHeading", True)
         servers_header.addWidget(servers_title)
         servers_header.addStretch()
@@ -272,7 +280,7 @@ class McpDialog(QDialog):
         try:
             current = load_servers()
             self.results = {name: result for name, result in self.results.items()
-                            if current.get(name) == self.servers.get(name)}
+                            if name == INTEGRATED_MEMORY or current.get(name) == self.servers.get(name)}
             self.servers = current
         except (ValueError, OSError, RuntimeError):
             self.notice.setText("No se pudo leer la configuración MCP.")
@@ -288,13 +296,18 @@ class McpDialog(QDialog):
     def refresh(self, selected=None):
         blocker = QSignalBlocker(self.table)
         self.table.clear()
-        for name, server in sorted(self.servers.items()):
+        rows = sorted(self.servers.items())
+        if self.memory is not None:
+            rows.append((INTEGRATED_MEMORY, None))
+        for name, server in rows:
             status, _, detail = self.results.get(name, ("Sin probar", [], ""))
-            item = QTreeWidgetItem([name, TRANSPORTS[server["transport"]]])
+            item = QTreeWidgetItem([name, TRANSPORTS[server["transport"]] if server else "STDIO",
+                                    "" if server else "Integrada"])
             item.setToolTip(0, name)
             self.table.addTopLevelItem(item)
-            self.add_toggle(self.table, item, 2, server["enabled"], f"Servidor {name}",
-                            lambda checked, name=name: self.toggle_server(name, checked), show_state=True)
+            if server:
+                self.add_toggle(self.table, item, 2, server["enabled"], f"Servidor {name}",
+                                lambda checked, name=name: self.toggle_server(name, checked), show_state=True)
             label = QLabel(f"●  {status}")
             label.setToolTip(detail)
             color = STATUS_COLORS.get(status, "#b8b2c4")
@@ -317,14 +330,24 @@ class McpDialog(QDialog):
     def refresh_selection(self):
         name = self.selected()
         idle = self.test is None
+        integrated = name == INTEGRATED_MEMORY
         self.add.setEnabled(idle)
-        for button in (self.edit, self.remove, self.probe):
-            button.setEnabled(idle and name is not None)
-        self.api_key.setEnabled(idle and name is not None and bool(credential_target(name, self.servers[name])))
-        self.permissions.setEnabled(idle and name is not None)
+        for button in (self.edit, self.remove, self.permissions):
+            button.setEnabled(idle and name in self.servers)
+        self.probe.setEnabled(idle and name is not None)
+        self.probe.setText("Consultar catálogo" if integrated else "Probar conexión")
+        self.api_key.setEnabled(idle and name in self.servers and bool(credential_target(name, self.servers[name])))
+        if integrated and idle:
+            _, tools, detail = self.results.get(name, ("Sin probar", [], ""))
+            self.notice.setText(detail or (f"{len(tools)} herramientas en la conexión integrada de StoneBot." if tools else
+                                           "Consulta el catálogo de la conexión que StoneBot usa para su memoria."))
         self.refresh_tools(name)
 
     def refresh_tools(self, name):
+        integrated = name == INTEGRATED_MEMORY
+        self.tools.setRootIsDecorated(not integrated)
+        self.tools.setHeaderLabels(["Herramienta", "Descripción", "Uso en StoneBot", "Permiso"] if integrated else
+                                   ["Herramienta", "Permiso", "Activación", "Tipo"])
         old_groups = [self.tools.topLevelItem(i) for i in range(self.tools.topLevelItemCount())]
         same_server = self.tools_server == name and bool(old_groups)
         expanded = {group.text(0) for group in old_groups if group.isExpanded()} if same_server else set()
@@ -333,6 +356,25 @@ class McpDialog(QDialog):
         self.tools_server = name
         self.tools.clear()
         _, tools, _ = self.results.get(name, ("", [], ""))
+        if integrated:
+            for tool in sorted(tools, key=lambda tool: tool.name):
+                usage, permission = "Reservada", ""
+                if tool.name in TOOLS:
+                    usage = "Chat"
+                    permission = ("Confirmación" if tool.name in REVIEWED_WRITES else
+                                  "Según el turno" if tool.name in {"inject_memory", "update_memory"} else "Directo")
+                elif tool.name == "force_dream":
+                    usage = "/sueno memoria"
+                description = (tool.description or "").strip()
+                item = QTreeWidgetItem([tool.name, " ".join(description.split()), usage, permission])
+                item.setData(0, TOOL_NAMES, (tool.name,))
+                item.setToolTip(0, description)
+                item.setToolTip(1, description)
+                if usage == "Chat":
+                    item.setToolTip(2, "Disponible según el turno y la configuración de memoria del proveedor.")
+                self.tools.addTopLevelItem(item)
+            self.update_tool_actions()
+            return
         if not tools:
             self.update_tool_actions()
             return
@@ -381,11 +423,12 @@ class McpDialog(QDialog):
         self.update_tool_actions()
 
     def update_tool_actions(self):
-        self.selection_permissions.setEnabled(self.test is None and bool(self.tools.selectedItems()))
+        self.selection_permissions.setEnabled(self.test is None and self.selected() in self.servers
+                                              and bool(self.tools.selectedItems()))
 
     def review_selection_permissions(self):
         name = self.selected()
-        if self.test is not None or not self.tools.selectedItems():
+        if self.test is not None or name not in self.servers or not self.tools.selectedItems():
             return
         names = {tool for item in self.tools.selectedItems() for tool in item.data(0, TOOL_NAMES)}
         tools = [tool for tool in self.results[name][1] if tool.name in names]
@@ -676,7 +719,8 @@ class McpDialog(QDialog):
         name = self.selected()
         if self.test is not None or name is None:
             return
-        self.test = ConnectionTest(self, name, self.servers[name])
+        self.test = ConnectionTest(self, name, self.servers.get(name),
+                                   memory=self.memory if name == INTEGRATED_MEMORY else None)
         self.test.result.connect(self.show_result)
         self.test.finished.connect(self.finish_test)
         self.results[name] = ("Probando…", [], "")
@@ -686,7 +730,8 @@ class McpDialog(QDialog):
 
     def show_result(self, result):
         name = self.test.name
-        self.connection_changed.emit(name)
+        if name != INTEGRATED_MEMORY:
+            self.connection_changed.emit(name)
         tools, detail = result
         status = "Falló" if detail else "Correcta"
         self.results[name] = (status, tools, detail)

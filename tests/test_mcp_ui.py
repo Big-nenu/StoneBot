@@ -4,9 +4,10 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
+from mcp.types import Tool
 from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtTest import QTest
@@ -19,7 +20,7 @@ from appearance import (
     AppearanceDialog, COLORS, ColorEditor, DEFAULT_FONT_SIZE, PRESETS, XCODE,
     control_colors, readable_text, shade,
 )
-from mcp_ui import McpDialog, ServerForm, Toggle
+from mcp_ui import INTEGRATED_MEMORY, McpDialog, ServerForm, Toggle
 
 
 def assert_controls_fit(window, controls):
@@ -49,6 +50,36 @@ def submit_form(button, callback):
         button.click()
     if errors:
         raise errors[0]
+
+
+def test_integrated_memory_catalog():
+    qt = QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as directory, patch.object(mcp_client, "default_root", return_value=Path(directory)):
+        window = app.StoneBot()
+        dialog = window.mcp_manager()
+        catalog = {name: (None, "stonewave", Tool(name=name, description="Descripción de prueba", inputSchema={}), False)
+                   for name in ("query_memory", "force_dream", "sync_memory")}
+        with (patch.object(window.memory, "entries", new=AsyncMock(return_value=catalog)) as entries,
+              patch("mcp_ui.probe_server", new=AsyncMock()) as external_probe):
+            assert dialog.selected() == INTEGRATED_MEMORY
+            assert not dialog.edit.isEnabled() and not dialog.remove.isEnabled()
+            dialog.probe.click()
+            for _ in range(100):
+                qt.processEvents()
+                if dialog.test is None:
+                    break
+                QTest.qWait(20)
+            assert dialog.test is None
+            entries.assert_awaited_once()
+            external_probe.assert_not_awaited()
+            displayed = {dialog.tools.topLevelItem(i).text(0): dialog.tools.topLevelItem(i)
+                         for i in range(dialog.tools.topLevelItemCount())}
+            assert displayed["query_memory"].text(2) == "Chat"
+            assert displayed["query_memory"].toolTip(1) == "Descripción de prueba"
+            assert displayed["force_dream"].text(2) == "/sueno memoria"
+            assert displayed["sync_memory"].text(2) == "Reservada"
+            assert not (Path(directory) / "mcp_servers.json").exists()
+        window.close()
 
 
 def test_manager():
@@ -121,7 +152,8 @@ def test_manager():
             assert not dialog.edit.isEnabled()
             assert not dialog.close()
             wait_for_probe()
-            assert "Correcta" in status().text() and "#86efac" in status().styleSheet()
+            assert "Correcta" in status().text() and "#86efac" in status().styleSheet(), (
+                dialog.selected(), status().text(), status().toolTip())
             assert tool_item("echo").text(1) == "Lectura automática"
             assert tool_item("mark").text(1) == "Requiere confirmación"
             assert dialog.tools.itemWidget(tool_item("echo"), 2).findChild(QLabel).text() == "Activo"
@@ -137,6 +169,9 @@ def test_manager():
                         [tree.columnWidth(i) for i in range(tree.columnCount())])
                     for row in range(tree.topLevelItemCount()):
                         item = tree.topLevelItem(row)
+                        if tree is dialog.table and item.text(0) == INTEGRATED_MEMORY:
+                            assert item.text(2) == "Integrada" and tree.itemWidget(item, 2) is None
+                            continue
                         toggle = switch(tree, row)
                         assert not item.text(2)
                         cell = tree.visualItemRect(item)
@@ -384,6 +419,7 @@ def test_xcode_manager_layout():
 
 if __name__ == "__main__":
     qt = QApplication([])
+    test_integrated_memory_catalog()
     test_manager()
     test_appearance()
     test_toggle_contrast()
