@@ -1,4 +1,5 @@
 """Ejecutar con python -B tests/test_mcp.py."""
+import asyncio
 import contextlib
 import io
 import os
@@ -16,6 +17,7 @@ from ollama import Message
 
 import app
 import mcp_client
+from ai_provider import AISettings
 
 
 def example_stdio():
@@ -24,6 +26,65 @@ def example_stdio():
     example = str(Path(__file__).with_name("mcp_example.py").resolve())
     code = f"import runpy,site;site.addsitedir({packages!r});runpy.run_path({example!r},run_name='__main__')"
     return ["--command", sys.executable, "--arg=-B", "--arg=-c", "--arg", code]
+
+
+def test_cloud_chat_keeps_mcp_out_of_conversation_and_stops_repeated_calls():
+    search = Tool(name="web_search_exa", inputSchema={"type": "object"})
+    session = SimpleNamespace(list_tools=AsyncMock(return_value=ListToolsResult(tools=[search])),
+                              call_tool=AsyncMock(return_value=CallToolResult(content=[
+                                  TextContent(type="text", text="Fuente encontrada"),
+                              ])))
+
+    @contextlib.asynccontextmanager
+    async def connected(name, _):
+        assert name == "exa"
+        yield session
+
+    ai = AISettings("openrouter", "nvidia/nemotron-3.5-lightning")
+
+    def worker(text):
+        return app.Worker([{"role": "system", "content": app.SYSTEM}, {"role": "user", "content": text}], ai=ai)
+
+    config = {"exa": {"enabled": True, "read_tools": []}}
+    with (patch.object(app, "load_servers", return_value=config) as load,
+          patch.object(app, "session_for", connected), patch.object(app, "OpenRouter") as client,
+          patch.object(app.Worker, "enabled_skills", return_value={})):
+        def conversation(**kwargs):
+            assert all(not spec.function.name.startswith("mcp_") for spec in kwargs["tools"])
+            return SimpleNamespace(message=Message(role="assistant", content="Qué interesante."))
+
+        client.return_value.chat.side_effect = conversation
+        assert asyncio.run(worker("Empecé a trabajar con IA y así surgieron mis proyectos.").chat()) == "Qué interesante."
+        load.assert_not_called()
+        session.list_tools.assert_not_awaited()
+
+        requests = []
+
+        def repeating(**kwargs):
+            requests.append(kwargs)
+            if not kwargs["tools"]:
+                assert kwargs["messages"][-1]["content"] == "Fuente encontrada"
+                return SimpleNamespace(message=Message(role="assistant", content="Aquí está la fuente."))
+            alias, = (spec.function.name for spec in kwargs["tools"] if spec.function.name.startswith("mcp_"))
+            arguments = {"query": "PySide6", "max": 1} if len(requests) == 1 else {"max": 1, "query": "PySide6"}
+            return SimpleNamespace(message=Message(role="assistant", tool_calls=[{"function": {
+                "name": alias, "arguments": arguments,
+            }}]))
+
+        client.return_value.chat.side_effect = repeating
+        research = worker("Busca en internet sobre PySide6.")
+        research.confirm_external = AsyncMock(return_value=True)
+        assert asyncio.run(research.chat()) == "Aquí está la fuente."
+        assert len(requests) == 3
+        research.confirm_external.assert_awaited_once()
+        session.call_tool.assert_awaited_once_with("web_search_exa", {"query": "PySide6", "max": 1})
+
+    assert not app.requests_external_tools([{"role": "user", "content": "Busca en mi memoria mis archivos de GitHub."}])
+    followup = [{"role": "user", "content": "¿Me puedes ayudar a buscar en internet sobre Qt?"},
+                {"role": "assistant", "content": "¿Qué versión?"}, {"role": "user", "content": "La 6.10"}]
+    assert app.requests_external_tools(followup)
+    followup[1]["content"] = "Encontré la versión. ¿Quieres hablar de algo más?"
+    assert not app.requests_external_tools(followup)
 
 
 def test_context7_results_are_used_to_finish_after_empty_ollama_response():
@@ -247,6 +308,8 @@ def test_stdio_chat_and_permissions():
 
 
 if __name__ == "__main__":
+    test_cloud_chat_keeps_mcp_out_of_conversation_and_stops_repeated_calls()
+    print("PASS: chat sin MCP externo y cierre de solicitudes repetidas en OpenRouter simulado.")
     test_context7_results_are_used_to_finish_after_empty_ollama_response()
     print("PASS: Context7 entrega ambos resultados y Ollama sintetiza tras una respuesta vacía.")
     test_empty_reply_retries_selection_across_active_servers()

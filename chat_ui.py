@@ -542,6 +542,11 @@ def chat_style(theme):
             QWidget#historyPanel {{ background: {sidebar}; }}
             QWidget#sidebarRail {{ background: {sidebar}; border-right: 1px solid {subtle_edge}; }}
             QWidget#sidebarRail QPushButton#sidebarToggle {{ padding: 0; }}
+            QWidget#sidebarRail QPushButton#providerBadge {{
+                background: {surface}; border: 1px solid {subtle_edge}; border-radius: 9px;
+                font-size: 12px; padding: 2px 5px;
+            }}
+            QWidget#sidebarRail QPushButton#providerBadge:hover {{ border-color: {accent}; }}
             QWidget#sidebarRail QPushButton[sidebarAction="true"] {{ text-align: left; padding: 0 0 0 7px; }}
             QWidget#historyPanel QListWidget, QWidget#historyPanel QLineEdit {{
                 color: {text}; font-family: "Segoe UI"; font-size: 14px;

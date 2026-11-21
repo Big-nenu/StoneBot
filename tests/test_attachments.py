@@ -189,7 +189,7 @@ def test_window(root):
         mcp.menu().aboutToShow.emit()
         assert not mcp.menu().actions()[0].isEnabled()
         with patch.object(app.McpDialog, "exec") as opened:
-            window.mcp_button.click()
+            next(action for action in window.settings_menu.actions() if action.text() == "Servidores MCP…").trigger()
             opened.assert_called_once_with()
 
         def paste(mime):

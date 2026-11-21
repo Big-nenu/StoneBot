@@ -144,6 +144,12 @@ La base experimental `%USERPROFILE%\.stonebot\memoria.db` y su CLI se conservan 
 
 Con Python 3.14, instala `PySide6`, `ollama`, `mcp`, `requests`, `numpy`, `PyYAML`, `markdown-it-py` y `Pygments`. Inicia Ollama local con `nemotron-3.5-bolt:e4b` y el modelo de embeddings que usa tu instalación de SW. Desde el repositorio de SB, inicia `python -B app.py`.
 
+### Modelo y proveedor
+
+En el engrane de **Configuración**, abre **Modelo y proveedor de IA**. Usa **Ollama** para conversar en el equipo local o **OpenRouter** para usar un modelo en la nube. Pulsa **Cargar modelos** y busca por nombre o identificador. En OpenRouter, **Solo gratuitos** muestra las variantes `:free` y el selector gratuito si están disponibles en el catálogo de modelos compatibles con herramientas. Selecciona un resultado para rellenar el identificador. StoneBot recuerda el último modelo de cada proveedor en este equipo. El indicador de la parte inferior izquierda también abre esta configuración.
+
+Para OpenRouter, introduce tu clave API para guardarla en el Administrador de credenciales de Windows con `pywin32`, o configura `OPENROUTER_API_KEY`. El proveedor recibe el contexto del chat y los adjuntos que envíes. El contexto recuperado de StoneWave solo se incluye si activas esa opción. StoneWave sigue usando sus propios modelos locales de embeddings para buscar y guardar recuerdos, aunque el modelo del chat esté en la nube.
+
 ### Abrir desde Windows
 
 Para instalar o volver a crear el acceso directo, ejecuta una vez `powershell -NoProfile -ExecutionPolicy Bypass -File .\crear_acceso_directo.ps1` desde el repositorio con el entorno Python habitual. El acceso **StoneBot** del Escritorio usa `pythonw.exe` y abre la aplicación sin consola. El icono de la bandeja y del acceso se puede reemplazar en `assets/stonebot.ico`.

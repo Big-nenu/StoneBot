@@ -12,7 +12,7 @@ TOOLS = {
     "get_context", "list_memories", "query_memory", "bridge_memory", "conclusion_history",
     "inject_memory", "update_memory", "forget_memory", "restore_memory", "forget_conclusion",
 }
-REVIEWED_WRITES = {"update_memory", "forget_memory", "restore_memory", "forget_conclusion"}
+REVIEWED_WRITES = {"forget_memory", "restore_memory", "forget_conclusion"}
 SERVER_SCRIPT = Path(__file__).resolve().parent.parent / "StoneWave" / "mcp_server.py"
 SAVED = ("📍 NUEVA", "= YA EXISTE")
 

@@ -1,9 +1,11 @@
 """Panel lateral del historial."""
 from PySide6.QtCore import QEvent, QPoint, QRect, Qt, Signal
+from math import cos, pi, sin
+
 from PySide6.QtGui import QContextMenuEvent, QIcon, QPainter, QPen, QPixmap, QPolygon
 from PySide6.QtWidgets import (
     QInputDialog, QLineEdit, QListView, QListWidget, QListWidgetItem,
-    QMenu, QMessageBox, QPushButton, QStyleOptionViewItem, QStyledItemDelegate, QVBoxLayout, QWidget,
+    QMenu, QMessageBox, QPushButton, QSizePolicy, QStyleOptionViewItem, QStyledItemDelegate, QVBoxLayout, QWidget,
 )
 
 from appearance import appearance_settings, secondary_button, sync
@@ -15,6 +17,8 @@ MAXIMUM_WIDTH = 480
 RAIL_WIDTH = 48
 PROJECT_ROLE = Qt.ItemDataRole.UserRole + 1
 NESTED_ROLE = Qt.ItemDataRole.UserRole + 2
+MORE_ROLE = Qt.ItemDataRole.UserRole + 3
+RECENT_BATCH = 10
 SIDEBAR_ACTIONS = (
     ("new", "Nuevo chat"), ("search", "Buscar conversaciones"),
     ("projects", "Proyectos"), ("diagnostics", "Diagnóstico"),
@@ -41,6 +45,14 @@ def sidebar_icon(name, color):
         elif name == "toggle":
             painter.drawRoundedRect(QRect(2, 4, 16, 12), 2, 2)
             painter.drawLine(7, 5, 7, 15)
+        elif name == "settings":
+            points = []
+            for index in range(32):
+                angle = index * pi / 16
+                radius = 8.5 if index % 4 in (1, 2) else 6.5
+                points.append(QPoint(round(10 + radius * cos(angle)), round(10 + radius * sin(angle))))
+            painter.drawPolygon(QPolygon(points))
+            painter.drawEllipse(QRect(7, 7, 6, 6))
         else:
             painter.drawLine(4, 10, 16, 10)
             painter.drawLine(10, 4, 10, 16)
@@ -82,14 +94,42 @@ class SidebarRail(QWidget):
             self.actions[name] = button
             navigation.addWidget(button)
         layout.addWidget(history, 1)
+        footer = QVBoxLayout()
+        footer.setContentsMargins(7, 6, 7, 9)
+        self.provider_badge = sidebar_button("Modelo y proveedor de IA")
+        self.provider_badge.setObjectName("providerBadge")
+        self.provider_badge.setFixedHeight(44)
+        self.provider_badge.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        footer.addWidget(self.provider_badge)
+        layout.addLayout(footer)
+        self.provider = self.model = ""
         self.set_expanded(True)
 
     def set_expanded(self, expanded):
+        self.expanded = expanded
         self.setMinimumWidth(MINIMUM_WIDTH if expanded else RAIL_WIDTH)
         self.setMaximumWidth(MAXIMUM_WIDTH if expanded else RAIL_WIDTH)
         for name, title in SIDEBAR_ACTIONS:
             self.actions[name].setText(title if expanded else "")
         self.history.setVisible(expanded)
+        self.update_provider_badge()
+
+    def set_provider(self, provider, model):
+        self.provider, self.model = provider, model
+        self.provider_badge.setToolTip(f"{provider} · {model}")
+        self.provider_badge.setAccessibleName(f"Modelo y proveedor de IA: {provider}, {model}")
+        self.update_provider_badge()
+
+    def update_provider_badge(self):
+        if self.expanded:
+            label = self.provider_badge.fontMetrics().elidedText(self.model, Qt.TextElideMode.ElideRight, max(60, self.width() - 42))
+            self.provider_badge.setText(f"{self.provider}\n{label}")
+        else:
+            self.provider_badge.setText(self.provider[:1])
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update_provider_badge()
 
     def refresh_icons(self, color):
         self.toggle.setIcon(sidebar_icon("toggle", color))
@@ -145,7 +185,8 @@ class ConversationList(QListWidget):
     def viewportEvent(self, event):
         if event.type() in (QEvent.Type.MouseMove, QEvent.Type.Enter):
             self.hovered = self.itemAt(event.position().toPoint())
-            if self.hovered is None or not self.hovered.flags() & Qt.ItemFlag.ItemIsEnabled:
+            if (self.hovered is None or self.hovered.data(MORE_ROLE)
+                    or not self.hovered.flags() & Qt.ItemFlag.ItemIsEnabled):
                 self.hide_options()
             else:
                 rect = self.visualItemRect(self.hovered)
@@ -168,7 +209,7 @@ class ConversationList(QListWidget):
     def contextMenuEvent(self, event):
         keyboard = event.reason() == QContextMenuEvent.Reason.Keyboard
         item = self.currentItem() if keyboard else self.itemAt(event.pos())
-        if item is not None and item.flags() & Qt.ItemFlag.ItemIsEnabled:
+        if item is not None and not item.data(MORE_ROLE) and item.flags() & Qt.ItemFlag.ItemIsEnabled:
             point = self.viewport().mapToGlobal(self.visualItemRect(item).bottomLeft()) if keyboard else event.globalPos()
             self.options_requested.emit(item, point)
             event.accept()
@@ -210,6 +251,7 @@ class HistoryPanel(QWidget):
         self.projects = []
         self.project_chats = {}
         self.rows = []
+        self.recent_limit = RECENT_BATCH
         self.current_chat = None
         self.icon_color = None
         layout.addWidget(self.search)
@@ -231,7 +273,17 @@ class HistoryPanel(QWidget):
         self.rebuild()
 
     def activate_row(self, item):
-        if (project_id := item.data(PROJECT_ROLE)) is not None:
+        if item.data(MORE_ROLE):
+            first_older = self.rows[self.recent_limit][0]
+            self.recent_limit += RECENT_BATCH
+            self.rebuild()
+            for index in range(self.list.count()):
+                row = self.list.item(index)
+                if row.data(Qt.ItemDataRole.UserRole) == first_older and not row.data(NESTED_ROLE):
+                    self.list.setCurrentItem(row)
+                    self.list.scrollToItem(row)
+                    break
+        elif (project_id := item.data(PROJECT_ROLE)) is not None:
             if project_id in self.expanded_projects:
                 self.expanded_projects.remove(project_id)
             else:
@@ -280,7 +332,8 @@ class HistoryPanel(QWidget):
         self.list.hide_options()
         self.list.clear()
         selected_nested = None
-        if not self.search.text().strip():
+        searching = bool(self.search.text().strip())
+        if not searching:
             if self.projects:
                 self.add_heading("Proyectos")
             for project in self.projects:
@@ -299,10 +352,14 @@ class HistoryPanel(QWidget):
                         if chat_id == self.current_chat:
                             selected_nested = child
             self.add_heading("Recientes")
-        for chat_id, title in self.rows:
+        for chat_id, title in self.rows if searching else self.rows[:self.recent_limit]:
             item = self.add_chat(chat_id, title)
             if chat_id == self.current_chat and selected_nested is None:
                 self.list.setCurrentItem(item)
+        if not searching and len(self.rows) > self.recent_limit:
+            more = QListWidgetItem("Ver más conversaciones…")
+            more.setData(MORE_ROLE, True)
+            self.list.addItem(more)
         if selected_nested is not None:
             self.list.setCurrentItem(selected_nested)
         scroll.setValue(position)

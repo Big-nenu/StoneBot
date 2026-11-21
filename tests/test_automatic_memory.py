@@ -63,6 +63,32 @@ def test_chat_setting():
         assert replies == ["Respuesta de prueba."] * 2
 
 
+def test_invalid_json_does_not_save_memories():
+    def reply(content):
+        return SimpleNamespace(message=SimpleNamespace(content=content))
+
+    with patch.object(automatic_memory, "Client") as factory:
+        chat = factory.return_value.chat
+        chat.side_effect = [reply(""), reply('```json\n{"recuerdos":[1]}\n```')]
+        assert automatic_memory.select_memories(MESSAGE, app.MODEL) == [PREFERENCE]
+        assert chat.call_count == 2
+
+    memory = SimpleNamespace(call=AsyncMock())
+    with (patch.object(automatic_memory, "Client") as factory,
+          patch.object(app, "automatic_memory_enabled", return_value=True),
+          patch.object(app.Worker, "chat", new=AsyncMock(return_value="Respuesta de prueba."))):
+        factory.return_value.chat.side_effect = [reply("respuesta de texto"), reply('{"recuerdos":[true]}')]
+        worker = app.Worker([MESSAGE], capture_memory=True, memory=memory)
+        notices, replies = [], []
+        worker.mcp_notice.connect(notices.append)
+        worker.finished.connect(replies.append)
+        worker.run()
+        memory.call.assert_not_awaited()
+        assert "selección JSON válida" in notices[0]
+        assert replies == ["Respuesta de prueba."]
+
+
 if __name__ == "__main__":
     test_capture()
     test_chat_setting()
+    test_invalid_json_does_not_save_memories()

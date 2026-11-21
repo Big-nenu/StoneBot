@@ -59,7 +59,7 @@ def test_manager():
               patch.object(mcp_client, "read_key", return_value=None)):
             window = app.StoneBot()
             with patch.object(McpDialog, "exec", return_value=0) as open_dialog:
-                window.mcp_button.click()
+                next(action for action in window.settings_menu.actions() if action.text() == "Servidores MCP…").trigger()
             open_dialog.assert_called_once()
             dialog = window.mcp_dialog
             dialog.show()
@@ -264,7 +264,7 @@ def test_manager():
             assert "Correcta" in status().text()
             assert mcp_client.credential_target("ejemplo", dict(server, url="https://other.test/mcp")) != target
             with patch.object(McpDialog, "exec", return_value=0):
-                window.mcp_button.click()
+                next(action for action in window.settings_menu.actions() if action.text() == "Servidores MCP…").trigger()
             assert window.mcp_dialog is dialog and dialog.selected() == "ejemplo"
             with (patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes),
                   patch("mcp_ui.delete_key", side_effect=lambda key: vault.pop(key, None))):
@@ -309,7 +309,7 @@ def test_appearance():
                 return 0
 
             with patch.object(AppearanceDialog, "exec", customize):
-                window.settings_button.click()
+                next(action for action in window.settings_menu.actions() if action.text() == "Apariencia…").trigger()
             assert (root / "appearance.ini").is_file()
             reopened = app.StoneBot()
             reopened.show()
@@ -318,7 +318,7 @@ def test_appearance():
             assert reopened.message.font().pixelSize() == 23
             reopened.resize(340, 360)
             qt.processEvents()
-            assert_controls_fit(reopened, (reopened.mcp_button, reopened.settings_button, reopened.send))
+            assert_controls_fit(reopened, (reopened.settings_button, reopened.sidebar_rail.provider_badge, reopened.send))
             panel = AppearanceDialog(reopened, reopened.appearance, reopened.change_appearance)
             panel.show()
             for width in (340, 780):

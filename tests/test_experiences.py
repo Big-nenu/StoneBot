@@ -30,6 +30,7 @@ def demo(root, stage, *, live=False):
     db = root / "experiences.sqlite3"
     payload = "prueba-privada-42"
     with (patch.object(mcp_client, "default_root", return_value=root),
+          patch.object(app, "automatic_memory_enabled", return_value=False),
           patch.object(memory_service, "DB_PATH", root / "memoria.db")):
         if stage == "registrar":
             command, *args = example_stdio()[1:]
@@ -98,7 +99,7 @@ def demo(root, stage, *, live=False):
         with patch.object(app, "Client", return_value=SimpleNamespace(chat=live_model if live else model)):
             if stage == "registrar":
                 if not live:
-                    assert "devolvió" in send("Prueba normal de demo echo.")
+                    assert "devolvió" in send("Prueba el servidor demo con echo.")
                     assert "rechazó" in send("/aprender Haz una llamada inválida a demo echo.")
                     assert not db.exists()
                 result = send(f"/aprender Usa la herramienta MCP echo del servidor demo con el texto exacto {payload}. "
