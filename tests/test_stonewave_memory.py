@@ -1,11 +1,12 @@
 """Prueba de integración MCP con un perfil y una base de prueba."""
 import asyncio
+import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import SkipTest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import mcp_client
 from stonewave_memory import SERVER_SCRIPT, StoneWaveMemory, load_settings, save_settings
@@ -29,6 +30,7 @@ def test_stonewave_session():
             memory = StoneWaveMemory()
             try:
                 assert "vacía" in asyncio.run(memory.call("list_memories"))
+                assert json.loads(asyncio.run(memory.call("dream_activity")))["status"] == "never"
                 with closing(sqlite3.connect(database)) as db, db:
                     db.executemany("INSERT INTO facts (namespace, content, energy, pinned) VALUES (?, ?, ?, ?)", [
                         ("prueba", "Un recuerdo sintético", 0.9, 1),
@@ -52,7 +54,38 @@ def test_stonewave_session():
                 memory.close()
 
 
+def test_chat_reads_activity_without_a_model():
+    from types import SimpleNamespace
+    from ai_provider import AISettings
+    from app import Worker
+    from stonewave_activity import dream_question
+
+    report = {"status": "ok", "finished_at": "2026-11-21T20:00:00Z", "source": "automático",
+              "links_count": 1, "links": [{"kind": "similar", "facts": [
+                  {"id": 1, "content": "Recuerdo A"}, {"id": 2, "content": "Recuerdo B"},
+              ]}], "conclusions": [{"kind": "hipótesis", "id": 3, "content": "Conclusión C"}],
+              "conclusions_status": "ok", "notes_status": "ok",
+              "notes_created": ["conclusiones/nueva.md"], "notes_updated": ["recuerdos/actualizada.md"]}
+    memory = SimpleNamespace(call=AsyncMock(return_value=json.dumps(report)))
+    ai = AISettings("openrouter", "test/model", cloud_memory=False)
+
+    def ask(text):
+        return asyncio.run(Worker([{"role": "user", "content": text}], memory=memory, ai=ai).chat())
+
+    with patch("app.OpenRouter", side_effect=AssertionError("La actividad se consulta localmente")):
+        assert "21/11/2026" in ask("¿Cuándo fue el último sueño de SW?")
+        assert "Recuerdo B" in ask("¿Qué recuerdos relacionó?")
+        assert "Conclusión C" in ask("¿Qué conclusiones generó?")
+        answer = ask("¿Qué notas creó o actualizó en Obsidian?")
+        assert "Creada · conclusiones/nueva.md" in answer and "Actualizada · recuerdos/actualizada.md" in answer
+        memory.call.assert_awaited_with("dream_activity")
+        memory.call.return_value = json.dumps({"status": "date_only", "finished_at": report["finished_at"]})
+        assert "Solo está disponible la fecha" in ask("¿Qué notas creó o actualizó en Obsidian?")
+    assert not dream_question([{"role": "user", "content": "¿Qué recuerdas de mis sueños personales?"}])
+
+
 if __name__ == "__main__":
+    test_chat_reads_activity_without_a_model()
     try:
         test_stonewave_session()
     except SkipTest as exc:

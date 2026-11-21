@@ -49,6 +49,7 @@ from memory_ui import MemoryDialog
 from projects_ui import ProjectDialog, ProjectPage
 from skills_ui import SkillsDialog
 from stonebot_engine.safety import IsolationError, check_path
+from stonewave_activity import dream_question, format_dream_activity
 from stonewave_memory import MemoryUnavailable, REVIEWED_WRITES, SAVED, StoneWaveMemory, TOOLS
 from tasks import (
     COVERAGE_STATUS, LABELS as TASK_LABELS, LIMIT_REASON, PLAN_STATUS, REPORT, REPORT_STATES, REPORT_STATUS, START_TASK,
@@ -398,7 +399,7 @@ class Worker(QObject):
     def capture_user_memories(self):
         message = self.messages[-1]
         content = message.get("content", "")
-        if content.startswith("/") or parse_attachment_save(content):
+        if content.startswith("/") or parse_attachment_save(content) or dream_question(self.messages):
             return
 
         async def save_selected():
@@ -690,6 +691,14 @@ class Worker(QObject):
         latest = folder = ""
         current = messages[-1] if messages else {}
         command = current.get("content", "").split(maxsplit=1)
+        if self.task is None and (focus := dream_question(messages)):
+            try:
+                activity = await self.call_memory("dream_activity")
+                return format_dream_activity(activity, focus)
+            except MemoryUnavailable as exc:
+                return f"No pude consultar la actividad de StoneWave. {exc}"
+            except (KeyError, TypeError, ValueError):
+                return "StoneWave devolvió un registro de actividad que no pude leer."
         if (self.completed_task and self.task is None and current.get("role") == "user"
                 and re.fullmatch(r"(?:guarda|recuerda)\s+(?:(?:el|este|ese)\s+)?(?:resumen|punto de continuidad)"
                                  r"(?:\s+en (?:tu|la) memoria(?: de StoneBot)?)?[.!]?",

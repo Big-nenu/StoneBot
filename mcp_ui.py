@@ -371,6 +371,8 @@ class McpDialog(QDialog):
                                   "Según el turno" if tool.name in {"inject_memory", "update_memory"} else "Directo")
                 elif tool.name == "force_dream":
                     usage = "/sueno memoria"
+                elif tool.name == "dream_activity":
+                    usage, permission = "Consulta de actividad en el chat", "Directo"
                 elif tool.name in {"export_notes", "sync_memory"}:
                     usage, permission = "Ajustes de StoneWave", "Confirmación"
                 description = (tool.description or "").strip()
