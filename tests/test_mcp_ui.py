@@ -21,6 +21,8 @@ from appearance import (
     control_colors, readable_text, shade,
 )
 from mcp_ui import INTEGRATED_MEMORY, McpDialog, ServerForm, Toggle
+from stonewave_memory import load_settings
+from stonewave_settings_ui import StoneWaveSettingsDialog
 
 
 def assert_controls_fit(window, controls):
@@ -77,8 +79,43 @@ def test_integrated_memory_catalog():
             assert displayed["query_memory"].text(2) == "Chat"
             assert displayed["query_memory"].toolTip(1) == "Descripción de prueba"
             assert displayed["force_dream"].text(2) == "/sueno memoria"
-            assert displayed["sync_memory"].text(2) == "Reservada"
+            assert displayed["sync_memory"].text(2) == "Ajustes de StoneWave"
             assert not (Path(directory) / "mcp_servers.json").exists()
+        notes = Path(directory) / "notas"
+        notes.mkdir()
+
+        def finish_job(settings):
+            for _ in range(100):
+                qt.processEvents()
+                if settings.job is None:
+                    return
+                QTest.qWait(20)
+            raise AssertionError("La operación de StoneWave no terminó.")
+
+        def configure(settings):
+            assert settings.sections.count() == 4
+            settings.fields["NOTES"].setText(str(notes))
+            settings.dream.setChecked(False)
+            assert not settings.fields["DREAM_HOURS"].isEnabled()
+            assert not settings.actions["export_notes"].isEnabled()
+            settings.apply_button.click()
+            finish_job(settings)
+            assert settings.actions["export_notes"].isEnabled()
+            assert "guardados y aplicados" in settings.status.text()
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+                settings.actions["export_notes"].click()
+            finish_job(settings)
+            assert settings.status.text() == "Exportación de prueba completada."
+            return 0
+
+        with (patch.object(StoneWaveSettingsDialog, "exec", configure),
+              patch.object(window.memory, "restart", new=AsyncMock(return_value=catalog)) as restart,
+              patch.object(window.memory, "call", new=AsyncMock(return_value="Exportación de prueba completada.")) as call):
+            dialog.memory_settings.click()
+            restart.assert_awaited_once()
+            call.assert_awaited_once_with("export_notes")
+        assert load_settings()["NOTES"] == str(notes)
+        assert not (Path(directory) / "mcp_servers.json").exists()
         window.close()
 
 

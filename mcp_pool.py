@@ -11,14 +11,14 @@ class SessionProxy:
     def __init__(self, pool, slot, session):
         self.pool, self.slot, self.session = pool, slot, session
 
-    async def call_tool(self, tool, arguments):
-        return await self.pool.submit(self.call(tool, arguments))
+    async def call_tool(self, tool, arguments, **options):
+        return await self.pool.submit(self.call(tool, arguments, **options))
 
-    async def call(self, tool, arguments):
+    async def call(self, tool, arguments, **options):
         if self.pool.expired(self.slot):
             raise ConnectionError("La sesión MCP se cerró. El siguiente turno puede reconectar.")
         try:
-            return await self.session.call_tool(tool, arguments)
+            return await self.session.call_tool(tool, arguments, **options)
         except Exception:
             self.slot.stop.set()
             raise

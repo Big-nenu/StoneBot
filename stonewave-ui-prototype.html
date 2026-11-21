@@ -1,0 +1,104 @@
+<!doctype html>
+<!-- ¿Cómo administrar StoneWave dentro del panel MCP? Tres variantes de maqueta en ?variant=A, B y C. -->
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StoneWave en StoneBot · Prototipo</title>
+<style>
+:root{color-scheme:dark;--bg:#202126;--panel:#272930;--edge:#41454f;--text:#edf0f5;--muted:#afb8c7;--accent:#a1c5fa;--selected:#303c50}
+*{box-sizing:border-box}
+body{margin:0;background:#181a1f;color:var(--text);font:14px/1.5 'Segoe UI',system-ui,sans-serif;padding:28px 18px 96px}
+.window{max-width:1120px;margin:auto;background:var(--bg);border:1px solid var(--edge);border-radius:14px;box-shadow:0 16px 54px #0005;overflow:hidden}
+.bar,.footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 22px;border-bottom:1px solid var(--edge)}
+.bar{font-weight:650}.bar span{color:var(--muted);font-weight:400;font-size:12px}
+.shell{display:grid;grid-template-columns:208px minmax(0,1fr)}
+aside{padding:20px 14px;border-right:1px solid var(--edge);color:var(--muted)}
+.server{display:block;padding:9px 11px;border:1px solid transparent;margin-bottom:3px}.server.current{background:var(--selected);border-color:#596f8a;border-radius:8px;color:var(--text)}.server small{display:block;color:#c1d1e6}
+main{padding:22px;min-width:0}h1,h2,h3,p{margin:0}h1{font-size:25px;letter-spacing:-.4px}h2,h3{font-size:16px}p,small{color:var(--muted)}
+.heading{display:flex;align-items:start;justify-content:space-between;gap:12px;margin-bottom:18px}.badge{background:#263d34;border:1px solid #456d59;color:#bcf0d5;border-radius:999px;padding:3px 10px;font-size:12px;white-space:nowrap}
+.section{padding:14px 16px;background:var(--panel);border:1px solid var(--edge);border-radius:10px}.section p{margin-top:4px}.section .sub{margin-top:10px}
+.cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.wide{grid-column:1/-1}
+.details-layout{display:grid;grid-template-columns:165px minmax(0,1fr);gap:14px}.rail{display:grid;gap:5px;align-content:start}.rail button{text-align:left}.rail button[aria-pressed=true]{background:var(--selected);border-color:#7294c3}.details-layout .section + .section{margin-top:10px}
+.folds{border:1px solid var(--edge);border-radius:10px;overflow:hidden}details{background:var(--panel)}details+details{border-top:1px solid var(--edge)}summary{cursor:pointer;padding:13px 16px;font-weight:650;list-style-position:inside}summary small{float:right;font-weight:400}details .section{border:0;border-top:1px solid var(--edge);border-radius:0;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 12px}details .section h3{display:none}details .section .sub{grid-column:1/-1}
+.setting{display:flex;justify-content:space-between;align-items:center;gap:10px}.field{display:grid;gap:6px;margin-top:10px}.columns{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+input:not([type=checkbox]),select{min-width:0;width:100%;color:var(--text);background:#20232a;border:1px solid #535967;border-radius:7px;padding:7px 9px;font:inherit}
+input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent);cursor:pointer;flex-shrink:0}input:disabled,select:disabled{opacity:.55}
+button{font:inherit;cursor:pointer;color:var(--text);background:#363a45;border:1px solid #555d6c;border-radius:7px;padding:6px 11px}button:hover{background:#454c59}button:focus-visible,input:focus-visible,summary:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}button.primary{background:#91b8ef;color:#162338;border-color:#91b8ef;font-weight:650}button:disabled{opacity:.48;cursor:default}
+.footer{border-bottom:0;border-top:1px solid var(--edge);padding:12px 22px;color:var(--muted)}.footer button{white-space:nowrap}
+.switcher{position:fixed;bottom:17px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;max-width:calc(100vw - 20px);background:#0f141d;border:1px solid #76849b;border-radius:999px;padding:6px;box-shadow:0 3px 18px #0009;z-index:2}.switcher button{border-radius:999px}.switcher span{white-space:nowrap;text-align:center;padding:0 5px}
+@media(max-width:730px){body{padding:12px 8px 84px}.shell{grid-template-columns:1fr}aside{display:flex;flex-wrap:wrap;gap:4px;padding:8px;border-right:0;border-bottom:1px solid var(--edge)}.server{margin:0;padding:5px 8px}.server small{display:inline;margin-left:4px}main{padding:14px}.cards,.details-layout{grid-template-columns:1fr}.rail{display:flex;flex-wrap:wrap}.bar,.footer{padding:10px 14px}details .section{grid-template-columns:1fr}details .section .sub{grid-column:auto}}
+</style>
+</head>
+<body>
+<div class="window">
+  <header class="bar">StoneBot <span>Configuración › Servidores MCP · Prototipo</span></header>
+  <div class="shell">
+    <aside aria-label="Servidores MCP">
+      <span class="server">Context7</span><span class="server">Exa</span><span class="server">Desktop Commander</span>
+      <span class="server current" aria-current="page">StoneWave <small>Integrado</small></span>
+    </aside>
+    <main aria-label="Configuración de StoneWave">
+      <div class="heading"><div><h1>StoneWave</h1><p>Memoria de StoneBot en este equipo</p></div><span class="badge">● Conectado · Ejemplo</span></div>
+      <div id="variant"></div>
+    </main>
+  </div>
+  <footer class="footer"><span id="status" role="status">Ajustes de ejemplo. Aplicar simula el reinicio de la sesión integrada.</span><button class="primary" id="apply" disabled>Aplicar cambios</button></footer>
+</div>
+<nav class="switcher" aria-label="Variantes de prototipo"><button id="previous" aria-label="Variante anterior">←</button><span id="variantLabel" aria-live="polite"></span><button id="next" aria-label="Variante siguiente">→</button></nav>
+<script>
+const initial = {dream:true, conclusions:true, model:'nemotron-3.5-bolt:e4b', hours:12, idle:10,
+  notes:'Documents\\Big-nenu\\stonewave', sync:'Documents\\Big-nenu\\stonewave'};
+const state = {...initial};
+let applied = {...initial};
+const variants = ['A','B','C'];
+const names = {A:'Tarjetas', B:'Secciones', C:'Acordeón'};
+const sections = {dream:'Sueño automático', conclusions:'Conclusiones', notes:'Notas en Obsidian', sync:'Sincronización'};
+let variant = new URLSearchParams(location.hash.slice(1)).get('variant') || new URLSearchParams(location.search).get('variant');
+if (!variants.includes(variant)) variant = 'A';
+let tab = 'dream';
+const open = new Set(['dream']);
+const output = document.getElementById('variant');
+const status = document.getElementById('status');
+const apply = document.getElementById('apply');
+const check = (key, label) => `<label class="setting"><span>${label}</span><input type="checkbox" data-field="${key}" ${state[key]?'checked':''}></label>`;
+const field = (key, label, type='text') => `<label class="field"><span>${label}</span><input type="${type}" ${type==='number'?'min="1"':''} data-field="${key}" ${key==='hours'||key==='idle' ? (!state.dream?'disabled':'') : ''}></label>`;
+const action = (key, label) => `<button data-action="${key}"${key==='notes'||key==='sync' ? (!state[key].trim()?' disabled':'') : ''}>${label}</button>`;
+const section = (name, body, wide=false) => `<section class="section${wide?' wide':''}"><h3>${sections[name]}</h3>${body}</section>`;
+const content = {
+  dream: () => section('dream', `<p>Revisa y organiza la memoria cuando ha pasado el intervalo indicado y la memoria está inactiva.</p><div class="sub">${check('dream','Activar sueño automático')}<div class="columns">${field('hours','Intervalo mínimo (horas)','number')}${field('idle','Inactividad (minutos)','number')}</div></div><div class="sub">${action('dream','Ejecutar sueño ahora')}</div>`),
+  conclusions: () => section('conclusions', `<p>StoneWave puede proponer hipótesis a partir de los recuerdos durante el sueño.</p><div class="sub">${check('conclusions','Generar conclusiones')}<label class="field"><span>Modelo local de conclusiones · Ollama</span><select data-field="model" ${state.conclusions?'':'disabled'}><option>nemotron-3.5-bolt:e4b</option><option>d1:3b</option><option>qwen2.5:0.5b</option></select></label></div>`),
+  notes: () => section('notes', `<p>Publica conclusiones y recuerdos relacionados en la bóveda. Deja la carpeta vacía para desactivar las notas.</p>${field('notes','Carpeta de notas')}<div class="sub">${action('notes','Exportar notas ahora')}</div>`),
+  sync: () => section('sync', `<p>Combina la memoria local con un archivo compartido. Tú decides cuándo sincronizar.</p>${field('sync','Carpeta o archivo .jsonl compartido')}<div class="sub">${action('sync','Sincronizar ahora')}</div>`),
+};
+const summary = key => key==='dream'||key==='conclusions' ? (state[key]?'Activo':'Pausado') : (state[key].trim()?'Configurada':'Sin ruta');
+function variantA(){return `<div class="cards">${Object.keys(sections).map(key=>content[key]()).join('')}</div>`}
+function variantB(){return `<div class="details-layout"><nav class="rail" aria-label="Ajustes de StoneWave">${Object.entries(sections).map(([key,title])=>`<button data-tab="${key}" aria-pressed="${key===tab}">${title}</button>`).join('')}</nav><div>${content[tab]()}</div></div>`}
+function variantC(){return `<div class="folds">${Object.entries(sections).map(([key,title])=>`<details data-fold="${key}" ${open.has(key)?'open':''}><summary>${title}<small data-summary="${key}">${summary(key)}</small></summary>${content[key]()}</details>`).join('')}</div>`}
+function render(){
+  output.innerHTML=({A:variantA,B:variantB,C:variantC})[variant]();
+  output.querySelectorAll('[data-field]').forEach(el=>{if(el.type!=='checkbox')el.value=state[el.dataset.field]});
+  output.querySelectorAll('[data-fold]').forEach(el=>el.addEventListener('toggle',()=>{if(!el.isConnected)return; if(el.open)open.add(el.dataset.fold);else open.delete(el.dataset.fold)}));
+  document.getElementById('variantLabel').textContent=`Prototipo · ${variant} / ${names[variant]}`;
+  update();
+}
+function update(){
+  const dirty=Object.keys(state).some(key=>state[key]!==applied[key]);
+  apply.disabled=!dirty||Number(state.hours)<1||Number(state.idle)<1;
+  status.textContent=dirty?'Cambios pendientes de aplicar en la maqueta.':'Ajustes de ejemplo. Aplicar simula el reinicio de la sesión integrada.';
+  output.querySelectorAll('[data-summary]').forEach(el=>el.textContent=summary(el.dataset.summary));
+  output.querySelectorAll('[data-field=hours],[data-field=idle]').forEach(el=>el.disabled=!state.dream);
+  output.querySelectorAll('[data-field=model]').forEach(el=>el.disabled=!state.conclusions);
+  output.querySelectorAll('[data-action=notes],[data-action=sync]').forEach(el=>el.disabled=!state[el.dataset.action].trim());
+}
+output.addEventListener('input',e=>{const key=e.target.dataset.field;if(!key)return;state[key]=e.target.type==='checkbox'?e.target.checked:e.target.type==='number'?(e.target.valueAsNumber||0):e.target.value;update()});
+output.addEventListener('click',e=>{const key=e.target.dataset.tab;if(key){tab=key;render();output.querySelector(`[data-tab="${tab}"]`).focus();return} const request=e.target.dataset.action;if(request)status.textContent=({dream:'Sueño manual simulado.',notes:'Exportación de notas simulada.',sync:'Sincronización manual simulada.'})[request]});
+apply.addEventListener('click',()=>{applied={...state};update();status.textContent='Cambios aplicados en la maqueta. Sesión integrada reiniciada de forma simulada.'});
+function cycle(delta){variant=variants[(variants.indexOf(variant)+delta+variants.length)%variants.length];const url=new URL(location.href);if(url.protocol==='file:')url.hash=`variant=${variant}`;else url.searchParams.set('variant',variant);history.replaceState(null,'',url);render()}
+document.getElementById('previous').onclick=()=>cycle(-1);
+document.getElementById('next').onclick=()=>cycle(1);
+document.addEventListener('keydown',e=>{if(e.target.closest('input,textarea,select,[contenteditable]'))return;if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();cycle(e.key==='ArrowLeft'?-1:1)}});
+render();
+</script>
+</body>
+</html>

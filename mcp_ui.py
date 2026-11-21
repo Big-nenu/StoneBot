@@ -22,6 +22,7 @@ from mcp_permissions import list_permissions, permission_signature, remember_man
 from mcp_setup import ensure_new, prepare
 from mcp_tool_groups import category, operation
 from stonewave_memory import MemoryUnavailable, REVIEWED_WRITES, TOOLS
+from stonewave_settings_ui import StoneWaveSettingsDialog
 
 
 TRANSPORTS = {"stdio": "STDIO", "http": "Streamable HTTP"}
@@ -215,6 +216,8 @@ class McpDialog(QDialog):
         self.edit = QPushButton("Editar")
         self.remove = QPushButton("Eliminar")
         self.api_key = QPushButton("Clave API…")
+        self.memory_settings = QPushButton("Ajustes de StoneWave…")
+        self.memory_settings.clicked.connect(self.open_memory_settings)
         self.probe = QPushButton("Probar conexión")
         for button, callback in ((self.add, self.add_server), (self.edit, self.edit_server),
                                  (self.remove, self.remove_server),
@@ -224,6 +227,7 @@ class McpDialog(QDialog):
         for button in (self.edit, self.remove, self.api_key):
             controls.addWidget(button)
         controls.addStretch()
+        controls.addWidget(self.memory_settings)
         self.probe.setProperty("primary", True)
         controls.addWidget(self.probe)
 
@@ -336,6 +340,8 @@ class McpDialog(QDialog):
             button.setEnabled(idle and name in self.servers)
         self.probe.setEnabled(idle and name is not None)
         self.probe.setText("Consultar catálogo" if integrated else "Probar conexión")
+        self.memory_settings.setVisible(integrated)
+        self.memory_settings.setEnabled(integrated and idle)
         self.api_key.setEnabled(idle and name in self.servers and bool(credential_target(name, self.servers[name])))
         if integrated and idle:
             _, tools, detail = self.results.get(name, ("Sin probar", [], ""))
@@ -365,6 +371,8 @@ class McpDialog(QDialog):
                                   "Según el turno" if tool.name in {"inject_memory", "update_memory"} else "Directo")
                 elif tool.name == "force_dream":
                     usage = "/sueno memoria"
+                elif tool.name in {"export_notes", "sync_memory"}:
+                    usage, permission = "Ajustes de StoneWave", "Confirmación"
                 description = (tool.description or "").strip()
                 item = QTreeWidgetItem([tool.name, " ".join(description.split()), usage, permission])
                 item.setData(0, TOOL_NAMES, (tool.name,))
@@ -714,6 +722,25 @@ class McpDialog(QDialog):
         if QMessageBox.question(self, "Eliminar servidor MCP", f"¿Eliminar la configuración de {name}?",
                                 buttons.Yes | buttons.No, buttons.No) == buttons.Yes:
             self.commit(name, None)
+
+    def open_memory_settings(self):
+        if self.selected() != INTEGRATED_MEMORY or self.test is not None:
+            return
+        try:
+            dialog = StoneWaveSettingsDialog(self, self.memory, self.theme)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.notice.setText(f"No se pudieron abrir los ajustes de StoneWave: {exc}")
+            return
+        dialog.session_changed.connect(self.refresh_memory_session)
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
+
+    def refresh_memory_session(self, entries, error):
+        tools = [entry[2] for entry in entries.values()] if entries else []
+        self.results[INTEGRATED_MEMORY] = ("Falló" if error else "Correcta", tools, error)
+        self.refresh(INTEGRATED_MEMORY)
 
     def test_connection(self):
         name = self.selected()
