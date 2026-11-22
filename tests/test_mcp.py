@@ -133,6 +133,67 @@ def test_cloud_chat_keeps_mcp_out_of_conversation_and_stops_repeated_calls():
     assert not app.requests_external_tools(followup)
 
 
+def test_switch_from_memory_to_local_project():
+    path = str(Path(tempfile.gettempdir()) / "Proyecto de prueba")
+    messages = [{"role": "system", "content": app.SYSTEM},
+                {"role": "user", "content": "¿Cómo funcionan las hipótesis de StoneWave?"},
+                {"role": "assistant", "content": "¿Quieres que revisemos los recuerdos de tu memoria?"},
+                {"role": "user", "content": f'No, ahorita así lo dejamos.\nOtra duda, esta es la ruta de un proyecto:\n'
+                                            f'"{path}"\n¿Puedes entrar y revisar de qué era ese proyecto?'}]
+    assert app.requests_external_tools(messages)
+    assert not app.requests_local_read([{"role": "user", "content": f'Mi proyecto está en "{path}".'}])
+    assert not app.requests_local_read([{"role": "user", "content": f'No abras "{path}".'}])
+    assert not app.requests_local_read([{"role": "user", "content": f'Busca en mi memoria la ruta "{path}".'}])
+
+    config = {"enabled": True, "read_tools": [], "transport": "stdio", "command": "npx",
+              "args": ["@wonderwhy-er/desktop-commander"]}
+    schema = {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
+    session = SimpleNamespace(
+        list_tools=AsyncMock(return_value=ListToolsResult(tools=[
+            Tool(name=name, inputSchema=schema) for name in ("list_directory", "write_file")
+        ])),
+        call_tool=AsyncMock(return_value=CallToolResult(content=[TextContent(type="text", text="README.md")])),
+    )
+
+    @contextlib.asynccontextmanager
+    async def connected(name, _):
+        assert name == "desktop"
+        yield session
+
+    def chat(**kwargs):
+        alias, = (tool.function.name for tool in kwargs["tools"])
+        if kwargs["messages"][-1]["role"] == "tool":
+            assert kwargs["messages"][-1]["content"] == "README.md"
+            reply = Message(role="assistant", content="Encontré README.md.")
+        else:
+            assert "/ list_directory." in kwargs["tools"][0].function.description
+            reply = Message(role="assistant", tool_calls=[
+                {"function": {"name": alias, "arguments": {"path": path}}},
+            ])
+        return SimpleNamespace(message=reply)
+
+    ai = AISettings("openrouter", "test/model", cloud_memory=True)
+    memory = SimpleNamespace(entries=AsyncMock(), call=AsyncMock())
+    with (patch.object(app, "load_servers", return_value={"desktop": config, "exa": {
+              "enabled": True, "read_tools": [], "transport": "http",
+          }}) as load,
+          patch.object(app, "session_for", connected), patch.object(app, "OpenRouter") as client,
+          patch.object(app.Worker, "enabled_skills", return_value={})):
+        client.return_value.chat.side_effect = chat
+        worker = app.Worker(messages, ai=ai, memory=memory)
+        worker.confirm_external = AsyncMock(return_value=True)
+        assert asyncio.run(worker.chat()) == "Encontré README.md."
+        session.call_tool.assert_awaited_once_with("list_directory", {"path": path})
+        worker.confirm_external.assert_awaited_once_with("desktop", "list_directory", {"path": path})
+        memory.call.assert_not_awaited()
+        memory.entries.assert_not_awaited()
+
+        load.return_value = {}
+        client.return_value.chat.reset_mock()
+        assert "Desktop Commander" in asyncio.run(worker.chat())
+        client.return_value.chat.assert_not_called()
+
+
 def test_context7_results_are_used_to_finish_after_empty_ollama_response():
     schema = {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
     names = ["resolve-library-id", "query-docs"]
@@ -358,6 +419,8 @@ if __name__ == "__main__":
     print("PASS: enlace contextual, lectura web exacta y autorización.")
     test_cloud_chat_keeps_mcp_out_of_conversation_and_stops_repeated_calls()
     print("PASS: chat sin MCP externo y cierre de solicitudes repetidas en OpenRouter simulado.")
+    test_switch_from_memory_to_local_project()
+    print("PASS: cambio de tema a una ruta local, herramientas de lectura y permisos.")
     test_context7_results_are_used_to_finish_after_empty_ollama_response()
     print("PASS: Context7 entrega ambos resultados y Ollama sintetiza tras una respuesta vacía.")
     test_empty_reply_retries_selection_across_active_servers()

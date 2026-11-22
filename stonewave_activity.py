@@ -3,6 +3,55 @@ import json
 import re
 from datetime import datetime
 
+from ollama import Tool
+
+
+ACTIVITY_TOOLS = {
+    "recent_notes": Tool.model_validate({
+        "type": "function",
+        "function": {
+            "name": "recent_notes",
+            "description": (
+                "Muestra el texto real de las notas recientes que StoneWave escribió en Obsidian. "
+                "Úsala si el usuario pide leerlas, incluso si dice «qué escribiste ahí» y el contexto "
+                "se refiere a esas notas. No sirve para buscar en otros documentos."
+            ),
+            "parameters": {"type": "object", "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
+                "folder": {"type": "string", "enum": ["", "conclusiones", "recuerdos", "historial"]},
+            }},
+        },
+    }),
+    "dream_activity": Tool.model_validate({
+        "type": "function",
+        "function": {
+            "name": "dream_activity",
+            "description": (
+                "Muestra la actividad de la última consolidación (sueño) de StoneWave: fecha, enlaces "
+                "entre recuerdos, conclusiones o archivos creados y actualizados. Úsala si el usuario "
+                "pregunta por esa operación, incluso por referencia al contexto. No ejecuta un sueño "
+                "ni se refiere a sueños personales."
+            ),
+            "parameters": {"type": "object", "properties": {
+                "focus": {"type": "string", "enum": ["date", "links", "conclusions", "notes", "all"]},
+            }},
+        },
+    }),
+}
+
+DREAM_REPORT = "El último sueño de StoneWave terminó el "
+NOTES_REPORT = re.compile(r"^Estas son las \d+ notas más recientes de StoneWave en Obsidian:")
+
+
+def private_activity_placeholder(message):
+    if message["role"] == "assistant":
+        content = message.get("content", "")
+        if content.startswith(DREAM_REPORT):
+            return {**message, "content": "Mostré la actividad del último sueño de StoneWave."}
+        if NOTES_REPORT.match(content):
+            return {**message, "content": "Mostré el contenido de las notas recientes de StoneWave en Obsidian."}
+    return message
+
 
 REQUEST = re.compile(r"^\s*¿?\s*(?:y\s+)?(?:qu[eé]|cu[aá]ndo|cu[aá]l(?:es)?|c[oó]mo|dime|lista|muestra|"
                      r"cu[eé]ntame|consulta|me (?:puedes|podr[ií]as) decir|puedes decirme|quisiera saber)\b", re.I)
@@ -58,7 +107,7 @@ def format_dream_activity(response, focus):
             return "contenido ya no disponible"
         return re.sub(r"([\\`*_\[\]<>])", r"\\\1", " ".join(value.split()))
 
-    lines = [f"El último sueño de StoneWave terminó el **{finished}** ({literal(report['source'])})."]
+    lines = [f"{DREAM_REPORT}**{finished}** ({literal(report['source'])})."]
     if {"links", "all"} & focus:
         count = report["links_count"]
         lines.extend(["", f"**Enlaces registrados ({count})**"])

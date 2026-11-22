@@ -117,9 +117,61 @@ def test_chat_reads_recent_notes_without_a_model():
     assert notes_content_question(messages("Anota que mañana compro leche")) is None
 
 
+def test_model_routes_contextual_stonewave_reads_locally():
+    from types import SimpleNamespace
+    from ai_provider import AISettings
+    from app import SYSTEM, Worker
+    from ollama import Message
+    from stonewave_activity import format_recent_notes
+
+    report = json.dumps({"status": "ok", "notes": [{"path": "recuerdos/prueba.md",
+                        "modified": "2026-11-22T15:00:00Z", "content": "Texto privado de una nota"}]})
+    memory = SimpleNamespace(call=AsyncMock(return_value=report), entries=AsyncMock())
+    messages = [{"role": "system", "content": SYSTEM},
+                {"role": "user", "content": "¿Cuáles son las últimas notas de Obsidian?"},
+                {"role": "assistant", "content": format_recent_notes(report)},
+                {"role": "user", "content": "¿Y qué fue lo último que escribiste ahí?"}]
+    ai = AISettings("openrouter", "test/model", cloud_memory=False)
+
+    with (patch("app.OpenRouter") as provider, patch("app.Worker.enabled_skills", return_value={}),
+          patch("app.load_servers", side_effect=AssertionError("La pregunta no requiere MCP externo"))):
+        client = provider.return_value
+        client.chat.return_value = SimpleNamespace(message=Message(role="assistant", tool_calls=[
+            {"function": {"name": "recent_notes", "arguments": {"limit": 1, "folder": "recuerdos"}}},
+        ]))
+        turn = Worker(messages, memory=memory, ai=ai)
+        assert "Texto privado de una nota" in asyncio.run(turn.chat())
+        memory.call.assert_awaited_once_with("recent_notes", limit=1, folder="recuerdos")
+        memory.entries.assert_not_awaited()
+        client.chat.assert_called_once()
+        request = client.chat.call_args.kwargs
+        assert "Texto privado de una nota" not in str(request["messages"])
+        assert "Obsidian" in request["messages"][-2]["content"]
+        tools = {tool.function.name for tool in request["tools"]}
+        assert {"recent_notes", "dream_activity"} <= tools and "force_dream" not in tools
+        assert turn.read_sw_activity
+
+        memory.call.reset_mock()
+        memory.call.return_value = json.dumps({"status": "date_only", "finished_at": "2026-11-22T15:00:00Z"})
+        client.chat.return_value = SimpleNamespace(message=Message(role="assistant", tool_calls=[
+            {"function": {"name": "dream_activity", "arguments": {"focus": "date"}}},
+        ]))
+        messages[-2] = {"role": "assistant", "content": "Hablábamos de la consolidación de StoneWave."}
+        messages[-1] = {"role": "user", "content": "¿A qué hora fue eso?"}
+        assert "22/11/2026" in asyncio.run(Worker(messages, memory=memory, ai=ai).chat())
+        memory.call.assert_awaited_once_with("dream_activity")
+
+        memory.call.reset_mock()
+        client.chat.return_value = SimpleNamespace(message=Message(role="assistant", content="Sigamos hablando."))
+        messages[-1] = {"role": "user", "content": "¿Qué opinas de mis sueños personales?"}
+        assert asyncio.run(Worker(messages, memory=memory, ai=ai).chat()) == "Sigamos hablando."
+        memory.call.assert_not_awaited()
+
+
 if __name__ == "__main__":
     test_chat_reads_activity_without_a_model()
     test_chat_reads_recent_notes_without_a_model()
+    test_model_routes_contextual_stonewave_reads_locally()
     try:
         test_stonewave_session()
     except SkipTest as exc:

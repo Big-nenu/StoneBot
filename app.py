@@ -49,7 +49,10 @@ from memory_ui import MemoryDialog
 from projects_ui import ProjectDialog, ProjectPage
 from skills_ui import SkillsDialog
 from stonebot_engine.safety import IsolationError, check_path
-from stonewave_activity import dream_question, format_dream_activity, format_recent_notes, notes_content_question
+from stonewave_activity import (
+    ACTIVITY_TOOLS, dream_question, format_dream_activity, format_recent_notes, notes_content_question,
+    private_activity_placeholder,
+)
 from stonewave_memory import MemoryUnavailable, REVIEWED_WRITES, SAVED, StoneWaveMemory, TOOLS
 from tasks import (
     COVERAGE_STATUS, LABELS as TASK_LABELS, LIMIT_REASON, PLAN_STATUS, REPORT, REPORT_STATES, REPORT_STATUS, START_TASK,
@@ -107,6 +110,23 @@ WEB_OPEN = re.compile(
 WEB_REFERENCE = re.compile(r"\b(?:enlace|link|url|p[aá]gina|sitio|readme)\b", re.I)
 WEB_URL = re.compile(r"https?://[^\s<>`\"'\])]+", re.I)
 WEB_LINK_TOOLS = {"web_fetch_exa", "web_search_exa", "crawling_exa", "tavily_extract", "tavily_search"}
+LOCAL_PATH = re.compile(r"(?<![\w/])(?:[a-z]:[\\/][^\s\r\n\x22<>]|/(?:home|Users|mnt|tmp|var|opt|srv)/[^\s<>])", re.I)
+LOCAL_READ_ACTION = re.compile(
+    r"(?:^|(?<=[.!?;]))[^\S\n]*¿?\s*(?:por favor[ ,]+)?"
+    r"(?:(?:me\s+)?(?:puedes|podr[ií]as)\s+)?"
+    r"(?:entra(?:r)?|revisa(?:r)?|abre|abrir|lee|leer|lista(?:r)?|inspecciona(?:r)?|"
+    r"explora(?:r)?|consulta(?:r)?|verifica(?:r)?|qu[eé]\s+contiene)\b[^\n]*", re.I | re.M,
+)
+LOCAL_READ_TOOLS = {"list_directory", "get_file_info", "read_file", "read_multiple_files"}
+
+
+def requests_local_read(messages):
+    if not messages or messages[-1]["role"] != "user":
+        return False
+    text = messages[-1]["content"]
+    return bool(LOCAL_PATH.search(text) and any(
+        not INTERNAL_LOOKUP.search(match.group()) for match in LOCAL_READ_ACTION.finditer(text)
+    ))
 
 
 def requested_web_link(messages):
@@ -149,7 +169,7 @@ def requests_external_tools(messages):
     if not messages or messages[-1]["role"] != "user":
         return False
     text = messages[-1]["content"].strip()
-    if explicit(text):
+    if requests_local_read(messages) or explicit(text):
         return True
     if (len(messages) < 3 or messages[-2]["role"] != "assistant" or messages[-3]["role"] != "user"
             or not explicit(messages[-3]["content"]) or not 0 < len(text) <= 240 or "\n" in text
@@ -180,6 +200,8 @@ Eres StoneBot, el asistente personal de inteligencia artificial local del usuari
 La identidad declarada describe tu origen, no experiencias que hayas vivido.
 Si piden corregirla, indica el comando /identidad campo valor.
 Responde en español por defecto, salvo que el usuario prefiera otro idioma.
+Responde a la solicitud más reciente. Si el usuario cambia de tema, sigue el nuevo tema y usa
+el historial solo cuando ayude a resolver la solicitud actual.
 Puedes hacer preguntas, razonar y reconocer cuando no sabes algo.
 Si pediste datos para realizar una tarea y el usuario te los proporciona, retoma el objetivo
 que motivó la pregunta y continúa con las herramientas disponibles cuando hagan falta.
@@ -352,6 +374,7 @@ class Worker(QObject):
         self.project_document_path = project_document_path
         self.think = think
         self.capture_memory = capture_memory
+        self.read_sw_activity = False
         self.ai = ai or AISettings()
         self.share_memory = not self.ai.cloud or self.ai.cloud_memory
         self.ranking_scope = None
@@ -393,13 +416,28 @@ class Worker(QObject):
             raise MemoryUnavailable("La memoria de StoneWave no está disponible.")
         return await self.memory.call(name, **arguments)
 
+    async def show_sw_activity(self, name, *, limit=5, folder="", focus=None):
+        self.read_sw_activity = True
+        try:
+            if name == "recent_notes":
+                arguments = {"limit": limit}
+                if folder:
+                    arguments["folder"] = folder
+                return format_recent_notes(await self.call_memory(name, **arguments))
+            return format_dream_activity(await self.call_memory(name), focus or {"all"})
+        except MemoryUnavailable as exc:
+            return f"No pude consultar StoneWave. {exc}"
+        except (KeyError, TypeError, ValueError):
+            return "StoneWave devolvió datos que no pude leer."
+
     async def confirm_memory(self, server, tool, arguments):
         return tool not in REVIEWED_WRITES or await self.confirm_external(server, tool, arguments)
 
     def capture_user_memories(self):
         message = self.messages[-1]
         content = message.get("content", "")
-        if content.startswith("/") or parse_attachment_save(content) or dream_question(self.messages) or notes_content_question(self.messages):
+        if (self.read_sw_activity or content.startswith("/") or parse_attachment_save(content)
+                or requests_local_read(self.messages)):
             return
 
         async def save_selected():
@@ -691,22 +729,13 @@ class Worker(QObject):
         latest = folder = ""
         current = messages[-1] if messages else {}
         command = current.get("content", "").split(maxsplit=1)
-        if self.task is None and (count := notes_content_question(messages)):
-            try:
-                notes = await self.call_memory("recent_notes", limit=count)
-                return format_recent_notes(notes)
-            except MemoryUnavailable as exc:
-                return f"No pude consultar las notas de StoneWave. {exc}"
-            except (KeyError, TypeError, ValueError):
-                return "StoneWave respondió con un formato que no pude leer. Actualiza StoneWave y reinicia SB."
-        if self.task is None and (focus := dream_question(messages)):
-            try:
-                activity = await self.call_memory("dream_activity")
-                return format_dream_activity(activity, focus)
-            except MemoryUnavailable as exc:
-                return f"No pude consultar la actividad de StoneWave. {exc}"
-            except (KeyError, TypeError, ValueError):
-                return "StoneWave devolvió un registro de actividad que no pude leer."
+        local_read = self.task is None and requests_local_read(messages)
+        if self.task is None and not local_read and (count := notes_content_question(messages)):
+            return await self.show_sw_activity("recent_notes", limit=count)
+        if self.task is None and not local_read and (focus := dream_question(messages)):
+            return await self.show_sw_activity("dream_activity", focus=focus)
+        if not self.share_memory:
+            messages = [private_activity_placeholder(message) for message in messages]
         if (self.completed_task and self.task is None and current.get("role") == "user"
                 and re.fullmatch(r"(?:guarda|recuerda)\s+(?:(?:el|este|ese)\s+)?(?:resumen|punto de continuidad)"
                                  r"(?:\s+en (?:tu|la) memoria(?: de StoneBot)?)?[.!]?",
@@ -892,7 +921,8 @@ class Worker(QObject):
 
     async def chat_with_tools(self, client, messages, skills, *, learn=False, task_input=None, save_request=None):
         ordinary_turn = self.task is None and not learn and not save_request
-        web_link = requested_web_link(messages) if ordinary_turn else None
+        local_read = ordinary_turn and requests_local_read(messages)
+        web_link = requested_web_link(messages) if ordinary_turn and not local_read else None
         if web_link == "":
             return "¿Qué enlace quieres que abra? Pásamelo para consultar la página correcta."
         if task_input is not None:
@@ -914,7 +944,7 @@ class Worker(QObject):
         if save_request:
             specs = []
         memory_tools = {}
-        if not web_link and self.task is None and self.memory is not None and (
+        if not web_link and not local_read and self.task is None and self.memory is not None and (
                 "memory" in pending or (not save_request and self.share_memory)):
             try:
                 entries = await self.memory.entries()
@@ -938,8 +968,10 @@ class Worker(QObject):
                     pending.discard("memory")
         external_requested = (bool(web_link) or self.task is not None or learn or
                               bool(save_request and "markdown" in pending and save_request["target"]) or
-                              (ordinary_turn and requests_external_tools(messages)))
-        can_start_task = ordinary_turn and not web_link and external_requested and self.save_task is not None
+                              local_read or (ordinary_turn and requests_external_tools(messages)))
+        activity_tools = ACTIVITY_TOOLS if ordinary_turn and not external_requested and self.memory is not None else {}
+        specs.extend(activity_tools.values())
+        can_start_task = ordinary_turn and not web_link and not local_read and external_requested and self.save_task is not None
         if can_start_task:
             specs.append(START_TASK)
             messages[0] = {**messages[0], "content": messages[0]["content"] + (
@@ -952,7 +984,7 @@ class Worker(QObject):
                 "en la web o consultar archivos cuando el usuario lo solicita y hay un servidor habilitado. "
                 "Describe esa disponibilidad por turno si te preguntan por tus capacidades."
             )}
-        if skills and not save_request and not web_link:
+        if skills and not save_request and not web_link and not local_read:
             specs.append(Tool.model_validate(local_skills.tool_spec(skills)))
         used_mcp = False
         active_servers = False
@@ -961,6 +993,8 @@ class Worker(QObject):
         except (ValueError, OSError, RuntimeError):
             servers = {}
             self.mcp_notice.emit("No se pudo leer la configuración MCP.")
+        if local_read:
+            servers = {name: server for name, server in servers.items() if is_desktop_commander(server)}
         if self.learned_server:
             servers = {name: server for name, server in servers.items() if name == self.learned_server}
         cached = {}
@@ -993,6 +1027,8 @@ class Worker(QObject):
                             entries = await discover(session, name, server)
                         available = 0
                         for alias, entry in entries.items():
+                            if local_read and entry[2].name not in LOCAL_READ_TOOLS:
+                                continue
                             if web_link and entry[2].name not in WEB_LINK_TOOLS:
                                 continue
                             if save_request and entry[2].name != "write_file":
@@ -1016,6 +1052,15 @@ class Worker(QObject):
                 except Exception as exc:
                     self.mcp_notice.emit(f"MCP {name}. {connection_error(exc)}")
 
+            if local_read:
+                if not external:
+                    return "No pude revisar la ruta. Desktop Commander debe estar conectado y ofrecer herramientas de lectura."
+                specs = [tool for tool in specs if isinstance(tool, Tool) and tool.function.name in external]
+                if messages[0]["role"] == "system":
+                    messages[0] = {**messages[0], "content": messages[0]["content"] + (
+                        "\nRevisa la ruta local que indicó el usuario con las herramientas de lectura disponibles. "
+                        "Consulta solo esa ruta y lo que contiene. Si no pudiste leerla, explica qué ocurrió."
+                    )}
             if web_link:
                 fetch = next((entry for entry in external.values() if entry[2].name == "web_fetch_exa"), None)
                 if fetch is not None:
@@ -1141,6 +1186,25 @@ class Worker(QObject):
                         continue
                 if not reply.tool_calls:
                     return reply.content or "(Sin respuesta)"
+                if all(call.function.name in activity_tools for call in reply.tool_calls):
+                    answers = {}
+                    for call in reply.tool_calls:
+                        name = call.function.name
+                        arguments = call.function.arguments
+                        if name in answers:
+                            continue
+                        if name == "recent_notes":
+                            limit = arguments.get("limit", 5)
+                            folder = arguments.get("folder", "")
+                            if (type(limit) is not int or not 1 <= limit <= 10
+                                    or folder not in ("", "conclusiones", "recuerdos", "historial")):
+                                return "Indícame cuántas notas quieres ver (de 1 a 10) y, si quieres, de qué categoría."
+                            answers[name] = await self.show_sw_activity(name, limit=limit, folder=folder)
+                        else:
+                            focus = arguments.get("focus")
+                            answers[name] = await self.show_sw_activity(
+                                name, focus={focus} if focus in ("date", "links", "conclusions", "notes") else None)
+                    return "\n\n".join(answers.values())
                 if can_start_task and not used_mcp:
                     for call in reply.tool_calls:
                         if call.function.name == START_TASK.function.name:
