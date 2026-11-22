@@ -2,6 +2,7 @@
 import asyncio
 import contextlib
 import io
+import json
 import os
 import sys
 import tempfile
@@ -147,7 +148,8 @@ def test_switch_from_memory_to_local_project():
 
     config = {"enabled": True, "read_tools": [], "transport": "stdio", "command": "npx",
               "args": ["@wonderwhy-er/desktop-commander"]}
-    schema = {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
+    schema = {"type": "object", "properties": {"path": {"type": "string"}, "depth": {"type": "integer"}},
+              "required": ["path"]}
     session = SimpleNamespace(
         list_tools=AsyncMock(return_value=ListToolsResult(tools=[
             Tool(name=name, inputSchema=schema) for name in ("list_directory", "write_file")
@@ -160,38 +162,82 @@ def test_switch_from_memory_to_local_project():
         assert name == "desktop"
         yield session
 
-    def chat(**kwargs):
-        alias, = (tool.function.name for tool in kwargs["tools"])
-        if kwargs["messages"][-1]["role"] == "tool":
-            assert kwargs["messages"][-1]["content"] == "README.md"
-            reply = Message(role="assistant", content="Encontré README.md.")
+    def chat(*_, payload):
+        tool, = payload["tools"]
+        assert tool["function"]["name"] == "list_directory"
+        latest = payload["messages"][-1]
+        if latest["role"] == "user":
+            response = {"tool_calls": [{"id": "call_bad", "type": "function", "function": {
+                "name": "mcp_desktop_list_directory_wrong", "arguments": json.dumps({"path": path}),
+            }}]}
+        elif latest["tool_call_id"] == "call_bad":
+            assert "nombre exacto de esta lista: list_directory" in latest["content"]
+            response = {"content": f"<tool_call> <function=list_directory> "
+                                   f"<parameter=path> {path} </parameter> "
+                                   "<parameter=depth> 1 </parameter> </function> </tool_call>"}
         else:
-            assert "/ list_directory." in kwargs["tools"][0].function.description
-            reply = Message(role="assistant", tool_calls=[
-                {"function": {"name": alias, "arguments": {"path": path}}},
-            ])
-        return SimpleNamespace(message=reply)
+            assert latest["tool_call_id"] == payload["messages"][-2]["tool_calls"][0]["id"]
+            assert latest["content"] == "README.md"
+            response = {"content": "Encontré README.md."}
+        return {"choices": [{"message": response}]}
 
     ai = AISettings("openrouter", "test/model", cloud_memory=True)
     memory = SimpleNamespace(entries=AsyncMock(), call=AsyncMock())
     with (patch.object(app, "load_servers", return_value={"desktop": config, "exa": {
               "enabled": True, "read_tools": [], "transport": "http",
           }}) as load,
-          patch.object(app, "session_for", connected), patch.object(app, "OpenRouter") as client,
+          patch.object(app, "session_for", connected),
+          patch.object(app.OpenRouter, "request", side_effect=chat) as request,
           patch.object(app.Worker, "enabled_skills", return_value={})):
-        client.return_value.chat.side_effect = chat
         worker = app.Worker(messages, ai=ai, memory=memory)
         worker.confirm_external = AsyncMock(return_value=True)
         assert asyncio.run(worker.chat()) == "Encontré README.md."
-        session.call_tool.assert_awaited_once_with("list_directory", {"path": path})
-        worker.confirm_external.assert_awaited_once_with("desktop", "list_directory", {"path": path})
+        arguments = {"path": path, "depth": 1}
+        session.call_tool.assert_awaited_once_with("list_directory", arguments)
+        worker.confirm_external.assert_awaited_once_with("desktop", "list_directory", arguments)
         memory.call.assert_not_awaited()
         memory.entries.assert_not_awaited()
+        assert request.call_count == 3
+
+        session.call_tool.reset_mock()
+
+        fail_summary = False
+
+        def read_several(*_, payload):
+            if "tools" not in payload:
+                roles = [row["role"] for row in payload["messages"]]
+                assert roles == ["system", "user"] or (fail_summary and roles == ["system", "system", "user"])
+                evidence = json.loads(payload["messages"][-1]["content"])["lecturas"]
+                assert len(evidence) == 6 and all(item["result"] == "README.md" for item in evidence)
+                if fail_summary:
+                    return {"choices": [{"message": {"content":
+                        "<tool_call><function=list_directory></function></tool_call>"}}]}
+                return {"choices": [{"message": {"content": "Terminé las seis consultas."}}]}
+            completed = sum(row["role"] == "tool" for row in payload["messages"])
+            assert payload["tools"][0]["function"]["name"] == "list_directory"
+            content = (f"<tool_call><function=list_directory><parameter=path>{path}</parameter>"
+                       f"<parameter=depth>{completed + 1}</parameter></function></tool_call>")
+            return {"choices": [{"message": {"content": content}}]}
+
+        request.side_effect = read_several
+        assert asyncio.run(worker.chat()) == "Terminé las seis consultas."
+        assert session.call_tool.await_count == 6
+        fail_summary = True
+        session.call_tool.reset_mock()
+        partial = asyncio.run(worker.chat())
+        assert "Revisión parcial" in partial and path in partial
+        assert session.call_tool.await_count == 6
+
+        request.side_effect = None
+        request.return_value = {"choices": [{"message": {"content": "Parece que faltan permisos."}}]}
+        session.call_tool.reset_mock()
+        assert "no seleccionó una herramienta" in asyncio.run(worker.chat())
+        session.call_tool.assert_not_awaited()
 
         load.return_value = {}
-        client.return_value.chat.reset_mock()
+        request.reset_mock()
         assert "Desktop Commander" in asyncio.run(worker.chat())
-        client.return_value.chat.assert_not_called()
+        request.assert_not_called()
 
 
 def test_context7_results_are_used_to_finish_after_empty_ollama_response():

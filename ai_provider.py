@@ -2,10 +2,12 @@
 import base64
 import json
 import os
+import re
 from collections import deque
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
+from uuid import uuid4
 
 import httpx
 from ollama import Client, Message, ResponseError
@@ -20,6 +22,38 @@ DEFAULT_MODEL = "nemotron-3.5-bolt:e4b"
 OLLAMA_URL = "http://localhost:11434"
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
 KEY_TARGET = "StoneBot/AI/OpenRouter"
+TEXT_TOOL_CALL = re.compile(r"^\s*<tool_call>\s*<function\s*=", re.I)
+TEXT_READ = re.compile(r"<tool_call>\s*<function\s*=\s*(\w+)\s*>(.*?)</function>\s*</tool_call>", re.S)
+TEXT_PARAMETER = re.compile(r"\s*<parameter\s*=\s*(\w+)\s*>([^<>]*)</parameter>")
+
+
+def recover_text_read(content, tools):
+    # shortcut: solo el formato observado de Nemotron; otros formatos siguen por el reintento.
+    call = TEXT_READ.fullmatch(content.strip())
+    if call is None:
+        return []
+    name, raw = call.groups()
+    schemas = {tool["function"]["name"]: tool["function"].get("parameters", {}).get("properties", {})
+               for tool in tools}
+    if name not in schemas:
+        return []
+    arguments = {}
+    raw = raw.strip()
+    while raw:
+        parameter = TEXT_PARAMETER.match(raw)
+        if parameter is None:
+            return []
+        key, value = parameter.groups()
+        if key not in schemas[name] or key in arguments:
+            return []
+        value = value.strip()
+        try:
+            arguments[key] = value if schemas[name][key].get("type") == "string" else json.loads(value)
+        except ValueError:
+            return []
+        raw = raw[parameter.end():].strip()
+    return [{"id": "call_" + uuid4().hex, "type": "function",
+             "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)}}]
 
 
 @dataclass(frozen=True)
@@ -111,6 +145,10 @@ class CloudMessage(Message):
     reasoning_details: list[dict] | None = None
 
 
+class TextToolCallError(ResponseError):
+    pass
+
+
 class OpenRouter:
     def request(self, method, endpoint, *, payload=None, timeout=120):
         headers = {}
@@ -165,7 +203,7 @@ class OpenRouter:
             result.append(row)
         return result
 
-    def chat(self, *, model, messages, tools=(), options=None, think=None, format=None):
+    def chat(self, *, model, messages, tools=(), options=None, think=None, format=None, recover_local_reads=False):
         rows = self.messages_for_api(messages)
         if format:
             rows.insert(0, {"role": "system", "content": "Devuelve únicamente JSON con este esquema: " + json.dumps(format)})
@@ -180,12 +218,32 @@ class OpenRouter:
                 payload["max_tokens"] = options["num_predict"]
         if think is True or (think is False and format):
             payload["reasoning"] = {"enabled": think}
-        data = self.request("POST", "/chat/completions", payload=payload)
+        for attempt in range(2):
+            data = self.request("POST", "/chat/completions", payload=payload)
+            try:
+                choice = data["choices"][0]
+                message = choice["message"]
+                calls = message.get("tool_calls") or []
+                content = message.get("content") or ""
+            except (KeyError, IndexError, TypeError, AttributeError):
+                raise ResponseError("OpenRouter devolvió una respuesta que StoneBot no pudo interpretar.") from None
+            if not isinstance(content, str) or not TEXT_TOOL_CALL.match(content):
+                break
+            if not calls and recover_local_reads and tools:
+                calls = recover_text_read(content, payload["tools"])
+            if calls:
+                content = ""
+                break
+            if attempt:
+                raise TextToolCallError(
+                    "El modelo de OpenRouter devolvió una llamada a herramientas como texto. "
+                    "StoneBot no pudo completar el turno."
+                )
+            instruction = ("Si necesitas una herramienta, usa una llamada estructurada (tool_calls) "
+                           "a una herramienta disponible. No escribas etiquetas <tool_call> en la respuesta."
+                           if tools else "Responde en texto normal con los resultados disponibles. No solicites herramientas.")
+            payload = {**payload, "messages": [{"role": "system", "content": instruction}, *rows]}
         try:
-            choice = data["choices"][0]
-            message = choice["message"]
-            calls = message.get("tool_calls") or []
-            content = message.get("content") or ""
             if format and content.lstrip().startswith("```"):
                 content = content.strip().split("\n", 1)[-1].rsplit("```", 1)[0].strip()
             tool_calls = [{"function": {"name": call["function"]["name"],

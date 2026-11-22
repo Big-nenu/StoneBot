@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 from mcp.types import CallToolResult, TextContent, Tool
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
-from ollama import Message
+from ollama import Message, ResponseError
 
 import ai_provider
 import app
@@ -45,6 +45,44 @@ def test_openrouter():
         client.chat(model=model, messages=[{"role": "user", "content": "Imagen", "images": [b"\xff\xd8jpeg"]}])
         sent = request.call_args.kwargs["payload"]["messages"][0]["content"]
         assert sent[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+def test_openrouter_retries_textual_tool_call():
+    client = ai_provider.OpenRouter()
+    messages = [{"role": "user", "content": "Consulta las notas de StoneWave."}]
+    tools = [app.ACTIVITY_TOOLS["recent_notes"]]
+    text = "<tool_call> <function=recent_notes> <parameter=limit> 1 </parameter> </function> </tool_call>"
+    malformed = {"choices": [{"message": {"content": text}}]}
+    call = {"id": "call_recovered", "type": "function", "function": {
+        "name": "recent_notes", "arguments": '{"limit":1}',
+    }}
+    native = {"choices": [{"message": {"tool_calls": [call]}}]}
+    with patch.object(client, "request", side_effect=[malformed, native]) as request:
+        recovered = client.chat(model="fake/model", messages=messages, tools=tools).message
+        assert recovered.tool_calls[0].function.arguments == {"limit": 1}
+        first, second = [entry.kwargs["payload"] for entry in request.call_args_list]
+        assert first["tools"] == second["tools"]
+        assert "tool_calls" in second["messages"][0]["content"]
+        assert text not in str(second["messages"])
+        results = [*messages, recovered, {
+            "role": "tool", "tool_name": "recent_notes", "content": "Resultados",
+        }]
+        assert client.messages_for_api(results)[-1]["tool_call_id"] == "call_recovered"
+
+    with patch.object(client, "request", return_value=malformed) as request:
+        try:
+            client.chat(model="fake/model", messages=messages, tools=tools)
+        except ResponseError as error:
+            assert "como texto" in str(error) and text not in str(error)
+        else:
+            raise AssertionError("La llamada textual no es una respuesta final")
+        assert request.call_count == 2
+
+    final = {"choices": [{"message": {"content": "Encontré las notas."}}]}
+    with patch.object(client, "request", side_effect=[malformed, final]) as request:
+        assert client.chat(model="fake/model", messages=results).message.content == "Encontré las notas."
+        payload = request.call_args.kwargs["payload"]
+        assert "tools" not in payload and "No solicites herramientas" in payload["messages"][0]["content"]
 
 
 def test_memory_in_chat():
@@ -161,6 +199,7 @@ def test_model_catalog():
 
 if __name__ == "__main__":
     test_openrouter()
+    test_openrouter_retries_textual_tool_call()
     test_memory_in_chat()
     test_preferences_and_history()
     test_model_catalog()
