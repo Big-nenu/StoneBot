@@ -373,6 +373,8 @@ class McpDialog(QDialog):
                     usage = "/sueno memoria"
                 elif tool.name == "dream_activity":
                     usage, permission = "Consulta de actividad en el chat", "Directo"
+                elif tool.name == "recent_notes":
+                    usage, permission = "Lectura de notas en el chat", "Directo"
                 elif tool.name in {"export_notes", "sync_memory"}:
                     usage, permission = "Ajustes de StoneWave", "Confirmación"
                 description = (tool.description or "").strip()

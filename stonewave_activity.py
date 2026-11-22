@@ -96,3 +96,50 @@ def format_dream_activity(response, focus):
             if not (report["notes_created"] or report["notes_updated"]):
                 lines.append("StoneWave no escribió archivos nuevos ni actualizó notas.")
     return "\n".join(lines)
+
+
+NOTES_CONTENT = re.compile(r"\b(?:[uú]ltim[ao]s?|recientes?|apunt\w+|pusiste|puso|dicen|dec[ií]an|contenido|resumen|resume)\b", re.I)
+NOTES_WORD = re.compile(r"\bnotas?\b", re.I)
+NOTES_LIMIT = re.compile(r"\b(\d{1,2})\s+(?:[uú]ltim\w+\s+)?notas?\b|\b[uú]ltimas?\s+(\d{1,2})\b", re.I)
+ASKS = re.compile(r"^\s*¿?\s*(?:y\s+)?(?:qu[eé]|cu[aá]l(?:es)?|c[oó]mo|dime|lista|muestra|cu[eé]ntame|resume|lee|"
+                  r"me (?:puedes|podr[ií]as) (?:decir|mostrar|resumir)|puedes (?:decirme|mostrarme))\b", re.I)
+
+
+def notes_content_question(messages):
+    """Pide el TEXTO de las notas de Obsidian (las últimas, o «qué pusiste en esas notas»). Devuelve cuántas (1 a 10) o None.
+    Las preguntas de «qué notas creó o actualizó el sueño» las sigue atendiendo dream_question."""
+    if not messages or messages[-1].get("role") != "user" or messages[-1].get("attachments"):
+        return None
+    text = messages[-1]["content"]
+    if PERSONAL.search(text) or not (ASKS.match(text) and NOTES_WORD.search(text) and NOTES_CONTENT.search(text)):
+        return None
+    if re.search(r"\b(?:cre[oó]|creadas?|actualiz\w*|export\w*)\b", text, re.I) and not re.search(
+            r"\b(?:pusiste|puso|dicen|dec[ií]an|contenido|resumen|resume|apunt\w+)\b", text, re.I):
+        return None
+    found = NOTES_LIMIT.search(text)
+    count = int(next(group for group in found.groups() if group)) if found else 5
+    return max(1, min(count, 10))
+
+
+def format_recent_notes(response):
+    report = json.loads(response)
+    status = report["status"]
+    if status == "off":
+        return "StoneWave no tiene configurada la carpeta de Obsidian, así que no hay notas que leer."
+    if status == "error":
+        return "No pude abrir la carpeta de Obsidian de StoneWave. Revisa que exista en los ajustes."
+    if status == "empty" or not report["notes"]:
+        return "StoneWave todavía no ha escrito notas en tu carpeta de Obsidian."
+
+    def literal(value):
+        return re.sub(r"([\\`*_\[\]<>])", r"\\\1", " ".join(str(value).split()))
+
+    lines = [f"Estas son las {len(report['notes'])} notas más recientes de StoneWave en Obsidian:"]
+    for note in report["notes"]:
+        when = datetime.fromisoformat(note["modified"]).astimezone().strftime("%d/%m/%Y %H:%M")
+        lines.extend(["", f"**{literal(note['path'])}** ({when})"])
+        for raw in note["content"].splitlines():
+            if raw.strip():
+                heading = re.match(r"^\s*#+\s*(.*)$", raw)
+                lines.append(f"> **{literal(heading.group(1))}**" if heading else f"> {literal(raw)}")
+    return "\n".join(lines)

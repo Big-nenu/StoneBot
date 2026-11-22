@@ -84,8 +84,42 @@ def test_chat_reads_activity_without_a_model():
     assert not dream_question([{"role": "user", "content": "¿Qué recuerdas de mis sueños personales?"}])
 
 
+def test_chat_reads_recent_notes_without_a_model():
+    from types import SimpleNamespace
+    from ai_provider import AISettings
+    from app import Worker
+    from stonewave_activity import dream_question, notes_content_question
+
+    report = {"status": "ok", "notes": [{"path": "conclusiones/aprende.md", "folder": "conclusiones",
+                                         "modified": "2026-11-22T15:00:00+00:00",
+                                         "content": "# Aprende practicando\n\n## Viene de\n- Ejercicios semanales"}]}
+    memory = SimpleNamespace(call=AsyncMock(return_value=json.dumps(report)))
+    ai = AISettings("openrouter", "test/model", cloud_memory=False)
+
+    def messages(text):
+        return [{"role": "user", "content": text}]
+
+    def ask(text):
+        return asyncio.run(Worker(messages(text), memory=memory, ai=ai).chat())
+
+    with patch("app.OpenRouter", side_effect=AssertionError("Las notas se leen localmente")):
+        answer = ask("¿Me puedes decir las últimas notas que apuntaste en Obsidian?")
+        assert "conclusiones/aprende.md" in answer and "Ejercicios semanales" in answer
+        memory.call.assert_awaited_with("recent_notes", limit=5)
+        ask("¿Qué pusiste en esas notas?")
+        ask("Dime las últimas 3 notas de Obsidian")
+        memory.call.assert_awaited_with("recent_notes", limit=3)
+        memory.call.return_value = json.dumps({"status": "off", "notes": []})
+        assert "no tiene configurada la carpeta" in ask("¿Cuáles son las notas recientes de Obsidian?")
+    assert notes_content_question(messages("¿Qué notas creó o actualizó en Obsidian?")) is None
+    assert dream_question(messages("¿Qué notas creó o actualizó en Obsidian?"))
+    assert notes_content_question(messages("¿Qué recuerdas de mis sueños personales?")) is None
+    assert notes_content_question(messages("Anota que mañana compro leche")) is None
+
+
 if __name__ == "__main__":
     test_chat_reads_activity_without_a_model()
+    test_chat_reads_recent_notes_without_a_model()
     try:
         test_stonewave_session()
     except SkipTest as exc:

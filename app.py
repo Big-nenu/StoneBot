@@ -49,7 +49,7 @@ from memory_ui import MemoryDialog
 from projects_ui import ProjectDialog, ProjectPage
 from skills_ui import SkillsDialog
 from stonebot_engine.safety import IsolationError, check_path
-from stonewave_activity import dream_question, format_dream_activity
+from stonewave_activity import dream_question, format_dream_activity, format_recent_notes, notes_content_question
 from stonewave_memory import MemoryUnavailable, REVIEWED_WRITES, SAVED, StoneWaveMemory, TOOLS
 from tasks import (
     COVERAGE_STATUS, LABELS as TASK_LABELS, LIMIT_REASON, PLAN_STATUS, REPORT, REPORT_STATES, REPORT_STATUS, START_TASK,
@@ -399,7 +399,7 @@ class Worker(QObject):
     def capture_user_memories(self):
         message = self.messages[-1]
         content = message.get("content", "")
-        if content.startswith("/") or parse_attachment_save(content) or dream_question(self.messages):
+        if content.startswith("/") or parse_attachment_save(content) or dream_question(self.messages) or notes_content_question(self.messages):
             return
 
         async def save_selected():
@@ -691,6 +691,14 @@ class Worker(QObject):
         latest = folder = ""
         current = messages[-1] if messages else {}
         command = current.get("content", "").split(maxsplit=1)
+        if self.task is None and (count := notes_content_question(messages)):
+            try:
+                notes = await self.call_memory("recent_notes", limit=count)
+                return format_recent_notes(notes)
+            except MemoryUnavailable as exc:
+                return f"No pude consultar las notas de StoneWave. {exc}"
+            except (KeyError, TypeError, ValueError):
+                return "StoneWave respondió con un formato que no pude leer. Actualiza StoneWave y reinicia SB."
         if self.task is None and (focus := dream_question(messages)):
             try:
                 activity = await self.call_memory("dream_activity")
