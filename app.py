@@ -1,27 +1,34 @@
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from threading import Thread
 
 from ai_provider import AISettings, DEFAULT_MODEL, PROVIDERS, load_ai
 from ai_settings_ui import AISettingsDialog
 from appearance import (
     AppearanceDialog, apply_palette, dialog_style, load_appearance, readable_text, save_appearance,
-    secondary_button,
+    secondary_button, settings_style,
 )
 from attachments import FILE_FILTER, attachment_path, has_chat_attachments
-from chat_markdown import MarkdownText
+from chat_markdown import CopyButton, MarkdownText
 from chat_preferences import automatic_memory_enabled, load_instructions, save_automatic_memory, save_instructions
-from chat_ui import ActivityPanel, AttachmentCard, AttachmentTray, ChatText, Composer, chat_style
+from chat_titles import generate_title
+from chat_ui import (
+    ActivityPanel, AttachmentCard, AttachmentTray, ChatBottomFade, ChatText, ChatTranscript, Composer, ComposerPanel,
+    MessageCard, PopupButton, chat_style, style_chat_menu,
+)
 from diagnostics import read_log, record
+from extension_ui import Toggle
 from experiences import save_task_correction, task_correction
 from folder_inventory import HIDDEN_MISTAKE, inventory_followup, is_ranking_request, ranking_count, uses_mcp
 from history import History
-from history_ui import HistoryPanel, SidebarRail, load_history_width, save_history_width, sidebar_icon
+from history_ui import SEARCH_SHORTCUT, HistoryPanel, SidebarPreview, SidebarRail, load_sidebar_pinned, save_sidebar_pinned, sidebar_icon
 import local_skills
 from mcp_client import data_path
 from mcp_pool import McpPool
@@ -34,12 +41,12 @@ from stonewave_memory import StoneWaveMemory
 from tasks import LABELS as TASK_LABELS, new_task, step_caption, upgrade_task
 from tasks_ui import TaskCorrectionDialog
 from win_caption import apply_native_caption
-from PySide6.QtCore import QEvent, QLockFile, QSize, Qt, QThread, QTimer, Slot
-from PySide6.QtGui import QActionGroup, QColor, QIcon, QTextCursor
+from PySide6.QtCore import QEvent, QIODevice, QSaveFile, QLockFile, QSignalBlocker, QSize, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QActionGroup, QColor, QIcon, QKeySequence, QShortcut, QTextCursor, QTextDocument, QPdfWriter
 from PySide6.QtWidgets import (
     QApplication, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
-    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QSystemTrayIcon,
-    QVBoxLayout, QWidget,
+    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QSystemTrayIcon,
+    QVBoxLayout, QWidget, QWidgetAction,
 )
 from turn_worker import COMMANDS, SYSTEM, TASK_COMMANDS, Worker
 
@@ -62,11 +69,13 @@ CHAT_WIDTH = 820
 
 
 class StoneBot(QMainWindow):
+    title_ready = Signal(int, object, str)
+
     def __init__(self, *, use_tray=False):
         super().__init__()
         self.setWindowTitle("StoneBot")
         self.setWindowIcon(QIcon(str(ICON_PATH)))
-        self.resize(1000, 680)
+        self.resize(1100, 740)
         self.setMinimumSize(340, 360)
 
         self.messages = [{"role": "system", "content": SYSTEM}]
@@ -81,10 +90,15 @@ class StoneBot(QMainWindow):
         self.exit_requested = False
         self.mcp_dialog = None
         self.pool = McpPool()
+        self.inline_cancel = None
         self.chat_id = None
         self.task = None
         self.history_write_ok = True
         self.pending_edit = None
+        self.last_regenerate = None
+        self.stopping_turn = False
+        self.pending_titles = set()
+        self.title_ready.connect(self.finish_chat_title)
         self.project = None
         self.projects = []
         try:
@@ -99,33 +113,30 @@ class StoneBot(QMainWindow):
         main_layout = QHBoxLayout(central)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
-        self.history_width = self.saved_history_width = load_history_width()
-        self.history_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.history_splitter.setChildrenCollapsible(False)
-        self.history_splitter.setHandleWidth(6)
-        main_layout.addWidget(self.history_splitter)
         self.history_panel = HistoryPanel()
         self.history_panel.new_chat.connect(self.new_chat)
         self.history_panel.opened.connect(self.open_chat)
         self.history_panel.renamed.connect(self.rename_chat)
         self.history_panel.deleted.connect(self.delete_chat)
+        self.history_panel.pin_requested.connect(self.pin_chat)
         self.history_panel.searched.connect(self.refresh_history)
         self.history_panel.diagnostics.connect(self.open_diagnostics)
         self.history_panel.projects_requested.connect(self.show_projects)
         self.history_panel.project_opened.connect(self.show_project)
         self.history_panel.project_deleted.connect(self.delete_project)
+        self.history_panel.transfer_requested.connect(self.transfer_chat)
         self.history_panel.move_requested.connect(self.move_chat_to_project)
         self.sidebar_rail = SidebarRail(self.history_panel)
         self.sidebar_rail.actions["new"].clicked.connect(self.history_panel.new_chat)
         self.sidebar_rail.actions["search"].clicked.connect(self.search_sidebar)
+        QShortcut(QKeySequence(SEARCH_SHORTCUT), self).activated.connect(self.search_sidebar)
         self.sidebar_rail.actions["projects"].clicked.connect(self.history_panel.projects_requested)
         self.sidebar_rail.actions["diagnostics"].clicked.connect(self.history_panel.diagnostics)
-        self.history_splitter.addWidget(self.sidebar_rail)
+        sidebar_slot = QWidget()
+        main_layout.addWidget(sidebar_slot)
         conversation = QWidget()
-        self.history_splitter.addWidget(conversation)
-        self.history_splitter.setStretchFactor(0, 0)
-        self.history_splitter.setStretchFactor(1, 1)
-        self.history_splitter.splitterMoved.connect(self.remember_history_width)
+        main_layout.addWidget(conversation, 1)
+        self.sidebar_preview = SidebarPreview(central, sidebar_slot, self.sidebar_rail)
         layout = QVBoxLayout(conversation)
         layout.setContentsMargins(0, 0, 0, 14)
         layout.setSpacing(0)
@@ -133,7 +144,7 @@ class StoneBot(QMainWindow):
         header = QWidget()
         header.setObjectName("chatHeader")
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(16, 9, 16, 9)
+        header_layout.setContentsMargins(22, 12, 22, 12)
         header_layout.setSpacing(8)
         title = self.header_title = QLabel("StoneBot")
         title.setTextFormat(Qt.TextFormat.PlainText)
@@ -141,20 +152,29 @@ class StoneBot(QMainWindow):
         title.setObjectName("chatTitle")
         self.history_button = self.sidebar_rail.toggle
         self.history_button.setShortcut("Ctrl+Shift+S")
+        self.history_button.setChecked(load_sidebar_pinned())
         self.history_button.toggled.connect(self.toggle_history)
         header_layout.addWidget(title, 1)
-        self.settings_button = secondary_button(QPushButton())
+        settings_shortcut = "Ctrl+,"
+        self.settings_button = secondary_button(PopupButton(settings_shortcut, right=True))
+        self.settings_button.setObjectName("settingsButton")
+        self.settings_button.setShortcut(settings_shortcut)
         self.settings_button.setProperty("quiet", True)
         self.settings_button.setIconSize(QSize(20, 20))
         self.settings_button.setAccessibleName("Configuración")
-        self.settings_button.setToolTip("Configuración")
-        self.settings_menu = QMenu(self.settings_button)
-        self.settings_menu.setObjectName("chatMenu")
-        self.settings_button.setMenu(self.settings_menu)
+        self.settings_button.setToolTip(f"Configuración ({settings_shortcut})")
+        self.settings_menu = self.settings_button.menu()
         self.settings_menu.addAction("Modelo y proveedor de IA…", self.open_ai_settings)
         self.settings_menu.addAction("Apariencia…", self.open_appearance)
         self.settings_menu.addAction("Instrucciones generales…", self.open_instructions)
-        self.settings_menu.addSeparator()
+        self.chat_options = secondary_button(PopupButton(right=True))
+        self.chat_options.setProperty("quiet", True)
+        self.chat_options.setAccessibleName("Opciones de conversación")
+        self.chat_options.setToolTip("Opciones de conversación")
+        self.chat_options.setIconSize(self.settings_button.iconSize())
+        self.chat_options.about_to_popup.connect(self.prepare_chat_options)
+        self.chat_options.hide()
+        header_layout.addWidget(self.chat_options)
         header_layout.addWidget(self.settings_button)
         self.sidebar_rail.provider_badge.clicked.connect(self.open_ai_settings)
         self.refresh_provider()
@@ -162,6 +182,7 @@ class StoneBot(QMainWindow):
         self.pages = QStackedWidget()
         layout.addWidget(self.pages, 1)
         self.chat_page = QWidget()
+        self.chat_page.setObjectName("chatPage")
         self.pages.addWidget(self.chat_page)
         self.project_page = ProjectPage()
         self.project_page.created.connect(self.edit_project)
@@ -191,44 +212,41 @@ class StoneBot(QMainWindow):
         canvas = QWidget()
         canvas.setObjectName("chatCanvas")
         canvas_layout = QHBoxLayout(canvas)
-        canvas_layout.setContentsMargins(22, 24, 22, 16)
-        transcript = QWidget()
+        canvas_layout.setContentsMargins(22, 28, 22, 18)
+        transcript = ChatTranscript()
+        transcript.width_changed.connect(self.fit_bubbles)
         transcript.setMaximumWidth(CHAT_WIDTH)
         self.transcript = QVBoxLayout(transcript)
         self.transcript.setContentsMargins(0, 0, 0, 0)
-        self.transcript.setSpacing(20)
+        self.transcript.setSpacing(24)
         self.transcript.addStretch()
         canvas_layout.addStretch(1)
         canvas_layout.addWidget(transcript, 100)
         canvas_layout.addStretch(1)
         self.chat.setWidget(canvas)
+        self.chat_fade = ChatBottomFade(self.chat, self.appearance["background"])
         layout.addWidget(self.chat, 1)
 
         self.activity_panel = None
         self.task_panel = None
 
-        composer = QWidget()
-        composer.setObjectName("composerPanel")
+        self.message = Composer()
+        composer = ComposerPanel(self.message)
         composer.setMaximumWidth(CHAT_WIDTH)
         composer_layout = QVBoxLayout(composer)
-        composer_layout.setContentsMargins(11, 9, 11, 8)
-        composer_layout.setSpacing(4)
+        composer_layout.setContentsMargins(12, 7, 12, 10)
+        composer_layout.setSpacing(3)
         row = QHBoxLayout()
         row.setSpacing(6)
         self.attachments = AttachmentTray()
         self.attachments.problem.connect(self.show_problem)
-        self.message = Composer()
         self.message.shortcut_source = self.composer_shortcuts
         self.message.pasted_paths.connect(self.attachments.add_paths)
         self.message.pasted_image.connect(self.attachments.add_clipboard_image)
         menu = self.attachments.menu
-        self.project_document_action = menu.addAction("Usar documento del proyecto…", self.choose_project_document)
-        self.project_document_action.setVisible(False)
-        self.mcp_menu = menu.addMenu("MCP")
-        self.mcp_menu.setObjectName("chatMenu")
+        self.mcp_menu = style_chat_menu(menu.addMenu("MCP"))
         self.mcp_menu.aboutToShow.connect(self.refresh_mcp_menu)
-        self.memory_menu = menu.addMenu("Memoria")
-        self.memory_menu.setObjectName("chatMenu")
+        self.memory_menu = style_chat_menu(QMenu("Memoria", self.settings_menu))
         self.memory_menu.addAction("Consultar recuerdos…").setData("Busca en la memoria: ")
         self.memory_menu.addAction("Consultar conclusiones…").setData("Consulta las conclusiones de la memoria: ")
         self.memory_menu.addSeparator()
@@ -238,14 +256,13 @@ class StoneBot(QMainWindow):
         self.auto_memory_action.setChecked(automatic_memory_enabled())
         self.auto_memory_action.triggered.connect(self.set_automatic_memory)
         self.memory_menu.triggered.connect(self.draft_memory_query)
-        self.reasoning_button = secondary_button(QPushButton("Automático"))
+        self.reasoning_button = secondary_button(PopupButton("Automático", above=True, right=True))
         self.reasoning_button.setObjectName("composerReasoning")
+        self.reasoning_button.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.reasoning_button.setProperty("quiet", True)
         self.reasoning_button.setAccessibleName("Razonamiento · Automático")
         self.reasoning_button.setToolTip("Razonamiento")
-        reasoning_menu = QMenu(self.reasoning_button)
-        self.reasoning_button.setMenu(reasoning_menu)
-        reasoning_menu.setObjectName("chatMenu")
+        reasoning_menu = self.reasoning_button.menu()
         self.reasoning_modes = QActionGroup(reasoning_menu)
         for mode, value, tip in (
             ("Automático", None, "Usa el ajuste habitual del modelo."),
@@ -260,19 +277,40 @@ class StoneBot(QMainWindow):
             action.setToolTip(tip)
         reasoning_menu.setToolTipsVisible(True)
         self.reasoning_modes.triggered.connect(self.update_reasoning_mode)
-        menu.aboutToShow.connect(self.update_composer_menu)
-        menu.addSeparator()
-        self.skills_menu = menu.addMenu("Skills")
-        self.skills_menu.setObjectName("chatMenu")
+        self.skills_menu = style_chat_menu(menu.addMenu("Skills"))
         self.skills_menu.aboutToShow.connect(self.refresh_skills_menu)
-        menu.addAction("Instrucciones generales…", self.open_instructions)
+        menu.addSeparator()
+        memory_row = QWidget()
+        memory_row.setToolTip("Comparte la preferencia de memoria automática de StoneBot.")
+        memory_layout = QHBoxLayout(memory_row)
+        memory_layout.setContentsMargins(9, 3, 6, 3)
+        memory_label = QLabel("Guardar recuerdos en este chat")
+        memory_layout.addWidget(memory_label, 1)
+        self.auto_memory_switch = Toggle(self.auto_memory_action.isChecked(), memory_label.text(),
+                                         self.appearance["accent"], self.appearance["background"])
+        self.auto_memory_switch.setToolTip(memory_row.toolTip())
+        self.auto_memory_switch.toggled.connect(self.set_automatic_memory)
+        memory_layout.addWidget(self.auto_memory_switch)
+        self.auto_memory_menu_action = QWidgetAction(menu)
+        self.auto_memory_menu_action.setText(memory_label.text())
+        self.auto_memory_menu_action.setDefaultWidget(memory_row)
+        self.auto_memory_menu_action.triggered.connect(self.auto_memory_switch.toggle)
+        menu.addAction(self.auto_memory_menu_action)
         self.settings_menu.addAction("Extensiones…", self.open_mcp)
         self.settings_menu.addMenu(self.memory_menu)
-        self.settings_menu.addMenu(self.skills_menu)
-        self.settings_menu.aboutToShow.connect(self.update_composer_menu)
-        self.send = QPushButton("Enviar")
+        # El título de Memoria puede cambiar el ancho antes de calcular la posición.
+        self.settings_button.about_to_popup.connect(self.update_memory_menu)
+        self.settings_menu.aboutToShow.connect(self.update_memory_menu)
+        self.send = QPushButton()
         self.send.setObjectName("sendMessage")
-        self.send.clicked.connect(self.enviar)
+        self.send.setAccessibleName("Enviar")
+        self.send.setToolTip("Enviar")
+        self.send.setIconSize(QSize(20, 20))
+        self.send.setFixedSize(40, 40)
+        self.send.clicked.connect(self.send_or_stop)
+        self.stop_shortcut = QShortcut(QKeySequence("Esc"), self)
+        self.stop_shortcut.activated.connect(self.stop_turn)
+        self.stop_shortcut.setEnabled(False)
         self.message.submitted.connect(self.enviar)
         row.addWidget(self.attachments.add_button)
         row.addStretch()
@@ -299,7 +337,7 @@ class StoneBot(QMainWindow):
         self.refresh_appearance()
         self.chat_min_width = max(340, header.minimumSizeHint().width())
         conversation.setMinimumWidth(self.chat_min_width)
-        self.toggle_history(True)
+        self.toggle_history(self.history_button.isChecked(), save=False)
         self.refresh_history()
         self.refresh_projects()
         if self.history is None:
@@ -308,8 +346,7 @@ class StoneBot(QMainWindow):
         if use_tray:
             self.tray = QSystemTrayIcon(self.windowIcon(), self)
             self.tray.setToolTip("StoneBot")
-            menu = QMenu(self)
-            menu.setObjectName("chatMenu")
+            menu = style_chat_menu(QMenu(self))
             menu.addAction("Abrir StoneBot", self.restore_window)
             menu.addAction("Salir", self.request_exit)
             self.tray.setContextMenu(menu)
@@ -339,33 +376,20 @@ class StoneBot(QMainWindow):
         if hasattr(self, "message"):
             self.message.fit_height(self.message.document().size())
 
-    def toggle_history(self, visible):
-        self.sidebar_rail.set_expanded(visible)
-        self.history_button.setToolTip(("Ocultar" if visible else "Mostrar") + " barra lateral (Ctrl+Shift+S)")
-        self.history_splitter.setHandleWidth(6 if visible else 0)
-        self.history_splitter.handle(1).setEnabled(visible)
-        self.setMinimumWidth(self.sidebar_rail.minimumWidth() + self.chat_min_width + self.history_splitter.handleWidth())
-        if visible:
-            self.restore_history_width()
-        else:
-            width = self.sidebar_rail.minimumWidth()
-            self.history_splitter.setSizes([width, self.history_splitter.width() - width])
+    def toggle_history(self, expanded, *, save=True):
+        self.sidebar_preview.set_pinned(expanded)
+        self.setMinimumWidth(self.sidebar_preview.slot.width() + self.chat_min_width)
+        if save:
+            try:
+                save_sidebar_pinned(expanded)
+            except (OSError, RuntimeError, ValueError):
+                record("No se pudo guardar el estado de la barra lateral.")
 
     def search_sidebar(self):
-        if self.history_panel.isHidden():
-            self.history_button.setChecked(True)
-            self.history_panel.show_search()
-        else:
-            self.history_panel.toggle_search()
-
-    def restore_history_width(self):
-        available = self.history_splitter.width() - self.history_splitter.handleWidth()
-        width = min(self.history_width, max(self.sidebar_rail.minimumWidth(), available - self.chat_min_width))
-        self.history_splitter.setSizes([width, max(self.chat_min_width, available - width)])
-
-    def remember_history_width(self, _position, _index):
-        if not self.history_panel.isHidden():
-            self.history_width = self.history_splitter.sizes()[0]
+        if not self.history_panel.isEnabled():
+            return
+        self.history_button.setChecked(True)
+        self.history_panel.show_search()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -373,15 +397,13 @@ class StoneBot(QMainWindow):
             QApplication.instance().installEventFilter(self)
         if QApplication.platformName() == "windows":
             apply_native_caption(self, self.appearance["background"])
-        if not self.history_panel.isHidden():
-            self.restore_history_width()
 
     def refresh_history(self, _query=None):
         if self.history is not None:
             try:
                 query = self.history_panel.search.text()
                 chats = self.history.project_chats() if self.projects and not query.strip() else None
-                self.history_panel.fill(self.history.find(query), self.chat_id, chats)
+                self.history_panel.fill(self.history.find(query, include_metadata=True), self.chat_id, chats)
             except (OSError, ValueError, RuntimeError, sqlite3.Error):
                 self.show_problem("No se pudo leer el historial.")
 
@@ -402,6 +424,7 @@ class StoneBot(QMainWindow):
             self.show_problem("No se pudo abrir la conversación.")
             return
         self.render_chat(chat_id, saved)
+        self.schedule_chat_title(chat_id, saved)
         if self.project:
             self.history_panel.expand_project(self.project["id"])
         self.show_chat_page()
@@ -409,7 +432,6 @@ class StoneBot(QMainWindow):
     def show_chat_page(self):
         self.pages.setCurrentWidget(self.chat_page)
         self.header_title.setText(f"StoneBot  /  {self.project['name']}" if self.project else "StoneBot")
-        self.project_document_action.setVisible(self.project is not None)
         self.message.setFocus()
 
     def refresh_projects(self):
@@ -598,6 +620,62 @@ class StoneBot(QMainWindow):
             self.render_chat(None, [])
             self.show_chat_page()
 
+    def prepare_chat_options(self):
+        menu = self.chat_options.menu()
+        menu.clear()
+        with self.history.connect() as conn:
+            row = conn.execute("SELECT title, pinned FROM chat WHERE id=?", (self.chat_id,)).fetchone()
+        if row:
+            self.history_panel.populate_chat_menu(menu, self.chat_id, *row)
+
+    def transfer_chat(self, chat_id, title, kind):
+        try:
+            sections = [f"# {title}"]
+            for message in self.history.messages(chat_id):
+                role = "Tú" if message["role"] == "user" else "StoneBot"
+                sections.append(f"## {role}")
+                sections.append(message["content"])
+                for attachment in message.get("attachments", ()):
+                    sections.append("Adjunto: " + attachment["name"])
+            transcript = "\n\n".join(sections) + "\n"
+            if kind == "copy":
+                QApplication.clipboard().setText(transcript)
+                return
+            filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", title)[:100].strip(". ") or "Conversación"
+            label = "Markdown" if kind == "md" else "PDF"
+            dialog = QFileDialog(self, f"Exportar a {label}")
+            dialog.setOption(QFileDialog.Option.DontUseNativeDialog)
+            dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+            dialog.setNameFilter(f"{label} (*.{kind})")
+            dialog.setDefaultSuffix(kind)
+            dialog.selectFile(f"{filename}.{kind}")
+            dialog.setLabelText(QFileDialog.DialogLabel.Accept, "Exportar")
+            dialog.setLabelText(QFileDialog.DialogLabel.Reject, "Cancelar")
+            dialog.setStyleSheet(settings_style(self.appearance))
+            try:
+                if not dialog.exec():
+                    return
+                output = QSaveFile(dialog.selectedFiles()[0])
+            finally:
+                dialog.deleteLater()
+            if not output.open(QIODevice.OpenModeFlag.WriteOnly):
+                raise OSError(output.errorString())
+            if kind == "md":
+                data = transcript.encode("utf-8")
+                if output.write(data) != len(data):
+                    raise OSError(output.errorString())
+            else:
+                document = QTextDocument()
+                document.setMarkdown(transcript)
+                writer = QPdfWriter(output)
+                writer.setTitle(title)
+                document.print_(writer)
+                del writer
+            if not output.commit():
+                raise OSError(output.errorString())
+        except (OSError, sqlite3.Error) as exc:
+            self.show_problem(str(exc))
+
     def move_chat_to_project(self, chat_id):
         self.refresh_projects()
         choices = {"Sin proyecto": None}
@@ -606,8 +684,16 @@ class StoneBot(QMainWindow):
             while title in choices:
                 title += f" · {project['id']}"
             choices[title] = project["id"]
-        title, ok = QInputDialog.getItem(self, "Mover conversación", "Proyecto", list(choices), editable=False)
-        if ok:
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("Mover conversación")
+        dialog.setLabelText("Proyecto")
+        dialog.setComboBoxItems(list(choices))
+        dialog.setCancelButtonText("Cancelar")
+        dialog.setStyleSheet(settings_style(self.appearance))
+        accepted = dialog.exec()
+        title = dialog.textValue()
+        dialog.deleteLater()
+        if accepted:
             try:
                 self.history.move_chat(chat_id, choices[title])
                 if chat_id == self.chat_id:
@@ -618,7 +704,11 @@ class StoneBot(QMainWindow):
                 QMessageBox.warning(self, "Proyectos", str(exc))
 
     def render_chat(self, chat_id, saved, *, keep_activity=False):
+        if self.inline_cancel:
+            self.inline_cancel()
         self.chat_id = chat_id
+        self.chat_options.setVisible(chat_id is not None)
+        self.last_regenerate = None
         self.task = None
         self.task_panel = None
         self.messages = [{"role": "system", "content": SYSTEM}, *saved]
@@ -678,6 +768,48 @@ class StoneBot(QMainWindow):
         except (OSError, ValueError, RuntimeError, sqlite3.Error):
             self.show_problem("No se pudo renombrar la conversación.")
 
+    def pin_chat(self, chat_id, pinned):
+        try:
+            self.history.pin_chat(chat_id, pinned)
+            self.refresh_history()
+        except (OSError, ValueError, RuntimeError, sqlite3.Error):
+            self.show_problem("No se pudo cambiar la fijación de la conversación.")
+
+    def schedule_chat_title(self, chat_id, messages):
+        if self.history is None or chat_id is None or not messages or messages[0]["role"] != "user":
+            return
+        first = messages[0]
+        answer = next((item["content"] for item in messages if item["role"] == "assistant"
+                       and item["content"].strip() not in {"", "(Sin respuesta)"}), None)
+        key = (chat_id, first["created"])
+        if answer is None or key in self.pending_titles:
+            return
+        try:
+            if not self.history.title_pending(chat_id):
+                return
+        except (OSError, ValueError, RuntimeError, sqlite3.Error):
+            return
+        ai = self.ai
+        self.pending_titles.add(key)
+
+        def work():
+            title = generate_title(ai, first["content"])
+            try:
+                self.title_ready.emit(*key, title)
+            except RuntimeError:
+                pass  # La ventana se cerró mientras respondía el proveedor.
+
+        Thread(target=work, daemon=True).start()
+
+    @Slot(int, object, str)
+    def finish_chat_title(self, chat_id, created, title):
+        self.pending_titles.discard((chat_id, created))
+        try:
+            if self.history.finish_title(chat_id, created, title):
+                self.refresh_history()
+        except (OSError, ValueError, RuntimeError, sqlite3.Error):
+            record("No se pudo guardar el título automático.")
+
     def delete_chat(self, chat_id):
         try:
             self.history.delete(chat_id)
@@ -698,7 +830,9 @@ class StoneBot(QMainWindow):
             try:
                 self.chat_id = self.history.append(self.chat_id, role, text, created=created,
                                                    attachments=attachments, task=task,
-                                                   project_id=self.project["id"] if self.project else None)
+                                                   project_id=self.project["id"] if self.project else None,
+                                                   automatic_title=self.chat_id is None and role == "user")
+                self.chat_options.show()
                 self.refresh_history()
             except (OSError, ValueError, RuntimeError, sqlite3.Error):
                 self.history_write_ok = False
@@ -750,18 +884,27 @@ class StoneBot(QMainWindow):
 
     def refresh_appearance(self):
         theme = self.appearance
+        self.history_panel.theme = theme
+        self.auto_memory_switch.accent = theme["accent"]
+        self.auto_memory_switch.surface = theme["background"]
+        self.auto_memory_switch.update()
         apply_palette(theme)
-        self.centralWidget().setStyleSheet(chat_style(theme))
-        self.message.set_theme(theme)
+        stylesheet = chat_style(theme)
+        self.centralWidget().setStyleSheet(stylesheet)
+        self.message.set_theme(theme, stylesheet)
         icon_color = QColor(readable_text(theme["background"]))
         self.history_panel.refresh_icons(icon_color)
         self.sidebar_rail.refresh_icons(icon_color)
+        self.chat_options.setIcon(sidebar_icon("more", icon_color))
         self.settings_button.setIcon(sidebar_icon("settings", icon_color))
+        self.refresh_send_button()
+        self.chat_fade.background = theme["background"]
+        self.chat_fade.update()
         for bubble in self.chat.findChildren(ChatText, "userMessage"):
             bubble.highlights.set_link_background(theme["user_message"])
-            self.fit_bubble(bubble)
         for bubble in self.chat.findChildren(MarkdownText):
             bubble.set_theme(theme)
+        self.fit_bubbles()
         if self.mcp_dialog is not None:
             self.mcp_dialog.set_appearance(theme)
         if QApplication.platformName() == "windows":
@@ -812,8 +955,16 @@ class StoneBot(QMainWindow):
             dialog.setTextValue(instructions)
             dialog.setOkButtonText("Guardar")
             dialog.setCancelButtonText("Cancelar")
-            dialog.setStyleSheet(dialog_style(self.appearance))
-            dialog.resize(540, 260)
+            layout = dialog.layout()
+            layout.setContentsMargins(24, 21, 24, 20)
+            layout.setSpacing(14)
+            title = QLabel("Instrucciones generales")
+            title.setObjectName("settingsTitle")
+            layout.insertWidget(0, title)
+            buttons = dialog.findChild(QDialogButtonBox)
+            buttons.button(QDialogButtonBox.StandardButton.Ok).setProperty("primary", True)
+            dialog.setStyleSheet(settings_style(self.appearance))
+            dialog.resize(590, 360)
             try:
                 while dialog.exec():
                     try:
@@ -827,7 +978,7 @@ class StoneBot(QMainWindow):
         except (OSError, ValueError, RuntimeError):
             self.show_problem("No se pudieron abrir las instrucciones generales.")
 
-    def update_composer_menu(self):
+    def update_memory_menu(self):
         self.memory_menu.setEnabled(not self.attachments.files)
         attached_chat = has_chat_attachments(self.messages)
         self.memory_menu.setTitle("Memoria · en un chat nuevo" if attached_chat else "Memoria")
@@ -843,15 +994,31 @@ class StoneBot(QMainWindow):
             names = [name for name in installed if local_skills.enabled(name)]
         except (OSError, ValueError, RuntimeError):
             names = []
+        name_in_draft, _ = self.skill_in_draft()
         for name in names:
-            self.skills_menu.addAction(name, lambda _checked=False, value=name: self.draft_skill(value))
+            action = self.skills_menu.addAction(name, lambda _checked=False, value=name: self.draft_skill(value))
+            action.setCheckable(True)
+            action.setChecked(name == name_in_draft)
         if names:
             self.skills_menu.addSeparator()
         self.skills_menu.addAction("Administrar Skills…", self.open_skills)
 
+    def skill_in_draft(self):
+        opening = "Usa la Skill «"
+        text = self.message.toPlainText()
+        if text.startswith(opening):
+            name, separator, _ = text[len(opening):].partition("». ")
+            if separator and local_skills.valid_name(name):
+                return name, opening + name + separator
+        return None, ""
+
     def draft_skill(self, name):
+        _, current_prefix = self.skill_in_draft()
         self.message.moveCursor(QTextCursor.MoveOperation.Start)
-        self.message.insertPlainText(f"Usa la Skill «{name}». ")
+        cursor = self.message.textCursor()
+        cursor.setPosition(len(current_prefix), QTextCursor.MoveMode.KeepAnchor)
+        cursor.insertText(f"Usa la Skill «{name}». ")
+        self.message.setTextCursor(cursor)
         self.message.moveCursor(QTextCursor.MoveOperation.End)
         self.message.setFocus()
 
@@ -916,8 +1083,11 @@ class StoneBot(QMainWindow):
         try:
             save_automatic_memory(enabled)
         except OSError as exc:
-            self.auto_memory_action.setChecked(not enabled)
+            enabled = not enabled
             self.show_problem(str(exc))
+        self.auto_memory_action.setChecked(enabled)
+        with QSignalBlocker(self.auto_memory_switch):
+            self.auto_memory_switch.setChecked(enabled)
 
     def draft_memory_query(self, action):
         prefix = action.data()
@@ -941,17 +1111,21 @@ class StoneBot(QMainWindow):
         if user:
             self.follow_latest = True
         row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
         self.transcript.insertLayout(self.transcript.count() - 1, row)
         body = ChatText(self.chat) if user else MarkdownText(self.chat, text, self.appearance)
         body.setAccessibleName("Tú" if user else "StoneBot")
         body.setObjectName("userMessage" if user else "botMessage")
         if user:
             row.addStretch(1)
-        card = QWidget()
+        card = MessageCard()
         column = QVBoxLayout(card)
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(3)
         row.addWidget(card, 4)
+        if not user:
+            row.addStretch(1)
         if user:
             for file in attachments or ():
                 column.addWidget(AttachmentCard(file))
@@ -980,12 +1154,18 @@ class StoneBot(QMainWindow):
                 time_label.setToolTip(stamp.strftime("%d/%m/%Y %H:%M:%S"))
                 actions.addWidget(time_label)
         actions.addStretch()
-        actions.addWidget(self.message_button("Copiar", lambda: QApplication.clipboard().setText(text)))
+        card.add_action(actions, CopyButton(text))
         if user and index is not None and self.chat_id is not None:
-            actions.addWidget(self.message_button("Editar", lambda: self.edit_message(index)))
+            card.add_action(actions, self.message_button("Editar", lambda: self.edit_message(index, body)))
+        elif not user and index is not None and self.chat_id is not None:
+            if self.last_regenerate is not None:
+                previous_card, previous_button = self.last_regenerate
+                previous_card.remove_action(previous_button)
+            button = self.message_button("Regenerar", lambda: self.regenerate_reply(index))
+            card.add_action(actions, button)
+            self.last_regenerate = card, button
         column.addLayout(actions)
-        if user:
-            self.fit_bubble(body)
+        self.fit_bubble(body)
         self.scroll_to_latest()
 
     @staticmethod
@@ -995,12 +1175,24 @@ class StoneBot(QMainWindow):
         button.clicked.connect(lambda checked=False: action())
         return button
 
+    def fit_bubbles(self):
+        for body in self.chat.findChildren(ChatText, "userMessage"):
+            self.fit_bubble(body)
+        for body in self.chat.findChildren(MarkdownText, "botMessage"):
+            self.fit_bubble(body)
+
     def fit_bubble(self, body):
-        width = max(map(body.fontMetrics().horizontalAdvance, body.toPlainText().split("\n")))
-        body.setMaximumWidth(width + 26)
+        limit = max(1, self.transcript.parentWidget().width() * 7 // 10)
         card = body.parentWidget()
+        if isinstance(body, MarkdownText):
+            card.setMaximumWidth(limit)
+            return
+        if not body.isReadOnly():
+            return
+        width = max(map(body.fontMetrics().horizontalAdvance, body.toPlainText().split("\n"))) + 26
+        body.setMaximumWidth(min(limit, width))
         preview_width = 280 if card.findChild(AttachmentCard) is not None else 0
-        card.setMaximumWidth(max(width + 26, card.layout().minimumSize().width(), preview_width))
+        card.setMaximumWidth(min(limit, max(width, card.layout().minimumSize().width(), preview_width)))
 
     def scroll_to_latest(self):
         if self.follow_latest:
@@ -1010,6 +1202,39 @@ class StoneBot(QMainWindow):
     def update_scroll_preference(self):
         bar = self.chat.verticalScrollBar()
         self.follow_latest = bar.sliderPosition() == bar.maximum()
+
+    def refresh_send_button(self):
+        running = self.thread is not None
+        label = "Detener" if running else "Enviar"
+        self.send.setAccessibleName(label)
+        self.send.setToolTip("Deteniendo…" if self.stopping_turn else
+                             "Detener (Esc)" if running else label)
+        self.send.setIcon(sidebar_icon("stop" if running else "send", QColor(readable_text(self.appearance["accent"]))))
+        self.send.setEnabled(not self.stopping_turn)
+        self.stop_shortcut.setEnabled(running and not self.stopping_turn)
+
+    def send_or_stop(self):
+        if self.thread is None:
+            self.enviar()
+        else:
+            self.stop_turn()
+
+    def stop_turn(self):
+        if self.thread is None or self.stopping_turn:
+            return
+        self.stopping_turn = True
+        self.refresh_send_button()
+        self.thread.requestInterruption()
+        self.worker.stop()
+
+    def regenerate_reply(self, index):
+        saved = self.messages[1:]
+        if not 0 <= index < len(saved) or saved[index]["role"] != "assistant":
+            return
+        previous_user = next((position for position in range(index - 1, -1, -1)
+                              if saved[position]["role"] == "user"), None)
+        if previous_user is not None:
+            self.regenerate(previous_user, saved[previous_user]["content"], retry_at=index)
 
     def enviar(self):
         texto = self.message.toPlainText().strip()
@@ -1022,8 +1247,7 @@ class StoneBot(QMainWindow):
             self.show_problem("Escribe ! y elige Abrir PowerShell para ejecutar comandos en su propia ventana.")
             return
         if command == "/buscar":
-            self.history_button.setChecked(True)
-            self.history_panel.show_search()
+            self.search_sidebar()
             self.history_panel.search.setText(words[1] if len(words) > 1 else "")
             self.message.clear()
             return
@@ -1107,39 +1331,74 @@ class StoneBot(QMainWindow):
                 return
         self.start_turn(task=task if task_turn else None)
 
-    def edit_message(self, index):
+    def edit_message(self, index, body):
         if self.thread is not None or self.chat_id is None or self.history is None:
             return
         if self.task is not None:
             self.show_problem("La regeneración está disponible en conversaciones sin una tarea guardada.")
             return
         original = self.messages[index + 1]["content"]
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Editar mensaje")
-        dialog.setStyleSheet(dialog_style(self.appearance))
-        layout = QVBoxLayout(dialog)
-        note = QLabel("Al generar una respuesta nueva, se reemplazarán este mensaje y los posteriores de esta conversación.")
+        if self.inline_cancel:
+            self.inline_cancel()
+        card = body.parentWidget()
+        panel = QWidget(card)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        note = QLabel("Al regenerar, se reemplazarán este mensaje y los posteriores.")
+        note.setObjectName("messageTime")
         note.setWordWrap(True)
         layout.addWidget(note)
-        editor = QPlainTextEdit(original)
-        layout.addWidget(editor)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        save = buttons.button(QDialogButtonBox.StandardButton.Save)
-        save.setText("Regenerar")
-        save.setEnabled(False)
-        editor.textChanged.connect(lambda: save.setEnabled(
-            bool(editor.toPlainText().strip()) and editor.toPlainText().strip() != original.strip()))
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-        dialog.resize(520, 280)
-        try:
-            if dialog.exec():
-                self.regenerate(index, editor.toPlainText().strip())
-        finally:
-            dialog.deleteLater()
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel = secondary_button(QPushButton("Cancelar"))
+        save = QPushButton("Regenerar")
+        buttons.addWidget(cancel)
+        buttons.addWidget(save)
+        layout.addLayout(buttons)
+        card.layout().insertWidget(card.layout().count() - 1, panel)
+        body.setFixedWidth(body.width())
+        card.setMaximumWidth(max(card.maximumWidth(), panel.minimumSizeHint().width()))
+        body.setReadOnly(False)
+        body.moveCursor(QTextCursor.MoveOperation.End)
+        body.setFocus()
 
-    def regenerate(self, index, text):
+        def update_save():
+            text = body.toPlainText().strip()
+            save.setEnabled(bool(text) and text != original.strip())
+
+        shortcuts = []
+
+        def close_editor():
+            for shortcut in shortcuts:
+                shortcut.setEnabled(False)
+                shortcut.deleteLater()
+            self.inline_cancel = None
+            body.textChanged.disconnect(update_save)
+            body.setReadOnly(True)
+            body.setPlainText(original)
+            body.setMinimumWidth(0)
+            panel.hide()
+            card.layout().removeWidget(panel)
+            panel.deleteLater()
+            self.fit_bubble(body)
+
+        def submit():
+            text = body.toPlainText().strip()
+            close_editor()
+            self.regenerate(index, text)
+
+        self.inline_cancel = close_editor
+        body.textChanged.connect(update_save)
+        update_save()
+        cancel.clicked.connect(close_editor)
+        save.clicked.connect(submit)
+        for key, button in (("Esc", cancel), ("Ctrl+Return", save), ("Ctrl+Enter", save)):
+            shortcut = QShortcut(QKeySequence(key), card)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(button.click)
+            shortcuts.append(shortcut)
+
+    def regenerate(self, index, text, *, retry_at=None):
         text = text.strip()
         if self.thread is not None or not text or self.chat_id is None or self.history is None:
             return
@@ -1151,10 +1410,11 @@ class StoneBot(QMainWindow):
             return
         saved = self.messages[1:]
         if (not 0 <= index < len(saved) or saved[index]["role"] != "user"
-                or text == saved[index]["content"].strip()):
+                or (retry_at is None and text == saved[index]["content"].strip())):
             return
-        edited = {**saved[index], "content": text, "created": time.time_ns()}
-        self.pending_edit = (self.chat_id, index, saved, edited)
+        edited = {**saved[index], "content": text, "created": time.time_ns()} if retry_at is None else saved[index]
+        following = saved[retry_at + 1:] if retry_at is not None else []
+        self.pending_edit = (self.chat_id, index, saved, edited, following)
         self.render_chat(self.chat_id, [*saved[:index], edited])
         self.start_turn()
 
@@ -1205,10 +1465,13 @@ class StoneBot(QMainWindow):
             dialog.deleteLater()
 
     def start_turn(self, *, task=None):
+        if self.inline_cancel:
+            self.inline_cancel()
+        self.stopping_turn = False
         self.message.setEnabled(False)
         self.attachments.add_button.setEnabled(False)
         self.reasoning_button.setEnabled(False)
-        self.send.setEnabled(False)
+        self.chat_options.setEnabled(False)
         self.settings_button.setEnabled(False)
         self.sidebar_rail.provider_badge.setEnabled(False)
         self.history_panel.setEnabled(False)
@@ -1223,6 +1486,7 @@ class StoneBot(QMainWindow):
         self.scroll_to_latest()
 
         self.thread = QThread()
+        self.refresh_send_button()
         if task is not None:
             self.activity_panel.enable_pause(self.thread.requestInterruption)
         turn_messages = [{key: value for key, value in m.items() if key != "created"} for m in self.messages]
@@ -1271,6 +1535,7 @@ class StoneBot(QMainWindow):
         self.worker.continuity_saved.connect(self.update_continuity)
         self.worker.finished.connect(self.thread.quit)
         self.worker.error.connect(self.thread.quit)
+        self.worker.cancelled.connect(self.thread.quit)
         self.thread.finished.connect(self.limpiar, Qt.ConnectionType.QueuedConnection)
         self.thread.start()
 
@@ -1334,12 +1599,6 @@ class StoneBot(QMainWindow):
             event.ignore()
         else:
             QApplication.instance().removeEventFilter(self)
-            if self.history_width != self.saved_history_width:
-                try:
-                    save_history_width(self.history_width)
-                    self.saved_history_width = self.history_width
-                except (OSError, RuntimeError, ValueError):
-                    record("No se pudo guardar el ancho del historial.")
             self.pool.close()
             self.memory.close()
             if self.tray is not None:
@@ -1348,6 +1607,8 @@ class StoneBot(QMainWindow):
             super().closeEvent(event)
 
     def respuesta(self, texto):
+        if self.stopping_turn and (self.worker is None or self.worker.task is None):
+            return
         created = time.time_ns()
         if self.pending_edit is None:
             task = self.worker.task if self.worker is not None else None
@@ -1355,35 +1616,46 @@ class StoneBot(QMainWindow):
             if task is not None and not self.history_write_ok:
                 task["status"] = "interrupted"
         else:
-            chat_id, index, saved, edited = self.pending_edit
+            chat_id, index, saved, edited, following = self.pending_edit
             if not texto.strip() or texto.strip() == "(Sin respuesta)":
                 self.error(f"{PROVIDERS[self.ai.provider]} no generó una respuesta nueva. Se conservó la conversación original.")
                 return
             answer = {"role": "assistant", "content": texto, "created": created}
             try:
-                self.history.replace_from(chat_id, index, saved, edited, answer)
+                self.history.replace_from(chat_id, index, saved, edited, answer, following)
             except (OSError, ValueError, RuntimeError, sqlite3.Error):
                 self.error("No se pudo guardar la regeneración. Se conservó el historial guardado.")
                 return
             self.pending_edit = None
             self.messages.append(answer)
+            if following:
+                self.render_chat(chat_id, [*self.messages[1:], *following], keep_activity=True)
+                self.schedule_chat_title(chat_id, self.messages[1:])
+                return
             self.refresh_history()
-        self.append_message(texto, created=created)
+        self.append_message(texto, created=created, index=len(self.messages) - 2 if self.history_write_ok else None)
+        if self.history_write_ok:
+            self.schedule_chat_title(self.chat_id, self.messages[1:])
 
     def error(self, detalle):
+        if self.stopping_turn and (self.worker is None or self.worker.task is None):
+            return
         if self.worker is not None and self.worker.task is not None:
             self.worker.task_reply("paused", detalle)
             self.respuesta(detalle)
+        self.restore_pending_edit()
+        self.activity_panel.add_event(f"Error del turno · {detalle}")
+        self.show_problem(detalle)
+
+    def restore_pending_edit(self):
         if self.pending_edit is not None:
-            chat_id, _, saved, _ = self.pending_edit
+            chat_id, _, saved, _, _ = self.pending_edit
             self.pending_edit = None
             try:
                 saved = self.history.messages(chat_id)
             except (OSError, ValueError, RuntimeError, sqlite3.Error):
                 pass
             self.render_chat(chat_id, saved, keep_activity=True)
-        self.activity_panel.add_event(f"Error del turno · {detalle}")
-        self.show_problem(detalle)
 
     @Slot()
     def limpiar(self):
@@ -1397,12 +1669,17 @@ class StoneBot(QMainWindow):
                                             saved=self.history_write_ok)
             if self.history_write_ok:
                 self.update_task_correction(self.activity_panel, task)
+        elif self.stopping_turn:
+            self.restore_pending_edit()
+            self.activity_panel.add_event("Respuesta detenida.")
         elif not self.activity_panel.latest.startswith("Error del turno"):
             self.activity_panel.add_event("Turno finalizado.")
         self.message.setEnabled(True)
         self.attachments.add_button.setEnabled(True)
         self.reasoning_button.setEnabled(True)
-        self.send.setEnabled(True)
+        self.stopping_turn = False
+        self.refresh_send_button()
+        self.chat_options.setEnabled(True)
         self.settings_button.setEnabled(True)
         self.sidebar_rail.provider_badge.setEnabled(True)
         self.history_panel.setEnabled(True)

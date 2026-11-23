@@ -151,16 +151,19 @@ class TextToolCallError(ResponseError):
 
 
 class OpenRouter:
-    def request(self, method, endpoint, *, payload=None, timeout=120):
+    @staticmethod
+    def request_headers(payload):
         headers = {}
         if payload is not None:
             key = openrouter_key()
             if not key:
                 raise ResponseError("Falta la clave de OpenRouter. Configúrala desde el engrane.")
             headers["Authorization"] = f"Bearer {key}"
+        return headers
+
+    @staticmethod
+    def response_json(response):
         try:
-            response = httpx.request(method, OPENROUTER_URL + endpoint, json=payload, headers=headers,
-                                     timeout=timeout, follow_redirects=False)
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as exc:
@@ -168,11 +171,37 @@ class OpenRouter:
             detail = {400: "Revisa el modelo y sus capacidades.", 401: "Revisa la clave API.",
                       402: "Revisa el saldo de OpenRouter.", 429: "Se alcanzó el límite de solicitudes."}
             raise ResponseError(f"OpenRouter respondió con un error HTTP {code}. {detail.get(code, '')}".strip(), code) from None
-        except (httpx.RequestError, ValueError):
+        except ValueError:
             raise ResponseError("No se pudo comunicar con OpenRouter.") from None
+
+    def request(self, method, endpoint, *, payload=None, timeout=120):
+        headers = self.request_headers(payload)
+        try:
+            response = httpx.request(method, OPENROUTER_URL + endpoint, json=payload, headers=headers,
+                                     timeout=timeout, follow_redirects=False)
+        except httpx.RequestError:
+            raise ResponseError("No se pudo comunicar con OpenRouter.") from None
+        return self.response_json(response)
+
+    async def request_async(self, client, method, endpoint, *, payload=None, timeout=120):
+        headers = self.request_headers(payload)
+        try:
+            response = await client.request(method, OPENROUTER_URL + endpoint, json=payload, headers=headers, timeout=timeout)
+        except httpx.RequestError:
+            raise ResponseError("No se pudo comunicar con OpenRouter.") from None
+        return self.response_json(response)
 
     def show(self, model):
         catalog = self.request("GET", "/models", timeout=10)["data"]
+        return self.model_capabilities(catalog, model)
+
+    async def show_async(self, model):
+        async with httpx.AsyncClient(follow_redirects=False) as client:
+            data = await self.request_async(client, "GET", "/models", timeout=10)
+        return self.model_capabilities(data["data"], model)
+
+    @staticmethod
+    def model_capabilities(catalog, model):
         item = next((item for item in catalog if item["id"] == model), None)
         inputs = item.get("architecture", {}).get("input_modalities", []) if item else []
         return SimpleNamespace(capabilities=["vision"] if "image" in inputs else [])
@@ -204,7 +233,28 @@ class OpenRouter:
             result.append(row)
         return result
 
-    def chat(self, *, model, messages, tools=(), options=None, think=None, format=None, recover_local_reads=False):
+    def chat(self, **options):
+        exchange = self.chat_exchange(**options)
+        payload = next(exchange)
+        while True:
+            data = self.request("POST", "/chat/completions", payload=payload)
+            try:
+                payload = exchange.send(data)
+            except StopIteration as done:
+                return done.value
+
+    async def chat_async(self, **options):
+        exchange = self.chat_exchange(**options)
+        payload = next(exchange)
+        async with httpx.AsyncClient(follow_redirects=False) as client:
+            while True:
+                data = await self.request_async(client, "POST", "/chat/completions", payload=payload)
+                try:
+                    payload = exchange.send(data)
+                except StopIteration as done:
+                    return done.value
+
+    def chat_exchange(self, *, model, messages, tools=(), options=None, think=None, format=None, recover_local_reads=False):
         rows = self.messages_for_api(messages)
         if format:
             rows.insert(0, {"role": "system", "content": "Devuelve únicamente JSON con este esquema: " + json.dumps(format)})
@@ -220,7 +270,7 @@ class OpenRouter:
         if think is True or (think is False and format):
             payload["reasoning"] = {"enabled": think}
         for attempt in range(2):
-            data = self.request("POST", "/chat/completions", payload=payload)
+            data = yield payload
             try:
                 choice = data["choices"][0]
                 message = choice["message"]

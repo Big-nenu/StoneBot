@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 from mcp.types import Tool
-from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog, QLabel, QLineEdit, QMessageBox, QPushButton
+from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QPushButton
 
 from test_mcp import example_stdio
 import app
@@ -22,7 +22,6 @@ from appearance import (
 )
 from mcp_ui import INTEGRATED_MEMORY, McpDialog, ServerForm, Toggle
 from stonewave_memory import load_settings
-from stonewave_settings_ui import StoneWaveSettingsDialog
 
 
 def assert_controls_fit(window, controls):
@@ -33,25 +32,13 @@ def assert_controls_fit(window, controls):
             assert window.rect().contains(top_left) and window.rect().contains(bottom_right), control
 
 
-def submit_form(button, callback):
-    errors = []
-
-    def fill():
-        form = QApplication.activeModalWidget()
-        try:
-            assert isinstance(form, ServerForm)
-            callback(form)
-            form.accept()
-        except Exception as exc:
-            errors.append(exc)
-            if form is not None:
-                form.reject()
-
-    with patch.object(QMessageBox, "warning", side_effect=AssertionError("El formulario rechazó la configuración.")):
-        QTimer.singleShot(0, fill)
-        button.click()
-    if errors:
-        raise errors[0]
+def submit_form(dialog, button, callback):
+    button.click()
+    form = dialog.editor
+    assert isinstance(form, ServerForm) and not form.isWindow()
+    callback(form)
+    form.accept()
+    assert dialog.editor is None, form.error.text()
 
 
 def test_integrated_memory_catalog():
@@ -60,12 +47,12 @@ def test_integrated_memory_catalog():
         window = app.StoneBot()
         dialog = window.mcp_manager()
         catalog = {name: (None, "stonewave", Tool(name=name, description="Descripción de prueba", inputSchema={}), False)
-                   for name in ("query_memory", "force_dream", "sync_memory")}
+                   for name in ["query_memory", "force_dream", "sync_memory"] + [f"fixture_{i}" for i in range(15)]}
         with (patch.object(window.memory, "entries", new=AsyncMock(return_value=catalog)) as entries,
               patch("mcp_ui.probe_server", new=AsyncMock()) as external_probe):
             assert dialog.selected() == INTEGRATED_MEMORY
-            assert not dialog.edit.isEnabled() and not dialog.remove.isEnabled()
-            dialog.probe.click()
+            dialog.show()
+            assert not dialog.controls.isVisible()
             for _ in range(100):
                 qt.processEvents()
                 if dialog.test is None:
@@ -74,6 +61,8 @@ def test_integrated_memory_catalog():
             assert dialog.test is None
             entries.assert_awaited_once()
             external_probe.assert_not_awaited()
+            dialog.memory_panel.sections.setCurrentRow(4)
+            assert dialog.tools.isVisible() and dialog.tools.topLevelItemCount() == 18
             displayed = {dialog.tools.topLevelItem(i).text(0): dialog.tools.topLevelItem(i)
                          for i in range(dialog.tools.topLevelItemCount())}
             assert displayed["query_memory"].text(2) == "Chat"
@@ -93,25 +82,26 @@ def test_integrated_memory_catalog():
             raise AssertionError("La operación de StoneWave no terminó.")
 
         def configure(settings):
-            assert settings.sections.count() == 4
+            assert settings.sections.count() == 5 and not settings.isWindow()
+            settings.sections.setCurrentRow(2)
             settings.fields["NOTES"].setText(str(notes))
             settings.dream.setChecked(False)
             assert not settings.fields["DREAM_HOURS"].isEnabled()
             assert not settings.actions["export_notes"].isEnabled()
-            settings.apply_button.click()
+            assert dialog.apply_button.isEnabled()
+            dialog.apply_button.click()
             finish_job(settings)
             assert settings.actions["export_notes"].isEnabled()
             assert "guardados y aplicados" in settings.status.text()
-            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
-                settings.actions["export_notes"].click()
+            settings.actions["export_notes"].click()
+            assert dialog.editor is not None and not dialog.editor.isWindow()
+            next(button for button in dialog.editor.findChildren(QPushButton) if button.text() == "Continuar").click()
             finish_job(settings)
             assert settings.status.text() == "Exportación de prueba completada."
-            return 0
 
-        with (patch.object(StoneWaveSettingsDialog, "exec", configure),
-              patch.object(window.memory, "restart", new=AsyncMock(return_value=catalog)) as restart,
+        with (patch.object(window.memory, "restart", new=AsyncMock(return_value=catalog)) as restart,
               patch.object(window.memory, "call", new=AsyncMock(return_value="Exportación de prueba completada.")) as call):
-            dialog.memory_settings.click()
+            configure(dialog.memory_panel)
             restart.assert_awaited_once()
             call.assert_awaited_once_with("export_notes")
         assert load_settings()["NOTES"] == str(notes)
@@ -126,6 +116,8 @@ def test_manager():
         with (patch.object(mcp_client, "default_root", return_value=root),
               patch.object(mcp_client, "read_key", return_value=None)):
             window = app.StoneBot()
+            window.mcp_dialog = McpDialog(window)
+            window.mcp_dialog.connection_changed.connect(window.pool.invalidate)
             with patch.object(McpDialog, "exec", return_value=0) as open_dialog:
                 next(action for action in window.settings_menu.actions() if action.text() == "Extensiones…").trigger()
             open_dialog.assert_called_once()
@@ -139,14 +131,13 @@ def test_manager():
                 form.arguments.setPlainText(json.dumps(["-B", "-c", cmd[-1]]))
                 form.reads.setPlainText("echo")
 
-            submit_form(dialog.add, stdio)
+            submit_form(dialog, dialog.add, stdio)
             assert dialog.selected() == "ejemplo"
             assert not mcp_client.load_servers()["ejemplo"]["enabled"]
-            assert "#b8b2c4" in dialog.table.itemWidget(dialog.table.currentItem(), 3).styleSheet()
+            assert dialog.badge.text() == "Sin probar"
 
-            def switch(tree, row=0):
-                holder = tree.itemWidget(tree.topLevelItem(row), 2)
-                return holder.findChild(Toggle)
+            def switch(manager):
+                return manager.server_switch.findChild(Toggle)
 
             def tool_item(name):
                 for row in range(dialog.tools.topLevelItemCount()):
@@ -158,7 +149,7 @@ def test_manager():
                 raise AssertionError(name)
 
             def status():
-                return dialog.table.itemWidget(dialog.table.currentItem(), 3)
+                return dialog.badge
 
             def wait_for_probe():
                 for _ in range(300):
@@ -167,7 +158,7 @@ def test_manager():
                         return
                 raise AssertionError("La prueba de conexión no terminó.")
 
-            QTest.mouseClick(switch(dialog.table), Qt.MouseButton.LeftButton)
+            QTest.mouseClick(switch(dialog), Qt.MouseButton.LeftButton)
             assert mcp_client.load_servers()["ejemplo"]["enabled"]
             dialog.hide()
             window.show()
@@ -178,65 +169,50 @@ def test_manager():
             assert menu.isVisible() and quick.accessibleName() == "Servidor ejemplo" and quick.isChecked()
             QTest.mouseClick(quick, Qt.MouseButton.LeftButton)
             assert not mcp_client.load_servers()["ejemplo"]["enabled"]
-            assert not switch(dialog.table).isChecked()
+            assert not switch(dialog).isChecked()
             menu.close()
             dialog.show()
-            QTest.mouseClick(switch(dialog.table), Qt.MouseButton.LeftButton)
+            QTest.mouseClick(switch(dialog), Qt.MouseButton.LeftButton)
             menu.aboutToShow.emit()
             assert menu.actions()[0].defaultWidget().findChild(Toggle).isChecked()
             assert mcp_client.load_servers()["ejemplo"]["enabled"]
             dialog.probe.click()
             assert not dialog.edit.isEnabled()
-            assert not dialog.close()
             wait_for_probe()
-            assert "Correcta" in status().text() and "#86efac" in status().styleSheet(), (
+            assert "Conectado" in status().text() and status().property("connection") == "connected", (
                 dialog.selected(), status().text(), status().toolTip())
             assert tool_item("echo").text(1) == "Lectura automática"
             assert tool_item("mark").text(1) == "Requiere confirmación"
-            assert dialog.tools.itemWidget(tool_item("echo"), 2).findChild(QLabel).text() == "Activo"
+            assert dialog.tools.itemWidget(tool_item("echo"), 0).findChild(QLabel, "mcpCardState").text() == "Activo"
             widths = []
-            for width in (380, 980):
-                dialog.resize(width, 460)
+            for width in (780, 1060):
+                dialog.resize(width, 510)
                 qt.processEvents()
-                widths.append([tree.columnWidth(0) for tree in (dialog.table, dialog.tools)])
-                assert_controls_fit(dialog, (dialog.add, dialog.edit, dialog.remove, dialog.api_key, dialog.probe))
+                widths.append([tree.viewport().width() for tree in (dialog.table, dialog.tools)])
+                assert_controls_fit(dialog, (dialog.add, dialog.edit, dialog.remove, dialog.api_key, dialog.probe, switch(dialog)))
                 for tree in (dialog.table, dialog.tools):
-                    assert tree.horizontalScrollBar().maximum() == 0, (
-                        tree.accessibleName(), tree.viewport().width(),
-                        [tree.columnWidth(i) for i in range(tree.columnCount())])
-                    for row in range(tree.topLevelItemCount()):
-                        item = tree.topLevelItem(row)
-                        if tree is dialog.table and item.text(0) == INTEGRATED_MEMORY:
-                            assert item.text(2) == "Integrada" and tree.itemWidget(item, 2) is None
-                            continue
-                        toggle = switch(tree, row)
-                        assert not item.text(2)
-                        cell = tree.visualItemRect(item)
-                        start = tree.header().sectionViewportPosition(2)
-                        top = toggle.mapTo(tree.viewport(), QPoint(0, 0))
-                        end = toggle.mapTo(tree.viewport(), toggle.rect().bottomRight())
-                        assert start <= top.x() <= end.x() < start + tree.columnWidth(2)
-                        assert cell.top() <= top.y() <= end.y() <= cell.bottom()
-                        if tree is dialog.table:
-                            label = tree.itemWidget(item, 2).findChild(QLabel)
-                            label_start = label.mapTo(tree.viewport(), QPoint(0, 0)).x()
-                            assert label.text() == "Activo"
-                            assert end.x() < label_start and label_start + label.width() <= start + tree.columnWidth(2)
-            assert all(narrow < wide for narrow, wide in zip(*widths))
-            QTest.mouseClick(dialog.tools.itemWidget(tool_item("mark"), 2).findChild(Toggle), Qt.MouseButton.LeftButton)
+                    assert tree.isHeaderHidden() and tree.horizontalScrollBar().maximum() == 0
+                for row in range(dialog.tools.topLevelItemCount()):
+                    item = dialog.tools.topLevelItem(row)
+                    toggle = dialog.tools.itemWidget(item, 0).findChild(Toggle)
+                    cell = dialog.tools.visualItemRect(item)
+                    assert cell.contains(toggle.mapTo(dialog.tools.viewport(), QPoint()))
+                    assert cell.contains(toggle.mapTo(dialog.tools.viewport(), toggle.rect().bottomRight()))
+            assert widths[0][0] == widths[1][0] and widths[0][1] < widths[1][1]
+            QTest.mouseClick(dialog.tools.itemWidget(tool_item("mark"), 0).findChild(Toggle), Qt.MouseButton.LeftButton)
             assert mcp_client.load_servers()["ejemplo"]["disabled_tools"] == ["mark"]
             assert tool_item("mark").text(1) == "Requiere confirmación"
-            assert dialog.tools.itemWidget(tool_item("mark"), 2).findChild(QLabel).text() == "Inactivo"
-            assert not dialog.tools.itemWidget(tool_item("mark"), 2).findChild(Toggle).isChecked()
-            QTest.mouseClick(switch(dialog.table), Qt.MouseButton.LeftButton)
+            assert dialog.tools.itemWidget(tool_item("mark"), 0).findChild(QLabel, "mcpCardState").text() == "Inactivo"
+            assert not dialog.tools.itemWidget(tool_item("mark"), 0).findChild(Toggle).isChecked()
+            QTest.mouseClick(switch(dialog), Qt.MouseButton.LeftButton)
             assert not mcp_client.load_servers()["ejemplo"]["enabled"]
-            assert "Correcta" in status().text()
+            assert "Conectado" in status().text()
 
             reopened = McpDialog(window)
-            assert not switch(reopened.table).isChecked()
+            assert not switch(reopened).isChecked()
             assert reopened.servers["ejemplo"]["disabled_tools"] == ["mark"]
             reopened.deleteLater()
-            QTest.mouseClick(switch(dialog.table), Qt.MouseButton.LeftButton)
+            QTest.mouseClick(switch(dialog), Qt.MouseButton.LeftButton)
 
             def http(form):
                 assert form.name.isReadOnly()
@@ -247,8 +223,7 @@ def test_manager():
                 qt.processEvents()
                 assert_controls_fit(form, form.findChildren(QLineEdit) + form.findChildren(QPushButton))
 
-            with patch.object(QMessageBox, "information"):
-                submit_form(dialog.edit, http)
+            submit_form(dialog, dialog.edit, http)
             server = mcp_client.load_servers()["ejemplo"]
             assert server["transport"] == "http" and server["token_env"] == "STONEBOT_MCP_PRUEBA_TOKEN"
             assert not server["read_tools"] and not server["enabled"]
@@ -285,7 +260,7 @@ def test_manager():
                 probe_http(fail_http(code))
                 assert f"HTTP {code}" in dialog.notice.text(), dialog.notice.text()
                 assert f"HTTP {code}" in status().toolTip()
-                assert "#fca5a5" in status().styleSheet()
+                assert status().property("connection") == "error"
 
             def timeout(request):
                 raise httpx.ReadTimeout(secret, request=request)
@@ -307,11 +282,11 @@ def test_manager():
                 return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
 
             probe_http(authenticated)
-            assert "Correcta" in status().text()
+            assert "Conectado" in status().text()
             assert tool_item("search").text(0) == "search"
             with patch.object(mcp_client, "read_key", side_effect=mcp_client.CredentialAccessError):
                 probe_http(authenticated)
-            assert "Correcta" in status().text()
+            assert "Conectado" in status().text()
 
             target = mcp_client.credential_target("ejemplo", server)
             vault = {}
@@ -325,22 +300,23 @@ def test_manager():
                 return 1
 
             with (patch("mcp_ui.read_key", side_effect=vault.get),
-                  patch("mcp_ui.store_key", side_effect=vault.__setitem__),
-                  patch.object(QDialog, "exec", save_masked)):
+                  patch("mcp_ui.store_key", side_effect=vault.__setitem__)):
                 dialog.api_key.click()
+                assert dialog.editor is not None and not dialog.editor.isWindow()
+                save_masked(dialog.editor)
             assert vault == {target: secret}
             assert secret not in (root / "mcp_servers.json").read_text(encoding="utf-8")
             assert secret not in dialog.notice.text()
             with patch.object(mcp_client, "read_key", side_effect=vault.get):
                 probe_http(authenticated, env_value="")
-            assert "Correcta" in status().text()
+            assert "Conectado" in status().text()
             assert mcp_client.credential_target("ejemplo", dict(server, url="https://other.test/mcp")) != target
             with patch.object(McpDialog, "exec", return_value=0):
                 next(action for action in window.settings_menu.actions() if action.text() == "Extensiones…").trigger()
             assert window.mcp_dialog is dialog and dialog.selected() == "ejemplo"
-            with (patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes),
-                  patch("mcp_ui.delete_key", side_effect=lambda key: vault.pop(key, None))):
+            with patch("mcp_ui.delete_key", side_effect=lambda key: vault.pop(key, None)):
                 dialog.remove.click()
+                next(button for button in dialog.editor.findChildren(QPushButton) if button.text() == "Eliminar").click()
             assert mcp_client.load_servers() == {}
             assert not vault
             dialog.close()
@@ -444,9 +420,9 @@ def test_xcode_manager_layout():
         dialog.resize(dialog.minimumSize())
         dialog.show()
         qt.processEvents()
-        assert dialog.add.geometry().bottom() < dialog.table.geometry().top()
-        assert dialog.probe.geometry().top() > dialog.table.geometry().bottom()
-        assert dialog.probe.property("primary")
+        assert dialog.add.geometry().top() >= dialog.table.geometry().bottom()
+        assert dialog.table.parentWidget().width() == 208
+        assert not dialog.apply_button.isEnabled()
         assert_controls_fit(dialog, dialog.findChildren(QPushButton))
         dialog.close()
         window.close()

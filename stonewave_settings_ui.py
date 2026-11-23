@@ -1,12 +1,13 @@
 """Ajustes de la conexión integrada de StoneWave en StoneBot."""
 import asyncio
 from PySide6.QtCore import Qt, QThread, Signal, Slot
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QHBoxLayout,
-                               QLabel, QLineEdit, QListWidget, QMessageBox, QPushButton, QScrollArea,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout,
+                               QLabel, QLineEdit, QListWidget, QPushButton, QScrollArea,
                                QStackedWidget, QVBoxLayout, QWidget)
 
 from ai_provider import available_models
-from appearance import dialog_style
+from appearance import SettingsComboBox, SettingsDoubleSpinBox, control_colors
+from extension_ui import Toggle
 from stonewave_memory import MANUAL_TIMEOUTS, load_settings, save_settings
 
 
@@ -26,47 +27,45 @@ class SettingsOperation(QThread):
             self.result.emit(result, "")
 
 
-class StoneWaveSettingsDialog(QDialog):
+class StoneWaveSettingsPanel(QWidget):
     session_changed = Signal(object, str)
+    activity_changed = Signal()
 
-    def __init__(self, parent, memory, theme):
+    def __init__(self, parent, memory, status, confirm, theme):
         super().__init__(parent)
         self.memory = memory
+        self.status = status
+        self.confirm = confirm
+        self.theme = theme
         self.job = None
         self.fields = {}
         self.actions = {}
-        self.setWindowTitle("Ajustes de StoneWave")
-        self.resize(720, 440)
-        self.setMinimumSize(510, 340)
-        self.setStyleSheet(dialog_style(theme))
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        heading = QLabel("StoneWave · Configuración")
-        heading.setStyleSheet("font-size: 20px; font-weight: 650;")
-        layout.addWidget(heading)
-        layout.addWidget(self.description("Estos ajustes se aplican a la memoria de StoneBot en este equipo."))
-
-        body = QHBoxLayout()
+        body = QHBoxLayout(self)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(14)
         self.sections = QListWidget()
         self.sections.setAccessibleName("Secciones de StoneWave")
-        self.sections.setFixedWidth(155)
+        self.sections.setFixedWidth(165)
         self.pages = QStackedWidget()
         self.sections.currentRowChanged.connect(self.pages.setCurrentIndex)
         body.addWidget(self.sections)
         body.addWidget(self.pages, 1)
-        layout.addLayout(body, 1)
 
         dream = self.page("Sueño automático", "Organiza y revisa la memoria cuando pasa el intervalo indicado y la memoria está inactiva. Un intervalo de 0 pausa la programación. El sueño manual sigue disponible.")
         self.dream = self.add_check(dream, "AUTO_DREAM", "Activar sueño automático")
-        self.add_number(dream, "DREAM_HOURS", "Intervalo mínimo (horas)")
-        self.add_number(dream, "DREAM_IDLE_MIN", "Inactividad mínima (minutos)")
+        timing = QHBoxLayout()
+        for key, label in (("DREAM_HOURS", "Intervalo mínimo (horas)"), ("DREAM_IDLE_MIN", "Inactividad mínima (minutos)")):
+            column = QVBoxLayout()
+            self.add_number(column, key, label)
+            timing.addLayout(column, 1)
+        dream.addLayout(timing)
         self.add_action(dream, "force_dream", "Ejecutar sueño ahora",
                         "StoneWave revisará y organizará los recuerdos. También puede generar conclusiones y actualizar las notas según los ajustes guardados. ¿Continuar?")
 
         conclusions = self.page("Conclusiones", "Durante el sueño, StoneWave puede proponer hipótesis a partir de los recuerdos. Este ajuste controla las próximas revisiones.")
         self.conclusions = self.add_check(conclusions, "CONCLUSIONS", "Generar conclusiones")
-        self.model = QComboBox()
+        self.model = SettingsComboBox()
         self.model.setEditable(True)
         self.model.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.model.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
@@ -85,41 +84,44 @@ class StoneWaveSettingsDialog(QDialog):
         self.add_action(sync, "sync_memory", "Sincronizar ahora",
                         "StoneWave importará los recuerdos del archivo compartido y actualizará ese archivo con la memoria combinada. ¿Continuar?")
 
-        self.status = self.description("Aplicar cambios reinicia la sesión integrada de StoneWave.")
-        layout.addWidget(self.status)
-        footer = QHBoxLayout()
-        footer.addStretch()
-        self.close_button = QPushButton("Cerrar")
-        self.close_button.clicked.connect(self.reject)
-        self.apply_button = QPushButton("Aplicar cambios")
-        self.apply_button.setProperty("primary", True)
-        self.apply_button.clicked.connect(self.apply)
-        for button in (self.close_button, self.apply_button):
-            footer.addWidget(button)
-        layout.addLayout(footer)
+        self.sections.addItem("Herramientas")
+        catalog = QWidget()
+        self.catalog_layout = QVBoxLayout(catalog)
+        self.catalog_layout.setContentsMargins(0, 0, 0, 0)
+        self.pages.addWidget(catalog)
 
+        self.reset()
+        for widget in self.fields.values():
+            if isinstance(widget, QCheckBox):
+                widget.toggled.connect(self.refresh)
+            elif isinstance(widget, QDoubleSpinBox):
+                widget.valueChanged.connect(self.refresh)
+            elif isinstance(widget, QComboBox):
+                widget.currentTextChanged.connect(self.refresh)
+            else:
+                widget.textChanged.connect(self.refresh)
+        self.sections.setCurrentRow(0)
+
+    def reset(self):
         values = load_settings()
+        self.saved = None
         for key, widget in self.fields.items():
             value = values[key]
             if isinstance(widget, QCheckBox):
                 widget.setChecked(value.lower() == "true")
-                widget.toggled.connect(self.refresh)
             elif isinstance(widget, QDoubleSpinBox):
                 widget.setValue(float(value))
-                widget.valueChanged.connect(self.refresh)
             elif isinstance(widget, QComboBox):
                 widget.setCurrentText(value)
-                widget.currentTextChanged.connect(self.refresh)
             else:
                 widget.setText("" if key == "NOTES" and value.lower().strip() in {"off", "false", "0", "no"} else value)
-                widget.textChanged.connect(self.refresh)
         self.saved = self.values()
-        self.sections.setCurrentRow(0)
         self.refresh()
 
     @staticmethod
     def description(text):
         label = QLabel(text)
+        label.setProperty("muted", True)
         label.setWordWrap(True)
         label.setTextFormat(Qt.TextFormat.PlainText)
         return label
@@ -129,9 +131,18 @@ class StoneWaveSettingsDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         page = QWidget()
-        content = QVBoxLayout(page)
-        content.setContentsMargins(12, 10, 12, 10)
-        content.setAlignment(Qt.AlignmentFlag.AlignTop)
+        page.setProperty("extensionCanvas", True)
+        page.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        wrapper = QVBoxLayout(page)
+        wrapper.setContentsMargins(0, 0, 0, 0)
+        card = QWidget()
+        card.setObjectName("extensionCard")
+        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        content = QVBoxLayout(card)
+        content.setContentsMargins(14, 12, 14, 12)
+        content.setSpacing(9)
+        wrapper.addWidget(card)
+        wrapper.addStretch()
         heading = QLabel(title)
         heading.setProperty("sectionHeading", True)
         content.addWidget(heading)
@@ -141,20 +152,34 @@ class StoneWaveSettingsDialog(QDialog):
         return content
 
     def add_check(self, page, key, label):
-        check = QCheckBox(label)
+        check = Toggle(False, label, self.theme["accent"], control_colors(self.theme["background"])[0])
         self.fields[key] = check
-        page.addWidget(check)
+        caption = QLabel(label)
+        caption.setWordWrap(True)
+        caption.setBuddy(check)
+        row = QHBoxLayout()
+        row.addWidget(caption, 1)
+        row.addWidget(check)
+        page.addLayout(row)
         return check
+
+    def set_appearance(self, theme):
+        self.theme = theme
+        for widget in (self.dream, self.conclusions):
+            widget.accent = theme["accent"]
+            widget.surface = control_colors(theme["background"])[0]
+            widget.update()
 
     def add_field(self, page, key, label, widget):
         caption = QLabel(label)
+        caption.setWordWrap(True)
         caption.setBuddy(widget)
         page.addWidget(caption)
         page.addWidget(widget)
         self.fields[key] = widget
 
     def add_number(self, page, key, label):
-        field = QDoubleSpinBox()
+        field = SettingsDoubleSpinBox()
         field.setRange(0, 1_000_000)
         field.setDecimals(2)
         self.add_field(page, key, label, field)
@@ -195,11 +220,10 @@ class StoneWaveSettingsDialog(QDialog):
                 for key, widget in self.fields.items()}
 
     def refresh(self):
-        if not hasattr(self, "saved"):
+        if self.saved is None:
             return
         current = self.values()
         dirty = current != self.saved
-        self.apply_button.setEnabled(self.job is None and dirty)
         for key in ("DREAM_HOURS", "DREAM_IDLE_MIN"):
             self.fields[key].setEnabled(self.dream.isChecked())
         self.model.setEnabled(self.conclusions.isChecked())
@@ -207,12 +231,17 @@ class StoneWaveSettingsDialog(QDialog):
         self.actions["force_dream"].setEnabled(not dirty)
         self.actions["export_notes"].setEnabled(not dirty and bool(self.saved["NOTES"]))
         self.actions["sync_memory"].setEnabled(not dirty and bool(self.saved["SYNC"]))
+        self.activity_changed.emit()
+
+    def can_apply(self):
+        return self.job is None and self.values() != self.saved
 
     def start(self, operation, notice, complete):
+        if self.job is not None:
+            return
         self.job = SettingsOperation(self, operation)
         self.pages.setEnabled(False)
-        self.close_button.setEnabled(False)
-        self.apply_button.setEnabled(False)
+        self.activity_changed.emit()
         self.status.setText(notice)
         self.on_result = complete
         self.job.result.connect(self.complete)
@@ -227,10 +256,11 @@ class StoneWaveSettingsDialog(QDialog):
         self.job.deleteLater()
         self.job = None
         self.pages.setEnabled(True)
-        self.close_button.setEnabled(True)
         self.refresh()
 
     def apply(self):
+        if not self.can_apply():
+            return
         values = self.values()
         changes = {key: value for key, value in values.items() if value != self.saved[key]}
         if not changes:
@@ -266,12 +296,7 @@ class StoneWaveSettingsDialog(QDialog):
         self.start(discover, "Consultando modelos instalados en Ollama…", complete)
 
     def run_action(self, tool, label, explanation):
-        buttons = QMessageBox.StandardButton
-        if QMessageBox.question(self, label, explanation, buttons.Yes | buttons.No, buttons.No) != buttons.Yes:
-            return
-        self.start(lambda: self.memory.call(tool), "StoneWave está procesando la operación…",
-                   lambda result, error: self.status.setText(error or result))
-
-    def reject(self):
-        if self.job is None:
-            super().reject()
+        self.confirm(label, explanation, lambda: self.start(
+            lambda: self.memory.call(tool), "StoneWave está procesando la operación…",
+            lambda result, error: self.status.setText(error or result),
+        ))

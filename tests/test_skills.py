@@ -18,7 +18,6 @@ import turn_worker
 import local_skills
 import mcp_client
 from skills_ui import SkillsPanel
-from extension_ui import Toggle
 
 
 EXAMPLE = "faro-de-prueba"
@@ -53,9 +52,9 @@ def install_from_ui(root):
     assert panel.list.currentItem() is None
     assert panel.results.currentWidget() is panel.empty
     panel.search.clear()
+    panel.list.setCurrentItem(item)
     panel.show()
-    switch = panel.list.itemWidget(item).findChild(Toggle)
-    QTest.mouseClick(switch, Qt.MouseButton.LeftButton)
+    QTest.mouseClick(panel.switch, Qt.MouseButton.LeftButton)
     assert item.checkState() == Qt.CheckState.Checked
     assert local_skills.enabled("prueba-local")
     panel.refresh("prueba-local")

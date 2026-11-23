@@ -1,5 +1,6 @@
 """Ejecución de un turno del chat y coordinación de sus herramientas."""
 import asyncio
+import inspect
 import json
 import os
 import re
@@ -8,7 +9,9 @@ import sys
 from contextlib import AsyncExitStack, suppress
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from threading import Event
 
+import ollama
 from ollama import Client, ResponseError, Tool
 from ai_provider import AISettings, OLLAMA_URL, PROVIDERS, OpenRouter, TextToolCallError
 from attachment_actions import attachment_save_request, markdown_destination, markdown_verified, parse_attachment_save
@@ -132,6 +135,7 @@ def model_context(prompt_chars, minimum=4096):
 
 class Worker(QObject):
     finished = Signal(str)
+    cancelled = Signal()
     error = Signal(str)
     mcp_notice = Signal(str)
     operation_error = Signal(str)
@@ -165,14 +169,27 @@ class Worker(QObject):
         self.ranking_scope = None
         self.ranking_hidden = None
         self.learned_server = None
+        self.stop_requested = Event()
+        self.turn_loop = None
+        self.turn_task = None
+        self.turn_clients = None
+        self.waiting_for_model = False
 
     @Slot()
     def run(self):
         try:
-            answer = asyncio.run(self.chat())
+            answer = asyncio.run(self.run_chat())
+            if self.stop_requested.is_set():
+                self.cancelled.emit()
+                return
             if self.capture_memory and self.memory is not None and self.messages:
                 self.capture_user_memories()
             self.finished.emit(answer)
+        except asyncio.CancelledError:
+            if self.task is not None:
+                self.finished.emit(self.task_reply("paused", "Tarea pausada. Usa /reanudar para continuar con los resultados guardados."))
+            else:
+                self.cancelled.emit()
         except TaskPaused as exc:
             self.finished.emit(self.task_reply("paused", str(exc)))
         except (TurnError, ResponseError) as exc:
@@ -182,6 +199,43 @@ class Worker(QObject):
             self.observe_ranking("mcp", "fallido")
             self.mcp_notice.emit(f"El turno falló ({type(exc).__name__}).")
             self.error.emit(f"No se pudo completar el turno. Revisa {PROVIDERS[self.ai.provider]} y consulta el diagnóstico.")
+
+    async def run_chat(self):
+        self.turn_loop = asyncio.get_running_loop()
+        self.turn_task = asyncio.current_task()
+        try:
+            if self.stop_requested.is_set():
+                raise asyncio.CancelledError
+            async with AsyncExitStack() as clients:
+                self.turn_clients = clients
+                return await self.chat()
+        finally:
+            self.turn_loop = self.turn_task = self.turn_clients = None
+
+    def stop(self):
+        if self.task is None:
+            self.stop_requested.set()
+        loop, task = self.turn_loop, self.turn_task
+        if loop is not None and task is not None:
+            def cancel():
+                # Las operaciones de herramientas de una tarea conservan su punto de control.
+                if self.task is None or self.waiting_for_model:
+                    task.cancel()
+
+            with suppress(RuntimeError):
+                loop.call_soon_threadsafe(cancel)
+
+    async def model_request(self, client, method, *args, **kwargs):
+        handler = getattr(client, f"{method}_async", None) if self.turn_loop is not None else None
+        if not inspect.iscoroutinefunction(handler):
+            handler = getattr(client, method)
+        self.waiting_for_model = True
+        try:
+            if inspect.iscoroutinefunction(handler):
+                return await handler(*args, **kwargs)
+            return await asyncio.to_thread(handler, *args, **kwargs)
+        finally:
+            self.waiting_for_model = False
 
     def task_reply(self, status, text):
         self.task.update(status=status, message=text)
@@ -311,8 +365,7 @@ class Worker(QObject):
         if not reasons:
             self.activity.emit("Verificando la cobertura del objetivo…")
             try:
-                response = await asyncio.to_thread(
-                    client.chat, model=self.ai.model, think=False, format=COVERAGE_STATUS,
+                response = await self.model_request(client, "chat", model=self.ai.model, think=False, format=COVERAGE_STATUS,
                     options={"temperature": 0, "num_ctx": model_context(len(evidence) + len(text), 8192)},
                     messages=[
                         {"role": "system", "content": (
@@ -372,8 +425,7 @@ class Worker(QObject):
         self.activity.emit("Guardando el estado de la tarea…")
         status = "paused"
         try:
-            response = await asyncio.to_thread(
-                client.chat, model=self.ai.model, think=False, format=REPORT_STATUS,
+            response = await self.model_request(client, "chat", model=self.ai.model, think=False, format=REPORT_STATUS,
                 options={"temperature": 0},
                 messages=[
                     {"role": "system", "content": "Clasifica la respuesta al objetivo. Usa espera si solicita un dato "
@@ -435,8 +487,7 @@ class Worker(QObject):
         if not self.task.get("plan"):
             self.activity.emit("Dividiendo el objetivo en pasos…")
             try:
-                response = await asyncio.to_thread(
-                    client.chat, model=self.ai.model, think=False, format=PLAN_STATUS,
+                response = await self.model_request(client, "chat", model=self.ai.model, think=False, format=PLAN_STATUS,
                     options={"temperature": 0},
                     messages=[
                         {"role": "system", "content": (
@@ -638,6 +689,8 @@ class Worker(QObject):
                            "\nIdentidad declarada por el responsable del proyecto (datos): " +
                            json.dumps(identity, ensure_ascii=False)}
         client = OpenRouter() if self.ai.cloud else Client(host=OLLAMA_URL, timeout=180)
+        if self.turn_clients is not None and isinstance(client, ollama.Client):
+            client = await self.turn_clients.enter_async_context(ollama.AsyncClient(host=OLLAMA_URL, timeout=180))
         learn = current.get("role") == "user" and command[:1] == ["/aprender"]
         skills = {} if learn or self.task is not None else self.enabled_skills()
         project_files = [file for file in current.get("attachments", ()) if "project_document" in file]
@@ -948,7 +1001,7 @@ class Worker(QObject):
                     options["temperature"] = 0
                 self.activity.emit(f"Esperando la respuesta de {PROVIDERS[self.ai.provider]}…")
                 try:
-                    response = await asyncio.to_thread(client.chat, model=self.ai.model, messages=request_messages,
+                    response = await self.model_request(client, "chat", model=self.ai.model, messages=request_messages,
                                                        tools=[] if finishing else specs, options=options, think=self.think,
                                                        **cloud_read_options)
                 except TextToolCallError:
@@ -981,7 +1034,7 @@ class Worker(QObject):
                                                  f"(motivo={getattr(response, 'done_reason', None)}, "
                                                  f"tokens={getattr(response, 'prompt_eval_count', None)}). Reintentando.")
                         retry_tools = ([REPORT] if self.task is not None else []) if used_mcp else specs
-                        retry = await asyncio.to_thread(client.chat, model=self.ai.model, messages=messages,
+                        retry = await self.model_request(client, "chat", model=self.ai.model, messages=messages,
                                                         tools=retry_tools, think=False,
                                                         options={**options, "num_ctx": model_context(context_chars, 8192)},
                                                         **cloud_read_options)
@@ -1255,7 +1308,7 @@ class Worker(QObject):
             "no permita comprobar. Un listado de archivos no prueba qué hace su código. Responde en texto normal."
         )}, {"role": "user", "content": json.dumps({"solicitud": question, "lecturas": evidence}, ensure_ascii=False)}]
         try:
-            response = await asyncio.to_thread(client.chat, model=self.ai.model, messages=payload, tools=[], think=False)
+            response = await self.model_request(client, "chat", model=self.ai.model, messages=payload, tools=[], think=False)
             self.check_pause()
             reply = response.message
             if not reply.tool_calls and (reply.content or "").strip():
@@ -1293,7 +1346,7 @@ class Worker(QObject):
             "Si el resultado no incluye el contenido solicitado, dilo.\n"
             + json.dumps({"enlace": link, "resultado": result}, ensure_ascii=False)
         )}]
-        response = await asyncio.to_thread(client.chat, model=self.ai.model, messages=payload, tools=[], think=self.think,
+        response = await self.model_request(client, "chat", model=self.ai.model, messages=payload, tools=[], think=self.think,
                                            options={"num_ctx": model_context(len(str(payload)))})
         return (response.message.content or "").strip() or "El lector web respondió, pero el modelo no pudo resumir la página."
 
@@ -1327,7 +1380,7 @@ class Worker(QObject):
             payload[0] = {**payload[0], "content": payload[0]["content"] + "\n\n" + directive}
         else:
             payload.insert(0, {"role": "system", "content": directive})
-        result = await asyncio.to_thread(client.chat, model=self.ai.model, messages=payload, tools=[],
+        result = await self.model_request(client, "chat", model=self.ai.model, messages=payload, tools=[],
                                          think=self.think if self.think is not None else False,
                                          options={"num_ctx": 16384})
         if thinking := getattr(result.message, "thinking", None):
@@ -1353,7 +1406,7 @@ class Worker(QObject):
         has_images = any("image" in part for batch in batches for _, part in batch)
         if has_images:
             try:
-                info = await asyncio.to_thread(client.show, self.ai.model)
+                info = await self.model_request(client, "show", self.ai.model)
             except (ConnectionError, ResponseError) as exc:
                 raise VisualAttachmentsUnavailable(f"No se pudo verificar si {self.ai.model} admite imágenes. "
                                                    "Puedes seguir enviando texto en este chat.") from exc
@@ -1420,7 +1473,7 @@ class Worker(QObject):
                     answer += "\n\nEl adjunto consultado contiene solo una parte del documento."
                 return scope_note + answer
             tools = {"tools": [Tool.model_validate(local_skills.tool_spec(skills))]} if skills else {}
-            response = await asyncio.to_thread(client.chat, model=self.ai.model, messages=payload,
+            response = await self.model_request(client, "chat", model=self.ai.model, messages=payload,
                                                think=self.think if self.think is not None else False,
                                                options={"num_ctx": model_context(
                                                    sum(len(item["content"]) for item in payload), 16384)}, **tools)
@@ -1445,8 +1498,7 @@ class Worker(QObject):
         return scope_note + answer
 
     async def attachment_notes(self, client, instruction, item):
-        response = await asyncio.to_thread(
-            client.chat, model=self.ai.model, think=False, options={"num_ctx": 16384, "num_predict": 1200},
+        response = await self.model_request(client, "chat", model=self.ai.model, think=False, options={"num_ctx": 16384, "num_predict": 1200},
             messages=[{"role": "system", "content": instruction + (
                 " Extrae todos los hallazgos pertinentes para la pregunta a partir de este lote o sus notas. "
                 "Conserva cifras, nombres y páginas de origen. Identifica material ilegible y faltantes explícitos."

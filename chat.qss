@@ -1,0 +1,248 @@
+/* chat_ui.py sustituye las variables de color con el tema activo de StoneBot. */
+QPushButton, QToolButton#activitySummary {
+    border: 2px solid transparent; border-radius: 9px; padding: 6px 11px; font-weight: 600;
+    background: $accent; color: $accent_text;
+}
+QPushButton:hover:enabled { background: $primary_hover; color: $primary_hover_text; }
+QPushButton:pressed:enabled { background: $primary_pressed; color: $primary_pressed_text; }
+QPushButton[secondary="true"], QToolButton#activitySummary {
+    background: $secondary; color: $text; border-color: $edge;
+}
+QPushButton[secondary="true"]:hover:enabled, QToolButton#activitySummary:hover:enabled {
+    background: $secondary_hover; color: $secondary_hover_text;
+}
+QPushButton[secondary="true"]:pressed:enabled, QToolButton#activitySummary:pressed:enabled {
+    background: $secondary_pressed; color: $secondary_pressed_text;
+}
+QPushButton[quiet="true"] {
+    background: transparent; color: $text; border-color: transparent;
+}
+QPushButton[quiet="true"]:hover:enabled {
+    background: $quiet_hover; color: $quiet_hover_text;
+}
+QPushButton[quiet="true"]:pressed:enabled {
+    background: $quiet_pressed; color: $quiet_pressed_text;
+}
+QPushButton:focus:enabled, QToolButton#activitySummary:focus:enabled { border-color: $focus; }
+QPushButton:disabled, QPushButton[secondary="true"]:disabled, QPushButton[quiet="true"]:disabled,
+QToolButton#activitySummary:disabled {
+    background: $surface; color: $disabled_text; border-color: $subtle_edge;
+}
+QPushButton#messageAction:focus:enabled, QPushButton#sendMessage:focus:enabled,
+QPushButton[quiet="true"]:focus:enabled {
+    border-color: $focus;
+}
+
+QWidget#chatWindow, QWidget#chatCanvas { background: $background; }
+QLabel, QTextEdit {
+    color: $window_text; font-family: "Segoe UI"; font-size: 15px;
+}
+QPushButton { font-family: "Segoe UI"; font-size: 15px; }
+#chatPage QLabel, #chatPage QPushButton, #chatPage QToolButton, #sidebarRail QPushButton, QMenu#chatMenu {
+    font-family: "Segoe UI"; font-size: 11pt;
+}
+QWidget#chatHeader { background: $background; }
+QWidget#chatHeader QPushButton { padding: 4px 8px; font-size: 14px; }
+QWidget#chatHeader QPushButton::menu-indicator { image: none; width: 0; }
+#chatHeader QPushButton#settingsButton, #sidebarRail QLabel#shortcutHint {
+    color: $muted; font-family: "Segoe UI"; font-size: 12px;
+}
+QPushButton[quiet="true"]:checked:enabled:!hover:!pressed { background: $quiet_checked; }
+QWidget#historyPanel { background: $sidebar; }
+QWidget#sidebarRail { background: $sidebar; }
+QWidget#sidebarRail QPushButton { padding: 0; }
+QWidget#sidebarRail QPushButton#sidebarToggle:checked { background: $surface; border-color: $accent; }
+QWidget#sidebarRail QPushButton#providerBadge {
+    background: $surface; border-color: transparent; border-radius: 10px;
+    font-size: 12px;
+}
+QWidget#sidebarRail QPushButton#providerBadge:hover { border-color: $accent; }
+QWidget#sidebarRail QPushButton[sidebarAction="true"] { text-align: left; padding: 0 0 0 9px; }
+QWidget#historyPanel QListWidget, QWidget#historyPanel QLineEdit {
+    color: $text; font-family: "Segoe UI"; font-size: 11pt;
+}
+QWidget#historyPanel QLineEdit {
+    background: $surface; color: $text;
+    border: 1px solid $subtle_edge; border-radius: 10px;
+    selection-background-color: $accent; selection-color: $accent_text; padding: 6px 8px;
+}
+QWidget#historyPanel QLineEdit:focus { border-color: $accent; }
+QWidget#historyPanel QListWidget { background: transparent; border: 0; outline: 0; }
+QWidget#historyPanel QListWidget::item { padding: 6px 32px 6px 10px; border: 1px solid transparent; border-radius: 9px; }
+QWidget#historyPanel QListWidget::item:disabled { color: $muted; padding-top: 8px; }
+QWidget#historyPanel QListWidget::item:hover { background: $sidebar_hover; }
+QWidget#historyPanel QListWidget::item:selected {
+    background: $sidebar_active; color: $window_text; font-weight: 600;
+}
+QWidget#historyPanel QListWidget::item:focus { border-color: $focus; }
+QWidget#historyPanel QPushButton { padding: 6px 8px; }
+QScrollArea#projectPage, QWidget#projectCanvas { background: $background; border: 0; }
+QLabel#projectTitle { color: $text; font-family: "Georgia"; font-size: 28px; font-weight: 600; }
+QLabel#projectSection { color: $text; font-size: 14px; font-weight: 600; }
+QLabel#projectMeta { color: $muted; font-size: 13px; }
+QWidget#projectCard { background: $sidebar; border-radius: 10px; }
+QPushButton#projectLink { text-align: left; padding: 8px; border-radius: 7px; }
+QPushButton#historyRowOptions { padding: 0; border: none; border-radius: 6px; }
+QLabel#chatTitle { font-size: 18pt; font-weight: 700; }
+QLabel#chatStatus { font-size: 14px; }
+QLabel#messageTime { font-size: 12px; color: $muted; }
+QPushButton#messageAction {
+    border-color: $subtle_edge; font-size: 12px; border-radius: 6px; padding: 2px 6px;
+}
+
+QToolButton#activitySummary {
+    border-width: 2px; border-style: solid; border-radius: 6px; padding: 3px 8px;
+    text-align: left;
+}
+QWidget#activityPanel QPlainTextEdit {
+    background: $surface; color: $text;
+    border: 1px solid $edge;
+}
+QScrollArea, QTextEdit { background: transparent; border: 0; }
+QScrollBar:vertical { width: 10px; background: $background; }
+QScrollBar::handle:vertical {
+    min-height: 28px; background: $shared_scroll_thumb; border-radius: 5px;
+}
+QWidget#chatPage QScrollBar:vertical, QWidget#sidebarRail QScrollBar:vertical { width: 9px; background: transparent; }
+QWidget#chatPage QScrollBar::handle:vertical, QWidget#sidebarRail QScrollBar::handle:vertical {
+    min-height: 28px; background: $scroll_thumb; border-radius: 4px; margin: 2px 1px;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+QWidget#chatPage QTextEdit {
+    font-size: $message_font; selection-background-color: $accent;
+    selection-color: $accent_text;
+}
+QTextEdit#userMessage {
+    background: $user; color: $user_text; border-radius: 16px;
+}
+QWidget#botMessage {
+    background: $bot; color: $bot_text; border-radius: 16px;
+    font-family: "Segoe UI"; font-size: $message_font;
+}
+QTextBrowser#responseProse, QTextBrowser#codeText { color: $bot_text; }
+QWidget#codeCard { background: $code_surface; border: 1px solid $code_edge; border-radius: 9px; }
+QLabel#codeLanguage { font-size: 13px; font-weight: 600; color: $bot_text; }
+QTextBrowser#codeText QScrollBar:horizontal { height: 9px; background: transparent; }
+QTextBrowser#codeText QScrollBar::handle:horizontal {
+    min-width: 25px; background: $code_thumb; border-radius: 4px;
+}
+QTextBrowser#codeText QScrollBar::add-line:horizontal, QTextBrowser#codeText QScrollBar::sub-line:horizontal { width: 0; }
+QWidget#composerPanel {
+    background: $surface; border: 1px solid $subtle_edge; border-radius: 24px;
+}
+QWidget#composerPanel[editing="true"] { border-color: $accent; }
+QWidget#attachmentCard { background: $surface; border: 1px solid $edge; border-radius: 8px; }
+QWidget#draftAttachmentCard {
+    background: $draft_surface; border: 1px solid $subtle_edge; border-radius: 11px;
+}
+QWidget#draftAttachmentCard QLabel#attachmentBadge {
+    background: $background; color: $focus; border-radius: 7px;
+    font-size: 13px; font-weight: 700;
+}
+QLabel#draftAttachmentName { color: $text; font-size: 12px; padding-left: 2px; }
+QPushButton#removeDraftAttachment { padding: 0; border-radius: 11px; font-size: 14px; }
+QWidget#attachmentStripBody, QScrollArea#attachmentStrip > QWidget#qt_scrollarea_viewport {
+    background: transparent;
+}
+QScrollArea#attachmentStrip QScrollBar:horizontal { height: 7px; background: transparent; }
+QScrollArea#attachmentStrip QScrollBar::handle:horizontal {
+    min-width: 28px; border-radius: 3px; background: $draft_thumb;
+}
+QScrollArea#attachmentStrip QScrollBar::add-line:horizontal,
+QScrollArea#attachmentStrip QScrollBar::sub-line:horizontal { width: 0; }
+QScrollArea#attachmentStrip QScrollBar::add-page:horizontal,
+QScrollArea#attachmentStrip QScrollBar::sub-page:horizontal { background: transparent; }
+QLabel#attachmentBadge {
+    background: $badge; color: $text; border-radius: 5px; font-size: 12px;
+}
+QMenu#chatMenu {
+    background: $menu_surface; color: $text; border: 1px solid $menu_border; border-radius: 12px;
+    padding: 7px;
+}
+QMenu#chatMenu::item { padding: 7px 24px 7px 10px; border-radius: 6px; }
+QMenu#chatMenu::separator { height: 1px; background: $subtle_edge; margin: 4px 4px; }
+QMenu#chatMenu::item:selected { background: $accent; color: $accent_text; }
+QMenu#chatMenu::item:disabled { color: $muted; }
+QPushButton#sendMessage { padding: 0; border-radius: 20px; }
+QPushButton#composerAdd { padding: 0; min-width: 34px; min-height: 32px; font-size: 18pt; border-radius: 10px; }
+QPushButton#composerAdd::menu-indicator { image: none; width: 0; }
+QPushButton#composerReasoning { padding: 4px 12px 4px 7px; font-size: 13px; }
+QPushButton#composerExpand { min-height: 28px; padding: 2px 7px; }
+QTextEdit#messageInput { color: $text; placeholder-text-color: $placeholder; }
+QScrollBar#composerScroll:vertical { width: 10px; background: transparent; }
+QScrollBar#composerScroll::handle:vertical { margin: 2px; }
+
+QListView#composerSuggestions {
+    background: $surface; color: $text; border: 1px solid $subtle_edge; border-radius: 9px;
+    padding: 4px; outline: none;
+}
+QListView#composerSuggestions::item { padding: 6px 9px; border-radius: 5px; }
+QListView#composerSuggestions::item:selected { background: $accent; color: $accent_text; }
+
+QDialog#extensionsWindow { background: $background; }
+#extensionsWindow QLabel[muted="true"], #extensionsWindow #mcpNotice,
+#extensionsWindow #mcpCardDetail, #extensionsWindow #mcpCardStatus, #extensionsWindow #mcpCardState,
+#extensionsWindow #skillState { color: $muted; }
+#extensionsWindow #extensionBrand, #extensionsWindow QLabel[sectionHeading="true"],
+#extensionsWindow #mcpCardTitle, #extensionsWindow #skillName { font-weight: 600; }
+#extensionsWindow #extensionTitle { font-size: 18pt; font-weight: 700; }
+#extensionsWindow #extensionSidebar { background: $sidebar; border-radius: 10px; }
+#extensionsWindow #extensionDivider { background: $subtle_edge; }
+#extensionsWindow QPushButton {
+    font-size: 11pt;
+    background: $secondary; color: $text; border-color: $subtle_edge;
+}
+#extensionsWindow QPushButton:hover:enabled { background: $secondary_hover; }
+#extensionsWindow QPushButton[primary="true"] { background: $accent; color: $accent_text; border-color: transparent; }
+#extensionsWindow QPushButton[primary="true"]:hover:enabled { background: $primary_hover; color: $primary_hover_text; }
+#extensionsWindow QPushButton:focus:enabled { border-color: $focus; }
+#extensionsWindow QPushButton:disabled, #extensionsWindow QPushButton[primary="true"]:disabled {
+    background: $surface; border-color: $subtle_edge; color: $disabled_text;
+}
+#extensionsWindow QPushButton[quiet="true"] { background: transparent; }
+#extensionsWindow QPushButton[quiet="true"]:hover:enabled { background: $quiet_hover; }
+#extensionsWindow #extensionReload { padding: 1px 8px; font-size: 15pt; }
+#extensionsWindow QTabBar::tab {
+    font-family: "Segoe UI"; font-size: 11pt; color: $muted;
+    border-bottom: 2px solid transparent; padding: 7px 15px;
+}
+#extensionsWindow QTabBar::tab:selected { color: $text; border-bottom-color: $accent; }
+#extensionsWindow QTabBar::tab:hover { background: $sidebar_hover; }
+#extensionsWindow #extensionBadge {
+    background: $surface; border: 1px solid $subtle_edge; border-radius: 12px;
+    padding: 4px 10px; color: $muted;
+}
+#extensionsWindow #extensionBadge[connection="connected"] { color: $status_ok; }
+#extensionsWindow #extensionBadge[connection="error"] { color: $status_error; }
+#extensionsWindow #extensionCard, #extensionsWindow #extensionEmpty {
+    background: $surface; border: 1px solid $subtle_edge; border-radius: 8px;
+}
+#extensionsWindow QWidget[extensionCanvas="true"] { background: $background; }
+#extensionsWindow QTreeWidget, #extensionsWindow QListWidget {
+    background: transparent; border: 0; outline: none; color: $text;
+    selection-background-color: transparent; font-family: "Segoe UI"; font-size: 11pt;
+}
+#extensionsWindow QListWidget::item { padding: 7px 9px; border-radius: 8px; }
+#extensionsWindow QListWidget::item:hover { background: $sidebar_hover; }
+#extensionsWindow QListWidget::item:selected { background: $sidebar_active; color: $text; }
+#extensionsWindow QTreeWidget::branch { background: transparent; }
+#extensionsWindow QLineEdit, #extensionsWindow QPlainTextEdit,
+#extensionsWindow QComboBox, #extensionsWindow QDoubleSpinBox {
+    background: $surface; color: $text; border: 1px solid $subtle_edge;
+    border-radius: 9px; padding: 6px 9px; font-family: "Segoe UI"; font-size: 11pt;
+}
+#extensionsWindow QLineEdit:focus, #extensionsWindow QPlainTextEdit:focus,
+#extensionsWindow QComboBox:focus, #extensionsWindow QDoubleSpinBox:focus { border-color: $accent; }
+#extensionsWindow QComboBox QLineEdit, #extensionsWindow QDoubleSpinBox QLineEdit { border: 0; padding: 0; }
+#extensionsWindow QComboBox { padding-right: 25px; }
+#extensionsWindow QComboBox::drop-down {
+    subcontrol-origin: padding; subcontrol-position: top right;
+    width: 24px; border: 0; background: transparent;
+}
+#extensionsWindow QDoubleSpinBox::up-button, #extensionsWindow QDoubleSpinBox::down-button {
+    subcontrol-origin: border; width: 24px; border: 0; background: transparent;
+}
+#extensionsWindow QDoubleSpinBox::up-button { subcontrol-position: top right; }
+#extensionsWindow QDoubleSpinBox::down-button { subcontrol-position: bottom right; }
+#extensionsWindow QCheckBox { color: $text; font-family: "Segoe UI"; font-size: 11pt; }

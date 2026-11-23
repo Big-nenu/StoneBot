@@ -3,12 +3,12 @@ from threading import Thread
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel, QLayout, QLineEdit,
+    QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel, QLayout, QLineEdit,
     QListWidget, QListWidgetItem, QPushButton, QVBoxLayout,
 )
 
 from ai_provider import AISettings, PROVIDERS, available_models, save_ai, saved_model
-from appearance import dialog_style, readable_text, secondary_button
+from appearance import SettingsComboBox, secondary_button, settings_style
 
 
 class AISettingsDialog(QDialog):
@@ -17,14 +17,10 @@ class AISettingsDialog(QDialog):
     def __init__(self, parent, theme, current):
         super().__init__(parent)
         self.setWindowTitle("Modelo y proveedor de IA")
-        self.setStyleSheet(dialog_style(theme) + f"""
-            QCheckBox {{ color: {readable_text(theme['background'])}; }}
-            QLineEdit {{ padding: 0 8px; border-radius: 6px; }}
-            QListWidget {{ border-radius: 7px; }}
-        """)
-        self.resize(520, 0)
+        self.setStyleSheet(settings_style(theme))
+        self.resize(560, 0)
         self.config = current
-        self.provider = QComboBox()
+        self.provider = SettingsComboBox()
         for key, label in PROVIDERS.items():
             self.provider.addItem(f"{label} · {'Local' if key == 'ollama' else 'Nube'}", key)
         self.provider.setCurrentIndex(self.provider.findData(current.provider))
@@ -50,7 +46,6 @@ class AISettingsDialog(QDialog):
         self.results.setAccessibleName("Modelos disponibles")
         self.results.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.results.setFixedHeight(148)
-        self.results.setStyleSheet("QListWidget::item { padding: 4px 7px; }")
         self.catalog_status = QLabel()
         self.catalog_status.setWordWrap(True)
         self.catalog_status.setTextFormat(Qt.TextFormat.PlainText)
@@ -70,12 +65,13 @@ class AISettingsDialog(QDialog):
         self.status.setWordWrap(True)
         fields = QFormLayout()
         fields.setHorizontalSpacing(12)
-        fields.setVerticalSpacing(8)
+        fields.setVerticalSpacing(12)
         fields.addRow("Proveedor", self.provider)
         fields.addRow("Modelo", models)
         fields.addRow(self.key_label, self.key)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Save).setText("Guardar")
+        buttons.button(QDialogButtonBox.StandardButton.Save).setProperty("primary", True)
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancelar")
         for button in buttons.buttons():
             button.setAutoDefault(False)
@@ -83,10 +79,10 @@ class AISettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
         layout.setSizeConstraints(QLayout.SizeConstraint.SetDefaultConstraint, QLayout.SizeConstraint.SetFixedSize)
-        layout.setContentsMargins(20, 18, 20, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(24, 21, 24, 20)
+        layout.setSpacing(13)
         title = QLabel("Modelo y proveedor de IA")
-        title.setStyleSheet("font-size: 19px; font-weight: 600;")
+        title.setObjectName("settingsTitle")
         layout.addWidget(title)
         layout.addLayout(fields)
         layout.addLayout(filters)

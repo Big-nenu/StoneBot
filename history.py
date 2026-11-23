@@ -49,8 +49,13 @@ class History:
                 conn.execute("ALTER TABLE message ADD COLUMN attachments TEXT")
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            if "project_id" not in {row[1] for row in conn.execute("PRAGMA table_info(chat)")}:
+            chat_columns = {row[1] for row in conn.execute("PRAGMA table_info(chat)")}
+            if "project_id" not in chat_columns:
                 conn.execute("ALTER TABLE chat ADD COLUMN project_id INTEGER REFERENCES project(id) ON DELETE SET NULL")
+            if "pinned" not in chat_columns:
+                conn.execute("ALTER TABLE chat ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+            if "title_pending" not in chat_columns:
+                conn.execute("ALTER TABLE chat ADD COLUMN title_pending INTEGER NOT NULL DEFAULT 0")
             if "continuity" not in {row[1] for row in conn.execute("PRAGMA table_info(project)")}:
                 conn.execute("ALTER TABLE project ADD COLUMN continuity TEXT NOT NULL DEFAULT ''")
             conn.execute("CREATE INDEX IF NOT EXISTS chat_project ON chat(project_id, updated)")
@@ -62,14 +67,15 @@ class History:
             conn.execute("PRAGMA foreign_keys = ON")
             yield conn
 
-    def append(self, chat_id, role, content, *, created=None, attachments=None, task=None, project_id=None):
+    def append(self, chat_id, role, content, *, created=None, attachments=None, task=None, project_id=None,
+               automatic_title=False):
         now = time.time_ns() if created is None else created
         with self.connect() as conn:
             if chat_id is None:
-                title = " ".join(content.split())
+                title = "Nuevo chat" if automatic_title else " ".join(content.split())
                 title = title if len(title) <= 60 else title[:59].rstrip() + "…"
-                chat_id = conn.execute("INSERT INTO chat(title, updated, project_id) VALUES (?, ?, ?)",
-                                       (title, now, project_id)).lastrowid
+                chat_id = conn.execute("INSERT INTO chat(title, updated, project_id, title_pending) VALUES (?, ?, ?, ?)",
+                                       (title, now, project_id, automatic_title)).lastrowid
             self.insert_message(conn, chat_id, role, content, now, attachments)
             if task is not None:
                 self.write_task(conn, chat_id, task)
@@ -90,12 +96,13 @@ class History:
         conn.execute("INSERT INTO chat_task VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET snapshot=excluded.snapshot",
                      (chat_id, json.dumps(task, ensure_ascii=False)))
 
-    def find(self, query="", *, project_id=None):
+    def find(self, query="", *, project_id=None, include_metadata=False):
         needle = query.strip().casefold()
+        columns = "c.id, c.title, c.updated, c.pinned" if include_metadata else "c.id, c.title"
         with self.connect() as conn:
             conn.create_function("casefold", 1, str.casefold, deterministic=True)
-            return conn.execute("""
-                SELECT c.id, c.title FROM chat AS c
+            return conn.execute(f"""
+                SELECT {columns} FROM chat AS c
                 WHERE (? IS NULL OR c.project_id = ?) AND (? = '' OR instr(casefold(c.title), ?) OR EXISTS (
                     SELECT 1 FROM message AS m WHERE m.chat_id = c.id AND instr(casefold(m.content), ?)
                 ))
@@ -204,7 +211,7 @@ class History:
         conn.execute("INSERT INTO message(chat_id, role, content, created, attachments) VALUES (?, ?, ?, ?, ?)",
                      (chat_id, role, content, created, packed))
 
-    def replace_from(self, chat_id, index, expected, edited, answer):
+    def replace_from(self, chat_id, index, expected, edited, answer, following=()):
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             rows = self.message_rows(conn, chat_id)
@@ -212,7 +219,7 @@ class History:
             if current != expected or not 0 <= index < len(rows) or current[index]["role"] != "user":
                 raise ValueError("La conversación cambió durante la regeneración.")
             conn.execute("DELETE FROM message WHERE chat_id=? AND id>=?", (chat_id, rows[index][0]))
-            for item in (edited, answer):
+            for item in (edited, answer, *following):
                 self.insert_message(conn, chat_id, item["role"], item["content"], item["created"], item.get("attachments"))
             conn.execute("UPDATE chat SET updated=? WHERE id=?", (answer["created"], chat_id))
 
@@ -221,7 +228,26 @@ class History:
         if not title:
             raise ValueError("El título no puede estar vacío.")
         with self.connect() as conn:
-            conn.execute("UPDATE chat SET title=? WHERE id=?", (title, chat_id))
+            conn.execute("UPDATE chat SET title=?, title_pending=0 WHERE id=?", (title, chat_id))
+
+    def title_pending(self, chat_id):
+        with self.connect() as conn:
+            row = conn.execute("SELECT title_pending FROM chat WHERE id=?", (chat_id,)).fetchone()
+        return bool(row and row[0])
+
+    def finish_title(self, chat_id, created, title):
+        with self.connect() as conn:
+            changed = conn.execute("""
+                UPDATE chat SET title=?, title_pending=0
+                WHERE id=? AND title_pending=1 AND ? = (
+                    SELECT created FROM message WHERE chat_id=chat.id ORDER BY id LIMIT 1
+                )
+            """, (title, chat_id, created))
+            return bool(changed.rowcount)
+
+    def pin_chat(self, chat_id, pinned):
+        with self.connect() as conn:
+            conn.execute("UPDATE chat SET pinned=? WHERE id=?", (pinned, chat_id))
 
     def delete(self, chat_id):
         with self.connect() as conn:

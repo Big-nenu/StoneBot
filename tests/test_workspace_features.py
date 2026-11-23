@@ -61,6 +61,7 @@ def test_history_and_gui(qt):
 
     window = app.StoneBot()
     window.show()
+    window.history_button.setChecked(True)
     for can_remember, choice in ((True, "Permitir siempre"), (False, "Denegar")):
         request = {"server": "web", "tool": "search", "arguments": {}, "approved": False,
                    "remember": False, "can_remember": can_remember}
@@ -143,23 +144,30 @@ def test_history_and_gui(qt):
 
     assert view.options.isHidden()
     hover_second_chat()
-    with patch.object(QInputDialog, "getText", return_value=("Nuevo título", True)) as dialog:
-        choose("Renombrar")
-        assert dialog.call_args.kwargs["text"] == "Otra conversación"
+    def rename_dialog(dialog):
+        assert dialog.textValue() == "Otra conversación" and dialog.styleSheet()
+        dialog.setTextValue("Nuevo título")
+        return 1
+
+    with patch.object(QInputDialog, "exec", rename_dialog):
+        choose("Cambiar nombre")
     assert History().find("nuevo título") == [(recent, "Nuevo título")]
     assert window.chat_id == first
     window.history_button.click()
+    QTest.qWait(190)
     assert not window.history_panel.isVisible()
     window.history_button.click()
+    QApplication.processEvents()
     assert window.history_panel.isVisible()
     hover_second_chat()
     QApplication.sendEvent(view.viewport(), QEvent(QEvent.Type.Leave))
     assert view.options.isHidden()
     hover_second_chat()
-    with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No):
+    with patch.object(QMessageBox, "exec", lambda dialog: dialog.escapeButton().click()):
         choose("Eliminar")
     assert len(db.find()) == 2
-    with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+    with patch.object(QMessageBox, "exec", lambda dialog: next(
+            button for button in dialog.buttons() if button.text() == "Eliminar").click()):
         choose("Eliminar")
     assert len(db.find()) == 1 and window.chat_id == first
     window.new_chat()
@@ -191,25 +199,30 @@ def test_projects():
         return "Documentación revisada."
 
     try:
+        window.history_button.setChecked(True)
         icons = window.sidebar_rail.actions
         assert all(not btn.icon().isNull() and btn.toolTip() for btn in icons.values())
-        for button in icons.values():
-            assert button.text() == button.accessibleName()
+        for name, button in icons.items():
+            assert button.text() == ("" if name == "search" else button.accessibleName())
             assert sum(candidate.accessibleName() == button.accessibleName()
                        for candidate in window.findChildren(QPushButton)) == 1
-        expanded_positions = {name: button.mapTo(window, button.rect().topLeft()) for name, button in icons.items()}
-        assert window.history_panel.search.isHidden()
+        assert window.history_panel.search.isVisible() and icons["search"].isHidden()
         window.history_button.click()
-        QApplication.processEvents()
+        QTest.qWait(190)
         assert window.history_panel.isHidden()
         assert window.sidebar_rail.width() == RAIL_WIDTH
         assert all(btn.isVisible() and not btn.text() for btn in icons.values())
-        assert {name: button.mapTo(window, button.rect().topLeft()) for name, button in icons.items()} == expanded_positions
+        assert not window.sidebar_rail.provider_badge.icon().isNull()
+        assert not window.sidebar_rail.provider_badge.text()
+        assert window.sidebar_rail.provider_badge.toolTip() == f"{window.sidebar_rail.provider} · {window.ai.model}"
+        for button in icons.values():
+            bounds = button.rect().translated(button.mapTo(window.sidebar_rail, button.rect().topLeft()))
+            assert window.sidebar_rail.rect().contains(bounds)
         icons["search"].click()
         assert not window.history_panel.isHidden()
+        assert window.history_button.isChecked()
         assert not window.history_panel.search.isHidden()
-        assert icons["search"].text() == "Buscar conversaciones"
-        icons["search"].click()
+        assert icons["search"].isHidden() and window.sidebar_rail.provider_badge.icon().isNull()
         icons["projects"].click()
         assert window.pages.currentWidget() is window.project_page
         with patch.object(app.ProjectDialog, "exec", create):
@@ -230,7 +243,8 @@ def test_projects():
             wait_for_turn(window)
         chat = window.chat_id
         assert History().chat_project(chat)["id"] == pid
-        assert History().find(project_id=pid) == [(chat, "Revisa cómo va.")]
+        assert [chat_id for chat_id, _ in History().find(project_id=pid)] == [chat]
+        assert History().messages(chat)[0]["content"] == "Revisa cómo va."
         panel = window.history_panel
         row = next(panel.list.item(i) for i in range(panel.list.count())
                    if panel.list.item(i).data(PROJECT_ROLE) == pid)
@@ -254,7 +268,7 @@ def test_projects():
         wait_for_turn(window)
         assert "probar oxígeno en móvil" in History().projects()[0]["continuity"]
         assert window.project["continuity"] == History().projects()[0]["continuity"]
-        with patch.object(QInputDialog, "getItem", return_value=("Sin proyecto", True)):
+        with patch.object(QInputDialog, "exec", return_value=1):
             window.move_chat_to_project(chat)
         assert History().chat_project(chat) is None
 

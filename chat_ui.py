@@ -3,16 +3,20 @@ import base64
 import re
 from math import ceil
 from pathlib import Path
+from string import Template
 
-from PySide6.QtCore import Qt, QStringListModel, QUrl, Signal
-from PySide6.QtGui import QColor, QContextMenuEvent, QImage, QPixmap, QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextOption
+from PySide6.QtCore import QEvent, QPoint, Qt, QStringListModel, QUrl, Signal
+from PySide6.QtGui import (
+    QColor, QContextMenuEvent, QImage, QLinearGradient, QPainter, QPixmap, QSyntaxHighlighter, QTextCharFormat,
+    QTextCursor, QTextOption,
+)
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QCompleter, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLayout, QMenu, QPlainTextEdit,
-    QPushButton, QScrollArea,
-    QSizePolicy, QTextEdit, QToolButton, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QSizePolicy, QStyle, QStyleOptionButton, QStylePainter, QTextEdit, QToolButton,
+    QVBoxLayout, QWidget,
 )
 
-from appearance import button_style, control_colors, link_color, readable_text, secondary_button, shade
+from appearance import DEFAULT_FONT_SIZE, control_colors, link_color, readable_text, secondary_button, shade
 from attachments import (
     FILE_FILTER, attachment_label, clipboard_attachment, read_attachment,
 )
@@ -23,10 +27,154 @@ from spellcheck import WindowsSpellChecker
 WEB_URL = r"""\bhttps?://[^\s<>"`]+"""
 UNCHECKED = re.compile(rf"`[^`]*`|(?P<url>{WEB_URL})|\b[A-Za-z]:[\\/]\S+|^/\w+", re.I)
 SHORTCUT_TOKEN = re.compile(r"(?:^|\s)([/@#>!])([^\s/@#>!]*)$")
+MENU_GAP = 8
 
 
 def utf16_length(text):
     return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def style_chat_menu(menu):
+    menu.setObjectName("chatMenu")
+    menu.setWindowFlags(menu.windowFlags() | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
+    menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    return menu
+
+
+class PopupButton(QPushButton):
+    about_to_popup = Signal()
+
+    def __init__(self, text="", *, above=False, right=False):
+        super().__init__(text)
+        self.above = above
+        self.right = right
+        self._menu = style_chat_menu(QMenu(self))
+        self.clicked.connect(self.popup_menu)
+
+    def menu(self):
+        return self._menu
+
+    def popup_menu(self):
+        menu = self._menu
+        self.about_to_popup.emit()
+        menu.ensurePolished()
+        size = menu.sizeHint()
+        top_left = self.mapToGlobal(QPoint())
+        x = top_left.x() + (self.width() - size.width() if self.right else 0)
+        y = top_left.y() - size.height() - MENU_GAP if self.above else top_left.y() + self.height()
+        menu.popup(QPoint(x, y))
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Down:
+            self.popup_menu()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+    def sizeHint(self):
+        size = super().sizeHint()
+        if self.text():
+            option = QStyleOptionButton()
+            self.initStyleOption(option)
+            option.features |= QStyleOptionButton.ButtonFeature.HasMenu
+            indicator = self.style().pixelMetric(QStyle.PixelMetric.PM_MenuButtonIndicator, option, self)
+            size.setWidth(size.width() + indicator)
+        return size
+
+    def paintEvent(self, event):
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        option.features |= QStyleOptionButton.ButtonFeature.HasMenu
+        with QStylePainter(self) as painter:
+            painter.drawControl(QStyle.ControlElement.CE_PushButton, option)
+
+
+class ChatTranscript(QWidget):
+    width_changed = Signal()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if event.size().width() != event.oldSize().width():
+            self.width_changed.emit()
+
+
+class MessageCard(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.hover_actions = []
+
+    def add_action(self, row, button):
+        policy = button.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)
+        button.setSizePolicy(policy)
+        self.hover_actions.append(button)
+        row.addWidget(button)
+        button.setVisible(self.underMouse())
+
+    def remove_action(self, button):
+        self.hover_actions.remove(button)
+        button.hide()
+        button.setParent(None)
+        button.deleteLater()
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        for button in self.hover_actions:
+            button.show()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        for button in self.hover_actions:
+            button.hide()
+
+
+class ChatBottomFade(QWidget):
+    def __init__(self, scroll_area, background):
+        super().__init__(scroll_area.viewport())
+        self.background = background
+        self.bar = scroll_area.verticalScrollBar()
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.parentWidget().installEventFilter(self)
+        self.bar.rangeChanged.connect(self.refresh)
+        self.bar.valueChanged.connect(self.refresh)
+        self.refresh()
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Resize and hasattr(self, "bar"):
+            self.refresh()
+        return super().eventFilter(watched, event)
+
+    def refresh(self, *_):
+        viewport = self.parentWidget()
+        self.setGeometry(0, max(0, viewport.height() - 18), viewport.width(), 18)
+        self.setVisible(self.bar.value() < self.bar.maximum())
+        self.raise_()
+
+    def paintEvent(self, event):
+        solid = QColor(self.background)
+        transparent = QColor(solid)
+        transparent.setAlpha(0)
+        fade = QLinearGradient(0, 0, 0, self.height())
+        fade.setColorAt(0, transparent)
+        fade.setColorAt(1, solid)
+        with QPainter(self) as painter:
+            painter.fillRect(self.rect(), fade)
+
+
+class ComposerPanel(QWidget):
+    def __init__(self, editor):
+        super().__init__()
+        self.setObjectName("composerPanel")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        editor.installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        if event.type() in (QEvent.Type.FocusIn, QEvent.Type.FocusOut):
+            self.setProperty("editing", event.type() == QEvent.Type.FocusIn)
+            self.style().unpolish(self)
+            self.style().polish(self)
+            self.update()
+        return super().eventFilter(watched, event)
 
 
 class ChatHighlights(QSyntaxHighlighter):
@@ -113,8 +261,7 @@ class ChatText(QTextEdit):
                 open_web_link(QUrl(link))
 
     def contextMenuEvent(self, event):
-        menu = self.createStandardContextMenu(event.pos())
-        menu.setObjectName("chatMenu")
+        menu = style_chat_menu(self.createStandardContextMenu(event.pos()))
         cursor = (self.textCursor() if event.reason() == QContextMenuEvent.Reason.Keyboard
                   else self.cursorForPosition(event.pos()))
         item = self.highlight_at(cursor)
@@ -185,25 +332,16 @@ class Composer(ChatText):
         self.fit_height(self.document().size())
         self.ensureCursorVisible()
 
-    def set_theme(self, theme):
-        background, accent = theme["background"], theme["accent"]
-        self.highlights.set_link_background(background)
-        surface, edge, _, text = control_colors(background)
-        self.shortcuts.popup().setStyleSheet(f"""
-            QListView {{
-                background: {surface}; color: {text}; border: 1px solid {edge}; border-radius: 9px;
-                padding: 4px; outline: none;
-            }}
-            QListView::item {{ padding: 6px 9px; border-radius: 5px; }}
-            QListView::item:selected {{ background: {accent}; color: {readable_text(accent)}; }}
-        """)
+    def set_theme(self, theme, stylesheet):
+        self.highlights.set_link_background(control_colors(theme["background"])[0])
+        self.shortcuts.popup().setStyleSheet(stylesheet)
 
     def fit_height(self, size):
         available = self.window().height()
         if hasattr(self, "expand_button") and self.expand_button.isChecked():
-            height = max(85, min(600, available * 3 // 5))
+            height = max(105, min(600, available * 3 // 5))
         else:
-            height = min(160, max(46, available // 3), max(46, ceil(size.height()) + 2 * self.frameWidth()))
+            height = min(160, max(68, available // 3), max(68, ceil(size.height()) + 2 * self.frameWidth()))
         self.setFixedHeight(height)
 
     def keyPressEvent(self, event):
@@ -374,15 +512,13 @@ class AttachmentTray(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.scroll)
-        self.add_button = secondary_button(QPushButton("+"))
+        self.add_button = secondary_button(PopupButton("+", above=True))
         self.add_button.setObjectName("composerAdd")
         self.add_button.setProperty("quiet", True)
         self.add_button.setAccessibleName("Opciones del chat")
         self.add_button.setToolTip("Adjuntos, MCP y memoria")
-        self.menu = QMenu(self.add_button)
-        self.menu.setObjectName("chatMenu")
+        self.menu = self.add_button.menu()
         self.menu.addAction("Adjuntar archivos…", self.choose)
-        self.add_button.setMenu(self.menu)
         self.hide()
 
     def choose(self):
@@ -522,141 +658,40 @@ class ActivityPanel(QWidget):
             self.reasoning.appendPlainText(text)
 
 
+CHAT_STYLESHEET = Template(Path(__file__).with_name("chat.qss").read_text(encoding="utf-8"))
+
+
 def chat_style(theme):
     background, accent = theme["background"], theme["accent"]
-    accent_text = readable_text(accent)
     user, bot = theme["user_message"], theme["bot_message"]
+    size = theme["font_size"]
+    message_font = "11pt" if size == DEFAULT_FONT_SIZE else f"{size}px"
     sidebar = shade(background, .035)
-    subtle_edge = shade(background, .16)
-    muted = shade(background, .63)
-    surface, edge, _, text = control_colors(background)
-    return button_style(theme) + f"""
-            QWidget#chatWindow, QWidget#chatCanvas {{ background: {background}; }}
-            QLabel, QTextEdit {{
-                color: {readable_text(background)}; font-family: "Segoe UI"; font-size: 15px;
-            }}
-            QPushButton {{ font-family: "Segoe UI"; font-size: 15px; }}
-            QWidget#chatHeader {{ border-bottom: 1px solid {subtle_edge}; }}
-            QWidget#chatHeader QPushButton {{ padding: 4px 8px; font-size: 14px; }}
-            QPushButton[quiet="true"]:checked:enabled:!hover:!pressed {{ background: {shade(background, .09)}; }}
-            QWidget#historyPanel {{ background: {sidebar}; }}
-            QWidget#sidebarRail {{ background: {sidebar}; border-right: 1px solid {subtle_edge}; }}
-            QWidget#sidebarRail QPushButton#sidebarToggle {{ padding: 0; }}
-            QWidget#sidebarRail QPushButton#providerBadge {{
-                background: {surface}; border: 1px solid {subtle_edge}; border-radius: 9px;
-                font-size: 12px; padding: 2px 5px;
-            }}
-            QWidget#sidebarRail QPushButton#providerBadge:hover {{ border-color: {accent}; }}
-            QWidget#sidebarRail QPushButton[sidebarAction="true"] {{ text-align: left; padding: 0 0 0 7px; }}
-            QWidget#historyPanel QListWidget, QWidget#historyPanel QLineEdit {{
-                color: {text}; font-family: "Segoe UI"; font-size: 14px;
-            }}
-            QWidget#historyPanel QLineEdit {{
-                background: {surface}; color: {text};
-                border: 1px solid {subtle_edge}; border-radius: 7px;
-                selection-background-color: {accent}; selection-color: {accent_text}; padding: 6px 8px;
-            }}
-            QWidget#historyPanel QLineEdit:focus {{ border-color: {accent}; }}
-            QWidget#historyPanel QListWidget {{ background: transparent; border: 0; outline: 0; }}
-            QWidget#historyPanel QListWidget::item {{ padding: 5px 30px 5px 8px; border: 1px solid transparent; border-radius: 7px; }}
-            QWidget#historyPanel QListWidget::item:disabled {{ color: {muted}; padding-top: 8px; }}
-            QWidget#historyPanel QListWidget::item:hover {{ background: {shade(sidebar, .07)}; }}
-            QWidget#historyPanel QListWidget::item:selected {{
-                background: {shade(sidebar, .14)}; color: {text}; border-left-color: {link_color(background)};
-            }}
-            QWidget#historyPanel QListWidget::item:focus {{ border-color: {link_color(background)}; }}
-            QWidget#historyPanel QPushButton {{ padding: 6px 8px; }}
-            QScrollArea#projectPage, QWidget#projectCanvas {{ background: {background}; border: 0; }}
-            QLabel#projectTitle {{ color: {text}; font-family: "Georgia"; font-size: 28px; font-weight: 600; }}
-            QLabel#projectSection {{ color: {text}; font-size: 14px; font-weight: 600; }}
-            QLabel#projectMeta {{ color: {muted}; font-size: 13px; }}
-            QWidget#projectCard {{ background: {sidebar}; border-radius: 10px; }}
-            QPushButton#projectLink {{ text-align: left; padding: 8px; border-radius: 7px; }}
-            QPushButton#historyRowOptions {{ padding: 0; border: none; border-radius: 6px; }}
-            QSplitter::handle:horizontal {{ background: {sidebar}; border-right: 1px solid {subtle_edge}; }}
-            QSplitter::handle:horizontal:hover {{ background: {edge}; }}
-            QLabel#chatTitle {{ font-weight: 700; }}
-            QLabel#chatStatus {{ font-size: 14px; }}
-            QLabel#messageTime {{ font-size: 12px; color: {muted}; }}
-            QPushButton#messageAction {{
-                font-size: 12px; border-radius: 6px; padding: 2px 6px;
-            }}
-            QWidget#activityPanel {{ border-top: 1px solid {edge}; }}
-            QToolButton#activitySummary {{
-                border-width: 2px; border-style: solid; border-radius: 6px; padding: 3px 8px;
-                text-align: left;
-            }}
-            QWidget#activityPanel QPlainTextEdit {{
-                background: {surface}; color: {text};
-                border: 1px solid {edge};
-            }}
-            QScrollArea, QTextEdit {{ background: transparent; border: 0; }}
-            QScrollBar:vertical {{ width: 10px; background: {background}; }}
-            QScrollBar::handle:vertical {{
-                min-height: 28px; background: {shade(background, .4)}; border-radius: 5px;
-            }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
-            QTextEdit {{
-                font-size: {theme['font_size']}px; selection-background-color: {accent};
-                selection-color: {accent_text};
-            }}
-            QTextEdit#userMessage {{
-                background: {user}; color: {readable_text(user)}; border-radius: 14px;
-                border-bottom-right-radius: 5px;
-            }}
-            QWidget#botMessage {{
-                background: {bot}; color: {readable_text(bot)}; border-radius: 14px;
-                border-bottom-left-radius: 5px;
-                font-family: "Segoe UI"; font-size: {theme['font_size']}px;
-            }}
-            QTextBrowser#responseProse, QTextBrowser#codeText {{ color: {readable_text(bot)}; }}
-            QWidget#codeCard {{ background: {shade(bot, .08)}; border: 1px solid {shade(bot, .20)}; border-radius: 9px; }}
-            QLabel#codeLanguage {{ font-size: 13px; font-weight: 600; color: {readable_text(bot)}; }}
-            QTextBrowser#codeText QScrollBar:horizontal {{ height: 9px; background: transparent; }}
-            QTextBrowser#codeText QScrollBar::handle:horizontal {{
-                min-width: 25px; background: {shade(bot, .28)}; border-radius: 4px;
-            }}
-            QTextBrowser#codeText QScrollBar::add-line:horizontal, QTextBrowser#codeText QScrollBar::sub-line:horizontal {{ width: 0; }}
-            QWidget#composerPanel {{
-                background: {surface}; border: 1px solid {subtle_edge}; border-radius: 18px;
-            }}
-            QWidget#attachmentCard {{ background: {surface}; border: 1px solid {edge}; border-radius: 8px; }}
-            QWidget#draftAttachmentCard {{
-                background: {shade(surface, .045)}; border: 1px solid {subtle_edge}; border-radius: 11px;
-            }}
-            QWidget#draftAttachmentCard QLabel#attachmentBadge {{
-                background: {background}; color: {link_color(background)}; border-radius: 7px;
-                font-size: 13px; font-weight: 700;
-            }}
-            QLabel#draftAttachmentName {{ color: {text}; font-size: 12px; padding-left: 2px; }}
-            QPushButton#removeDraftAttachment {{ padding: 0; border-radius: 11px; font-size: 14px; }}
-            QWidget#attachmentStripBody, QScrollArea#attachmentStrip > QWidget#qt_scrollarea_viewport {{
-                background: transparent;
-            }}
-            QScrollArea#attachmentStrip QScrollBar:horizontal {{ height: 7px; background: transparent; }}
-            QScrollArea#attachmentStrip QScrollBar::handle:horizontal {{
-                min-width: 28px; border-radius: 3px; background: {shade(surface, .25)};
-            }}
-            QScrollArea#attachmentStrip QScrollBar::add-line:horizontal,
-            QScrollArea#attachmentStrip QScrollBar::sub-line:horizontal {{ width: 0; }}
-            QScrollArea#attachmentStrip QScrollBar::add-page:horizontal,
-            QScrollArea#attachmentStrip QScrollBar::sub-page:horizontal {{ background: transparent; }}
-            QLabel#attachmentBadge {{
-                background: {shade(surface, .09)}; color: {text}; border-radius: 5px; font-size: 12px;
-            }}
-            QMenu#chatMenu {{
-                background: {surface}; color: {text}; border: 1px solid {edge}; padding: 4px;
-            }}
-            QMenu#chatMenu::item {{ padding: 6px 24px 6px 10px; }}
-            QMenu#chatMenu::item:selected {{ background: {accent}; color: {accent_text}; }}
-            QMenu#chatMenu::item:disabled {{ color: {muted}; }}
-            QPushButton#sendMessage {{ padding: 5px 14px; font-size: 14px; border-radius: 11px; }}
-            QPushButton#composerAdd {{ padding: 1px 8px; font-size: 19px; }}
-            QPushButton#composerAdd::menu-indicator {{ image: none; width: 0; }}
-            QPushButton#composerReasoning {{ padding: 4px 12px 4px 7px; font-size: 13px; }}
-            QPushButton#composerExpand {{ padding: 2px 7px; }}
-            QTextEdit#messageInput {{ color: {text}; placeholder-text-color: {shade(surface, .7)}; }}
-            QScrollBar#composerScroll:vertical {{ width: 10px; background: transparent; }}
-            QScrollBar#composerScroll::handle:vertical {{ margin: 2px; }}
-        """
+    surface, edge, secondary, text = control_colors(background)
+    menu_surface = shade(surface, .075)
+    border_ink = QColor(readable_text(menu_surface))
+    colors = dict(
+        background=background, surface=surface, text=text, accent=accent,
+        window_text=readable_text(background), accent_text=readable_text(accent),
+        user=user, user_text=readable_text(user), bot=bot, bot_text=readable_text(bot),
+        secondary=secondary, edge=edge, subtle_edge=shade(background, .13),
+        muted=shade(background, .63), focus=link_color(background), disabled_text=shade(surface, .55),
+        sidebar=sidebar, sidebar_hover=shade(sidebar, .07), sidebar_active=shade(sidebar, .14),
+        quiet_checked=shade(background, .09), scroll_thumb=shade(background, .28),
+        shared_scroll_thumb=shade(background, .4),
+        code_surface=shade(bot, .08), code_edge=shade(bot, .20), code_thumb=shade(bot, .28),
+        draft_surface=shade(surface, .045), draft_thumb=shade(surface, .25),
+        badge=shade(surface, .09), placeholder=shade(surface, .65),
+        status_ok="#86efac" if readable_text(surface) == "#ffffff" else "#126133",
+        status_error="#fca5a5" if readable_text(surface) == "#ffffff" else "#a32929",
+        menu_surface=menu_surface,
+        menu_border=f"rgba({border_ink.red()}, {border_ink.green()}, {border_ink.blue()}, 48)",
+    )
+    for name, color, amount in (
+        ("primary_hover", accent, .09), ("primary_pressed", accent, .16),
+        ("secondary_hover", secondary, .10), ("secondary_pressed", secondary, .18),
+        ("quiet_hover", background, .11), ("quiet_pressed", background, .17),
+    ):
+        colors[name] = shade(color, amount)
+        colors[f"{name}_text"] = readable_text(colors[name])
+    return CHAT_STYLESHEET.substitute(colors, message_font=message_font)

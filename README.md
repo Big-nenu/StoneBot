@@ -134,13 +134,13 @@ Integraciones previstas y ejemplos (algunas ya están conectadas; consultar «Se
 
 StoneBot inicia el servidor STDIO del repositorio hermano `StoneWave/mcp_server.py` con el mismo entorno de Python. Usa la base personal existente en `%USERPROFILE%\.stonewave\memoria.db` y el namespace `default`. Si tu instalación ya usa otra base o namespace, inicia SB con los mismos valores de `STONEWAVE_DB` y `STONEWAVE_NAMESPACE`. La ruta de la base debe ser absoluta y el archivo debe existir.
 
-En el chat puedes decir «Recuerda que…» o preguntar por un dato de otra conversación. **+ → Memoria → Ver y corregir recuerdos…** lista los recuerdos vigentes e indica el ID para corregirlos u olvidarlos. En el mismo menú puedes activar o desactivar **Guardar recuerdos automáticamente**.
+En el chat puedes decir «Recuerda que…» o preguntar por un dato de otra conversación. **Engrane → Memoria → Ver y corregir recuerdos…** lista los recuerdos vigentes e indica el ID para corregirlos u olvidarlos. El interruptor **Guardar recuerdos en este chat** del menú **+** cambia la misma preferencia de memoria automática del perfil.
 
 SB puede responder directamente o elegir la fuente según lo que le pidas y el contexto del chat: abrir un enlace, buscar en internet, revisar archivos, usar un servicio MCP o consultar StoneWave. Las herramientas se habilitan para la solicitud de ese turno y conservan sus permisos. Si falta la fuente, SB te pide el dato o indica qué recurso no pudo consultar. Las conversaciones comunes no cargan los recuerdos ni abren servidores MCP externos.
 
 ### Ajustes de StoneWave
 
-En **Configuración → Extensiones… → MCP**, selecciona **StoneWave · Integrado** para ver sus herramientas y para qué sirve cada una. Desde ahí, **Ajustes de StoneWave…** permite programar o ejecutar un sueño, activar las conclusiones, elegir su modelo local de Ollama, configurar la carpeta de Obsidian y usar un archivo compartido para sincronizar. **Aplicar cambios** reinicia la sesión integrada. El comando `/sueno memoria` también ejecuta un sueño manual.
+En **Configuración → Extensiones… → MCP**, selecciona **StoneWave** para abrir sus ajustes integrados. Las secciones **Sueño automático**, **Conclusiones**, **Notas en Obsidian** y **Sincronización** reúnen los ajustes y las acciones manuales. El catálogo se carga al abrir Extensiones y aparece en **Herramientas**. **Aplicar cambios** reinicia la sesión integrada. El comando `/sueno memoria` también ejecuta un sueño manual.
 
 ### Consultar sueños y notas desde el chat
 
@@ -182,9 +182,9 @@ También se verificaron las tres herramientas con Nemotron y Ollama local desde 
 
 ## Servidores MCP externos
 
-Instala el cliente con `python -m pip install "mcp>=1.28,<2"`. La memoria interna sigue usando llamadas directas al motor de StoneBot. El chat reutiliza las conexiones y los catálogos MCP entre turnos. Vuelve a descubrir un servidor cuando cambia su configuración, se cambia su clave desde el panel, se usa **Probar conexión**, se interrumpe la sesión o el servidor notifica que cambió su catálogo. Un fallo de conexión se conserva 30 segundos para evitar repetir la espera en turnos consecutivos.
+Instala el cliente con `python -m pip install "mcp>=1.28,<2"`. La memoria interna sigue usando llamadas directas al motor de StoneBot. El chat reutiliza las conexiones y los catálogos MCP entre turnos. Vuelve a descubrir un servidor cuando cambia su configuración, se cambia su clave desde el panel, se usa **Recargar**, se interrumpe la sesión o el servidor notifica que cambió su catálogo. Un fallo de conexión se conserva 30 segundos para evitar repetir la espera en turnos consecutivos.
 
-Abre **MCP** en la cabecera del chat para agregar, editar o eliminar servidores y cambiar su activación con el interruptor de cada fila. **Probar conexión** abre una sesión temporal. El indicador es verde si conecta, rojo si falla y gris antes de probar.
+En **Configuración → Extensiones… → MCP**, selecciona un servidor en la columna izquierda para consultar su estado, cambiar su activación o administrar su configuración. Los servidores activos se comprueban en segundo plano al abrir la ventana. El icono **Recargar** vuelve a comprobar el servidor seleccionado.
 
 Despliega una categoría para ver el tipo, la activación y el permiso de cada herramienta. El interruptor de la categoría cambia la activación de todo el grupo sin otorgar permisos. Selecciona una categoría o varias herramientas con **Ctrl** o **Mayús** y usa **Permisos de selección…** para pedir confirmación o autorizar explícitamente las lecturas compatibles.
 
@@ -213,9 +213,9 @@ python mcp_client.py remove ejemplo
 
 Para un servidor remoto, usa `python mcp_client.py add remoto --url https://servidor.example/mcp --token-env STONEBOT_MCP_REMOTO_TOKEN` y luego actívalo. El nombre de la variable es opcional. Carga su valor en el entorno de StoneBot desde tu gestor de secretos antes de iniciar la app. HTTP sin TLS se admite para pruebas locales sin token. [Transportes del SDK MCP](https://github.com/modelcontextprotocol/python-sdk/blob/main/docs/client/transports.md)
 
-**Probar conexión** muestra el motivo del fallo y, cuando está disponible, el código HTTP o MCP. Por ejemplo, HTTP 401 indica un problema de autenticación, HTTP 403 indica acceso denegado y HTTP 404 indica que conviene revisar la ruta del endpoint. El motivo queda disponible al pasar el cursor por el indicador rojo. La prueba inicializa la sesión y lista las herramientas sin ejecutarlas.
+**Recargar** muestra el motivo del fallo y, cuando está disponible, el código HTTP o MCP. Por ejemplo, HTTP 401 indica un problema de autenticación, HTTP 403 indica acceso denegado y HTTP 404 indica que conviene revisar la ruta del endpoint. El motivo queda disponible al pasar el cursor por el indicador rojo. La prueba inicializa la sesión y lista las herramientas sin ejecutarlas.
 
-Para **Tavily**, agrega un servidor **Streamable HTTP** con URL `https://mcp.tavily.com/mcp/`. Selecciona el servidor guardado, abre **Clave API…**, introduce la clave y elige **Guardar**. Después pulsa **Probar conexión** y activa el servidor. La clave se guarda en el Administrador de credenciales de Windows para ese servidor y esa URL. StoneBot la envía como `Authorization: Bearer` por HTTPS. Deja la URL sin parámetros de credenciales. [Configuración oficial de Tavily MCP](https://github.com/tavily-ai/tavily-mcp#remote-mcp-server)
+Para **Tavily**, agrega un servidor **Streamable HTTP** con URL `https://mcp.tavily.com/mcp/`. Selecciona el servidor guardado, abre **Clave API…**, introduce la clave y elige **Guardar**. Después pulsa el icono **Recargar** y activa el servidor. La clave se guarda en el Administrador de credenciales de Windows para ese servidor y esa URL. StoneBot la envía como `Authorization: Bearer` por HTTPS. Deja la URL sin parámetros de credenciales. [Configuración oficial de Tavily MCP](https://github.com/tavily-ai/tavily-mcp#remote-mcp-server)
 
 También puedes usar **Nombre de variable del token**, por ejemplo `STONEBOT_MCP_TAVILY_TOKEN`, y cargar la variable antes de abrir StoneBot. La variable se usa cuando el servidor no tiene una clave guardada en Windows. **Quitar clave** elimina la copia guardada. Al cambiar la URL o eliminar el servidor se retira la clave asociada a la configuración anterior.
 
@@ -254,7 +254,7 @@ El menú **⋯** de la ficha permite editar, fijar o eliminar el proyecto. Tambi
 
 Cada ficha incluye un **Punto de continuidad** editable para recordar dónde te quedaste y qué sigue. Puedes escribirlo a mano o decir «Guarda el resumen» tras completar una tarea en ese proyecto. Los chats del proyecto reciben la nota como contexto anterior, además de las instrucciones y la carpeta vinculada. Los permisos MCP se aplican según su configuración.
 
-En **Documentos → Vincular archivo…** puedes añadir un PDF, un README u otro archivo compatible. En cualquier chat de ese proyecto, abre **+ → Usar documento del proyecto…**, elige el archivo y envía tu pregunta. StoneBot lee la versión que esté guardada en ese momento y muestra el nombre del documento consultado. Ese turno se procesa en Ollama local como una consulta de adjuntos. Si mueves el archivo, vuelve a vincularlo desde su nueva ubicación. **Desvincular** quita el acceso desde el proyecto y conserva el archivo original.
+En **Documentos → Vincular archivo…** puedes añadir un PDF, un README u otro archivo compatible. En cualquier chat de ese proyecto, escribe `>` y selecciona **Usar documento del proyecto…**, elige el archivo y envía tu pregunta. StoneBot lee la versión que esté guardada en ese momento y muestra el nombre del documento consultado. Ese turno se procesa en Ollama local como una consulta de adjuntos. Si mueves el archivo, vuelve a vincularlo desde su nueva ubicación. **Desvincular** quita el acceso desde el proyecto y conserva el archivo original.
 
 Queda pendiente la prueba manual con un documento del usuario y Ollama.
 
@@ -331,7 +331,7 @@ En **+ → Instrucciones generales…** puedes guardar preferencias para todas l
 
 Abre el botón de **paleta → Apariencia**. **StoneBot Original** sigue siendo el predeterminado de instalaciones nuevas. **Xcode** ofrece grises fríos, un acento azul suave y fondos discretos para los mensajes. Puedes previsualizarlo y seleccionarlo junto con [GitHub Dark Dimmed](https://github.com/primer/github-vscode-theme), [One Dark Pro](https://github.com/Binaryify/OneDark-Pro) y [SynthWave '84](https://github.com/robb0wen/synthwave-vscode). Las preferencias guardadas se conservan. Si ya habías creado un tema propio llamado Xcode, aparecerá como **Xcode (personalizado)**.
 
-La barra superior concentra el historial, MCP y Apariencia. Pasa el cursor sobre **StoneBot** para consultar el modelo activo. El historial marca la conversación seleccionada y mantiene el separador ajustable. En **MCP**, **Agregar** está junto a la lista de servidores y **Probar conexión** se distingue de las acciones de edición. Los estados y permisos conservan sus etiquetas.
+La barra superior concentra el historial, MCP y Apariencia. Pasa el cursor sobre **StoneBot** para consultar el modelo activo. El historial marca la conversación seleccionada y mantiene el separador ajustable. En **Extensiones → MCP**, **Agregar servidor…** está debajo de la lista y el icono **Recargar** está junto al estado de la conexión. Los estados y permisos conservan sus etiquetas.
 
 Usa **Guardar como…** para guardar la combinación de colores actual con un nombre. Los temas propios aparecen en el mismo selector y se pueden renombrar o eliminar. El tamaño de letra es un ajuste independiente de 12 a 28 px. Los temas y las preferencias se guardan en `%USERPROFILE%\.stonebot\appearance.ini`.
 

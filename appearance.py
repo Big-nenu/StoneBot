@@ -2,12 +2,12 @@
 import json
 import re
 
-from PySide6.QtCore import QPointF, QSettings, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPalette, QPen, QPixmap
+from PySide6.QtCore import QPointF, QRectF, QSettings, Qt, Signal
+from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPalette, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout,
+    QAbstractSpinBox, QApplication, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QGridLayout,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton, QSlider, QSpinBox,
-    QVBoxLayout, QWidget,
+    QStyle, QStyleOptionComboBox, QStyleOptionSpinBox, QVBoxLayout, QWidget,
 )
 
 from mcp_client import data_path
@@ -28,6 +28,13 @@ PRESETS = {
     "GitHub Dark Dimmed": dict(zip(COLORS, ("#78b4fa", "#222831", "#294461", "#282f38"))),
     "One Dark Pro": dict(zip(COLORS, ("#69afea", "#292e37", "#3a4a61", "#303641"))),
     "SynthWave '84": dict(zip(COLORS, ("#f68ac5", "#251d35", "#55375e", "#332644"))),
+    "Catppuccin Mocha": dict(zip(COLORS, ("#cba6f7", "#1e1e2e", "#45475a", "#313244"))),
+    "Dracula": dict(zip(COLORS, ("#bd93f9", "#282a36", "#44475a", "#343746"))),
+    "Nord": dict(zip(COLORS, ("#88c0d0", "#2e3440", "#434c5e", "#3b4252"))),
+    "Gruvbox": dict(zip(COLORS, ("#fe8019", "#282828", "#504945", "#3c3836"))),
+    "Tokyo Night": dict(zip(COLORS, ("#7aa2f7", "#1a1b26", "#292e42", "#24283b"))),
+    "Rosé Pine": dict(zip(COLORS, ("#ebbcba", "#191724", "#26233a", "#1f1d2e"))),
+    "Everforest": dict(zip(COLORS, ("#a7c080", "#2d353b", "#3d484d", "#343f44"))),
 }
 
 
@@ -227,15 +234,92 @@ def dialog_style(theme):
         QHeaderView::section {{ background: {shade(background, .1)}; color: {text}; padding: 5px; border: 0; }}
         QLabel[sectionHeading="true"] {{ font-size: 14px; font-weight: 700; }}
         QLabel#mcpNotice {{ color: {shade(background, .68)}; font-size: 13px; padding: 4px 2px; }}
-        QDialog#mcpManager QTreeWidget {{
-            alternate-background-color: {shade(surface, .035)};
-            selection-background-color: {shade(surface, .13)}; selection-color: {text};
-            border-color: {shade(background, .18)}; border-radius: 7px;
-        }}
-        QDialog#mcpManager QHeaderView::section {{
-            background: {shade(background, .06)}; padding: 7px 8px; font-weight: 600;
-        }}
     """ + button_style(dict(theme, background=background), dialog=True)
+
+
+def settings_style(theme):
+    background, accent = theme["background"], theme["accent"]
+    surface, _, _, text = control_colors(background)
+    edge = shade(background, .16)
+    return dialog_style(theme) + f"""
+        QLabel, QCheckBox, QListWidget, QLineEdit, QComboBox, QPlainTextEdit, QSpinBox, QPushButton {{
+            color: {text}; font-family: "Segoe UI"; font-size: 11pt;
+        }}
+        QLabel#settingsTitle {{
+            color: {readable_text(background)}; font-size: 22pt; font-weight: 700;
+        }}
+        QLabel[muted="true"] {{ color: {shade(background, .68)}; }}
+        QLineEdit, QComboBox, QPlainTextEdit, QSpinBox, QListWidget {{
+            background: {surface}; border: 1px solid {edge}; border-radius: 10px;
+        }}
+        QLineEdit, QComboBox, QPlainTextEdit, QSpinBox {{ padding: 7px 10px; }}
+        QComboBox {{ padding-right: 25px; }}
+        QComboBox::drop-down {{
+            subcontrol-origin: padding; subcontrol-position: top right;
+            width: 24px; border: 0; background: transparent;
+        }}
+        QSpinBox QLineEdit {{ background: transparent; border: 0; padding: 0; }}
+        QSpinBox::up-button, QSpinBox::down-button {{
+            subcontrol-origin: border; width: 24px; border: 0; background: transparent;
+        }}
+        QSpinBox::up-button {{ subcontrol-position: top right; }}
+        QSpinBox::down-button {{ subcontrol-position: bottom right; }}
+        QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus, QSpinBox:focus {{ border-color: {accent}; }}
+        QListWidget::item {{ padding: 7px 9px; border-radius: 7px; }}
+        QListWidget::item:hover:!selected {{ background: {shade(surface, .08)}; }}
+        QPushButton {{ padding: 8px 13px; border-width: 1px; border-radius: 10px; }}
+        QPushButton, QPushButton[secondary="true"],
+        QPushButton:disabled, QPushButton[secondary="true"]:disabled {{ border-color: {edge}; }}
+    """
+
+
+def draw_chevron(painter, bounds, color, angle=0):
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.translate(QRectF(bounds).center())
+    painter.rotate(angle)
+    pen = QPen(color, 1.5)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    painter.drawPolyline(QPolygonF([QPointF(-3, -1.5), QPointF(0, 1.5), QPointF(3, -1.5)]))
+    painter.restore()
+
+
+class SettingsComboBox(QComboBox):
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        bounds = self.style().subControlRect(QStyle.ComplexControl.CC_ComboBox, option,
+                                             QStyle.SubControl.SC_ComboBoxArrow, self)
+        with QPainter(self) as painter:
+            draw_chevron(painter, bounds, option.palette.text().color())
+
+
+class SettingsSpinArrows:
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        option = QStyleOptionSpinBox()
+        self.initStyleOption(option)
+        steps = QAbstractSpinBox.StepEnabledFlag
+        with QPainter(self) as painter:
+            for control, step, angle in (
+                (QStyle.SubControl.SC_SpinBoxUp, steps.StepUpEnabled, 180),
+                (QStyle.SubControl.SC_SpinBoxDown, steps.StepDownEnabled, 0),
+            ):
+                bounds = self.style().subControlRect(QStyle.ComplexControl.CC_SpinBox, option, control, self)
+                color = (option.palette.text().color() if option.stepEnabled & step else
+                         option.palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text))
+                draw_chevron(painter, bounds, color, angle)
+
+
+class SettingsSpinBox(SettingsSpinArrows, QSpinBox):
+    pass
+
+
+class SettingsDoubleSpinBox(SettingsSpinArrows, QDoubleSpinBox):
+    pass
 
 
 def palette_icon(colors, *, artist=False):
@@ -304,7 +388,7 @@ class ColorEditor(QDialog):
     def __init__(self, parent, label, color, theme):
         super().__init__(parent)
         self.setWindowTitle(label)
-        self.setStyleSheet(dialog_style(theme))
+        self.setStyleSheet(settings_style(theme))
         self.color = QColor(color)
         self.settings = appearance_settings()
         layout = QVBoxLayout(self)
@@ -444,10 +528,16 @@ class AppearanceDialog(QDialog):
         self.saved = custom_themes()
         self.on_change = on_change
         form = QFormLayout(self)
+        form.setContentsMargins(24, 21, 24, 22)
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(12)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.setMinimumWidth(400)
-        self.preset = QComboBox()
+        title = QLabel("Apariencia")
+        title.setObjectName("settingsTitle")
+        form.addRow(title)
+        self.preset = SettingsComboBox()
         self.preset.activated.connect(self.select_preset)
         form.addRow("Tema", self.preset)
         self.save_theme = QPushButton("Guardar como…")
@@ -457,6 +547,7 @@ class AppearanceDialog(QDialog):
         self.delete_theme = QPushButton("Eliminar…")
         self.delete_theme.clicked.connect(self.delete_selected)
         theme_actions = QHBoxLayout()
+        theme_actions.setSpacing(8)
         for button in (self.save_theme, self.rename_theme, self.delete_theme):
             theme_actions.addWidget(button)
         form.addRow(theme_actions)
@@ -475,10 +566,11 @@ class AppearanceDialog(QDialog):
             restore.clicked.connect(lambda checked=False, key=key: self.set_color(key, COLORS[key]))
             self.restore_colors[key] = restore
             row = QHBoxLayout()
+            row.setSpacing(8)
             row.addWidget(button, 1)
             row.addWidget(restore)
             form.addRow(label, row)
-        self.font_size = QSpinBox()
+        self.font_size = SettingsSpinBox()
         self.font_size.setRange(12, 28)
         self.font_size.setSuffix(" px")
         self.font_size.setValue(self.theme["font_size"])
@@ -578,7 +670,7 @@ class AppearanceDialog(QDialog):
         self.refresh()
 
     def refresh(self):
-        self.setStyleSheet(dialog_style(self.theme))
+        self.setStyleSheet(settings_style(self.theme))
         self.preset.setCurrentText(preset_name(self.theme, self.saved))
         is_saved = self.preset.currentText() in self.saved
         self.rename_theme.setEnabled(is_saved)

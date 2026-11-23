@@ -139,13 +139,15 @@ def test_preferences_and_history():
             return dialog.result()
 
         try:
+            window.history_button.setChecked(True)
             with patch.object(app.AISettingsDialog, "exec", configure):
                 window.sidebar_rail.provider_badge.click()
             assert window.ai == ai_provider.load_ai() == ai_provider.AISettings("openrouter", "fake/model")
             assert "OpenRouter" in window.sidebar_rail.provider_badge.text()
             assert "fake/model" in window.sidebar_rail.provider_badge.toolTip()
-            labels = {action.text() for action in window.settings_menu.actions()}
-            assert {"Modelo y proveedor de IA…", "Apariencia…", "Extensiones…", "Memoria", "Skills"} <= labels
+            assert [action.text() for action in window.settings_menu.actions()] == [
+                "Modelo y proveedor de IA…", "Apariencia…", "Instrucciones generales…", "Extensiones…", "Memoria",
+            ]
             save_key.assert_called_once_with(ai_provider.KEY_TARGET, "test-key")
             assert "test-key" not in (Path(folder) / "chat.ini").read_text(encoding="utf-8")
         finally:
@@ -154,11 +156,11 @@ def test_preferences_and_history():
     history = HistoryPanel()
     rows = [(idx, f"Conversación {idx}") for idx in range(25)]
     history.fill(rows, None)
-    assert history.list.count() == 12
-    more = history.list.item(11)
+    assert history.list.count() == 13
+    more = history.list.item(history.list.count() - 1)
     assert more.data(MORE_ROLE)
     history.activate_row(more)
-    assert history.list.count() == 22
+    assert history.list.count() == 23
     assert history.list.currentItem().data(Qt.ItemDataRole.UserRole) == 10
     history.search.setText("Conversación 24")
     history.fill(rows[-1:], None)

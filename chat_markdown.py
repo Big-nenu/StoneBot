@@ -10,11 +10,11 @@ from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_by_name
 from pygments.util import ClassNotFound
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QDesktopServices, QTextOption
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QTextBrowser, QVBoxLayout, QWidget
 
-from appearance import link_color, readable_text, secondary_button
+from appearance import link_color, readable_text, secondary_button, shade
 
 
 MATH = re.compile(r"\$(?![\s$])((?:\\.|[^$\n\\])+?)(?<!\s)\$(?![\d$])|\\\(([^\n]+?)\\\)")
@@ -82,13 +82,14 @@ def response_parts(source):
 
 
 class ResponseText(QTextBrowser):
-    def __init__(self, scroll_area, *, code=False):
+    def __init__(self, scroll_area, *, code=False, horizontal=False):
         super().__init__()
         self.scroll_area = scroll_area
         self.setOpenLinks(False)
         self.anchorClicked.connect(open_web_link)
         self.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded if code else Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded if code or horizontal else
+                                          Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.document().setDocumentMargin(6 if code else 0)
@@ -111,6 +112,28 @@ class ResponseText(QTextBrowser):
             QApplication.sendEvent(self.scroll_area.viewport(), event)
 
 
+class CopyButton(QPushButton):
+    def __init__(self, source):
+        super().__init__("Copiar")
+        secondary_button(self)
+        self.setObjectName("messageAction")
+        self.source = source
+        self.reset_label = QTimer(self, singleShot=True, interval=1500)
+        self.reset_label.timeout.connect(lambda: self.setText("Copiar"))
+        self.clicked.connect(self.copy)
+
+    def sizeHint(self):
+        size = super().sizeHint()
+        metrics = self.fontMetrics()
+        size.setWidth(size.width() + max(0, metrics.horizontalAdvance("Copiado") - metrics.horizontalAdvance(self.text())))
+        return size
+
+    def copy(self):
+        QApplication.clipboard().setText(self.source)
+        self.setText("Copiado")
+        self.reset_label.start()
+
+
 class CodeCard(QWidget):
     def __init__(self, scroll_area, source, language, theme):
         super().__init__()
@@ -125,10 +148,8 @@ class CodeCard(QWidget):
         label = QLabel(caption)
         label.setTextFormat(Qt.TextFormat.PlainText)
         label.setObjectName("codeLanguage")
-        self.copy = secondary_button(QPushButton("Copiar"))
-        self.copy.setObjectName("messageAction")
+        self.copy = CopyButton(source)
         self.copy.setAccessibleName(f"Copiar bloque de {caption}")
-        self.copy.clicked.connect(self.copy_source)
         header = QHBoxLayout()
         header.addWidget(label)
         header.addStretch()
@@ -142,9 +163,6 @@ class CodeCard(QWidget):
         layout.addLayout(header)
         layout.addWidget(self.text)
         self.set_theme(theme)
-
-    def copy_source(self):
-        QApplication.clipboard().setText(self.source)
 
     def set_theme(self, theme):
         style = "friendly" if readable_text(theme["bot_message"]) == "#000000" else "monokai"
@@ -166,7 +184,7 @@ class MarkdownText(QWidget):
         self.parts = []
         for content, language in response_parts(source):
             if language is None:
-                part = ResponseText(scroll_area)
+                part = ResponseText(scroll_area, horizontal="<table>" in content)
                 part.setObjectName("responseProse")
                 part.html = content
             else:
@@ -180,11 +198,14 @@ class MarkdownText(QWidget):
 
     def set_theme(self, theme):
         color = link_color(theme["bot_message"])
-        old_color = getattr(self, "prose_link_color", None)
+        background = theme["bot_message"]
+        old_background = getattr(self, "prose_background", None)
         for part in self.parts:
             if isinstance(part, CodeCard):
                 part.set_theme(theme)
-            elif color != old_color:
+            elif background != old_background:
                 part.document().setDefaultStyleSheet(PROSE_STYLE + f" a {{ color: {color}; }}")
-                part.setHtml(part.html)
-        self.prose_link_color = color
+                table = f'<table border="1" cellspacing="0" cellpadding="6" bordercolor="{shade(background, .28)}">'
+                cell = f'<th bgcolor="{shade(background, .12)}"'
+                part.setHtml(re.sub(r"<th(?=[ >])", cell, part.html.replace("<table>", table)))
+        self.prose_background = background

@@ -176,8 +176,12 @@ def test_window(root):
     client = SimpleNamespace(show=lambda model: SimpleNamespace(capabilities=["vision"]), chat=respond)
     try:
         menu = window.attachments.add_button.menu()
-        attach, project_document, mcp, memory, _, skills, instructions = menu.actions()
-        assert not project_document.isVisible()
+        attach, mcp, skills, separator, automatic = menu.actions()
+        assert [action.text() for action in menu.actions()] == [
+            "Adjuntar archivos…", "MCP", "Skills", "", "Guardar recuerdos en este chat",
+        ]
+        assert separator.isSeparator() and automatic is window.auto_memory_menu_action
+        memory = window.memory_menu.menuAction()
         modes = window.reasoning_button.menu().actions()
         assert [mode.data() for mode in modes] == [None, False, True] and modes[0].isChecked()
         assert attach.isEnabled() and mcp.isEnabled() and skills.isEnabled()
@@ -228,7 +232,7 @@ def test_window(root):
             cards = [window.attachments.rows.itemAt(i).widget() for i in range(5)]
             assert len({card.y() for card in cards}) == 1
             assert all(first.x() + first.width() <= second.x() for first, second in zip(cards, cards[1:]))
-            menu.aboutToShow.emit()
+            window.settings_menu.aboutToShow.emit()
             assert not memory.isEnabled()
         window.attachments.clear()
 
@@ -300,7 +304,7 @@ def test_window(root):
             assert regenerated[0]["attachments"] == saved[0]["attachments"]
             assert regenerated[0]["content"] == "Revisa los mismos adjuntos" and len(regenerated) == 2
             assert not (root / "memoria.db").exists()
-            menu.aboutToShow.emit()
+            window.settings_menu.aboutToShow.emit()
             assert window.attachments.add_button.isEnabled() and window.history_panel.isEnabled()
             assert memory.isEnabled() and "chat nuevo" in memory.text() and mcp.isEnabled() and attach.isEnabled()
             window.message.setPlainText("Borrador sin enviar")
@@ -541,9 +545,10 @@ def test_project_documents(root):
         for code in ("LUNA-531", "ACTUALIZADO-842"):
             path.write_text(code, encoding="utf-8")
             window.new_project_chat(project)
-            assert window.project_document_action.isVisible()
+            attach_document = next(action for label, _, action in window.composer_shortcuts(">")
+                                   if label == "Usar documento del proyecto…")
             with patch.object(app.QInputDialog, "getItem", return_value=(path.name, True)):
-                window.project_document_action.trigger()
+                attach_document()
             window.message.setPlainText("¿Qué código dice el documento?")
             pending = app.new_task("Encargo pendiente")
             pending["status"] = "paused"

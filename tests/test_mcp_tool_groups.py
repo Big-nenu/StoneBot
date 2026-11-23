@@ -6,9 +6,9 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from mcp.types import Tool
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
 import mcp_client
 from mcp_permissions import permission_signature, safe_read, saved_permissions
@@ -37,7 +37,7 @@ def check_groups(qt, catalog):
             return [group.child(i) for i in range(group.childCount())]
 
         def toggle(item):
-            return tree.itemWidget(item, 2).findChild(Toggle)
+            return tree.itemWidget(item, 0).findChild(Toggle)
 
         def rows():
             return {item.text(0): item for group in groups() for item in children(group)}
@@ -45,15 +45,11 @@ def check_groups(qt, catalog):
         def choose(label):
             assert dialog.selection_permissions.isEnabled()
 
-            def click():
-                box = QApplication.activeModalWidget()
-                button = next((button for button in box.buttons() if button.text() == label), None)
-                if button is not None and button.isEnabled():
-                    button.click()
-                else:
-                    box.reject()
-            QTimer.singleShot(0, click)
             dialog.selection_permissions.click()
+            assert dialog.editor is not None and not dialog.editor.isWindow()
+            button = next(button for button in dialog.editor.findChildren(QPushButton) if button.text() == label)
+            assert button.isEnabled()
+            button.click()
 
         assert set(rows()) == names and len(groups()) > 1
         if len(catalog) > 8:
@@ -69,7 +65,7 @@ def check_groups(qt, catalog):
         assert reduced["read_tools"] == [legacy] and not saved_permissions(name)
         group = next(item for item in groups() if item.text(0) == label)
         assert group.isExpanded() and group.isSelected()
-        assert tree.itemWidget(group, 2).findChild(QLabel).text() == f"{len(members)}/{len(members)}"
+        assert tree.itemWidget(group, 0).findChild(QLabel, "mcpCardState").text() == f"{len(members)}/{len(members)}"
         QTest.mouseClick(toggle(group), Qt.MouseButton.LeftButton)
         assert set(mcp_client.load_servers()[name]["disabled_tools"]) == names
 

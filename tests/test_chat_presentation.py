@@ -10,10 +10,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from ollama import Message
-from PySide6.QtCore import QEvent, QEventLoop, QPoint, QTimer, Qt, QUrl
+from PySide6.QtCore import QEvent, QEventLoop, QObject, QPoint, QTimer, Qt, QUrl
 from PySide6.QtGui import QColor, QContextMenuEvent, QDesktopServices
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QInputDialog, QLabel, QMessageBox, QPushButton, QScrollArea
+from PySide6.QtWidgets import (
+    QApplication, QInputDialog, QLabel, QMessageBox, QPushButton, QScrollArea, QSplitter, QStyle, QStyleOptionButton,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
@@ -25,7 +27,8 @@ from appearance import (
     custom_themes, link_color, load_appearance, shade,
 )
 from history import History
-from history_ui import MAXIMUM_WIDTH
+from history_ui import DEFAULT_WIDTH, RAIL_WIDTH, load_sidebar_pinned
+from chat_ui import MENU_GAP
 from win_caption import CAPTION_COLOR, SYSTEM_COLOR, TEXT_COLOR, colorref, set_caption_colors
 
 
@@ -184,14 +187,9 @@ def test_composer_shortcuts(window):
         assert launched.call_args.args[0][1:] == ["-NoLogo", "-NoProfile"]
     window.new_chat()
 
-    window.resize(2480, 800)
-    window.history_splitter.moveSplitter(2100, 1)
-    assert window.sidebar_rail.width() == MAXIMUM_WIDTH
-    assert window.history_splitter.sizes()[1] > 1500
-
-
 def test_appearance(window):
     panel = AppearanceDialog(window, window.appearance, window.change_appearance)
+    assert panel.preset.itemText(panel.preset.count() - 1) == "Personalizado"
     for name, palette in PRESETS.items():
         index = panel.preset.findText(name)
         assert not panel.preset.itemIcon(index).isNull()
@@ -205,7 +203,7 @@ def test_appearance(window):
             assert reopened.settings_button.property("quiet")
             reopened.close()
     reopened = AppearanceDialog(window, load_appearance(), window.change_appearance)
-    assert reopened.preset.currentText() == "SynthWave '84"
+    assert reopened.preset.currentText() == next(reversed(PRESETS))
     reopened.set_color("accent", "#113355")
     with patch.object(QInputDialog, "getText", return_value=("Acero", True)):
         reopened.save_theme.click()
@@ -291,6 +289,10 @@ def test_markdown(window):
     assert "**Negrita**" not in body.toPlainText()
     assert "límite es N−1" in prose.toPlainText() and "precio es $10" in prose.toPlainText()
     assert "$N$" in body.parts[2].toPlainText()
+    assert prose.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByMouse
+    prose.setTextCursor(document.find("Negrita"))
+    QTest.keyClick(prose, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+    assert QApplication.clipboard().text() == "Negrita"
     first.copy.click()
     assert QApplication.clipboard().text() == first.source
     second.copy.click()
@@ -309,6 +311,31 @@ def test_markdown(window):
     window.open_chat(chat)
     reopened = window.chat.findChild(app.MarkdownText)
     assert [card.source for card in reopened.findChildren(CodeCard)] == [part.source for part in (first, second)]
+
+
+def test_bubbles_resize(window):
+    original_size = window.size()
+    window.new_chat()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    text = "Texto largo que se ajusta al ancho de la conversación. " * 10
+    window.append_message(text, user=True)
+    window.append_message(text)
+    user = window.chat.findChild(app.ChatText, "userMessage")
+    bot = window.chat.findChild(app.MarkdownText, "botMessage")
+    canvas = window.transcript.parentWidget()
+    widths = []
+    for width in (1200, 720):
+        window.resize(width, 740)
+        QTest.qWait(20)
+        left = bot.mapTo(canvas, QPoint()).x()
+        right = user.mapTo(canvas, QPoint()).x() + user.width()
+        assert left == 0 and right == canvas.width()
+        assert max(user.width(), bot.width()) <= canvas.width() * 7 // 10
+        widths.append(bot.width())
+    assert widths[0] > widths[1]
+    assert not window.send.text() and not window.send.icon().isNull()
+    assert window.send.accessibleName() == "Enviar"
+    window.resize(original_size)
 
 
 def test_regeneration(window):
@@ -367,7 +394,10 @@ def test_button_styles(window):
     window.activateWindow()
     recent = window.history.append(None, "user", "Control de apariencia")
     window.open_chat(recent)
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     QApplication.processEvents()
+    bubble = window.chat.findChild(app.ChatText, "userMessage").viewport()
+    QTest.mouseMove(bubble, QPoint(10, 10))
     actions = {button.text(): button for button in window.chat.findChildren(QPushButton)
                if button.isVisible()}
     assert actions["Editar"].focusPolicy() == Qt.FocusPolicy.TabFocus
@@ -382,13 +412,13 @@ def test_button_styles(window):
 
     for palette in PRESETS.values():
         window.change_appearance(dict(window.appearance, **palette))
-        QTest.mouseMove(window.message, window.message.rect().center())
+        QTest.mouseMove(bubble, QPoint(10, 10))
         normal = control_colors(palette["background"])[2]
         assert sample(copy) == normal
 
     palette = PRESETS[ORIGINAL]
     window.change_appearance(dict(window.appearance, **palette))
-    field, edge, normal, _ = control_colors(palette["background"])
+    field, _, normal, _ = control_colors(palette["background"])
     window.message.setFocus()
     QTest.mouseMove(copy, copy.rect().center())
     assert sample(copy) == shade(normal, .10)
@@ -397,8 +427,13 @@ def test_button_styles(window):
     QTest.mouseRelease(copy, Qt.MouseButton.LeftButton, pos=copy.rect().center())
     assert not copy.isDown() and not copy.hasFocus()
     assert QApplication.clipboard().text() == "Control de apariencia"
+    assert copy.text() == "Copiado"
     QTest.mouseMove(window.message, window.message.rect().center())
-    assert sample(copy) == normal and sample(copy, border=True) == edge
+    assert not copy.isVisible()
+    QTest.qWait(1600)
+    assert copy.text() == "Copiar"
+    QTest.mouseMove(bubble, QPoint(10, 10))
+    assert sample(copy) == normal and sample(copy, border=True) == shade(palette["background"], .13)
     copy.setFocus(Qt.FocusReason.TabFocusReason)
     assert copy.hasFocus() and sample(copy, border=True) == link_color(palette["background"])
     copy.setEnabled(False)
@@ -431,7 +466,126 @@ def test_button_styles(window):
     window.message.clear()
 
 
+def test_chat_menus(window):
+    class FirstPaint(QObject):
+        def __init__(self, menu):
+            super().__init__(menu)
+            self.painted = False
+            menu.installEventFilter(self)
+
+        def eventFilter(self, watched, event):
+            if event.type() == QEvent.Type.Paint:
+                self.painted = True
+            return False
+
+    previous = window.geometry()
+    window.setGeometry(window.screen().availableGeometry().adjusted(28, 35, -35, -59))
+    for maximized in (False, True):
+        if maximized:
+            window.showMaximized()
+        else:
+            window.showNormal()
+        window.activateWindow()
+        QTest.qWait(100)
+        assert window.isMaximized() == maximized
+        for button, above, right in (
+            (window.attachments.add_button, True, False),
+            (window.reasoning_button, True, True),
+            (window.settings_button, False, True),
+        ):
+            menu = button.menu()
+            paint = FirstPaint(menu)
+            QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+            QTest.qWait(80)
+            origin = button.mapToGlobal(QPoint())
+            x = origin.x() + (button.width() - menu.width() if right else 0)
+            y = origin.y() - menu.height() - MENU_GAP if above else origin.y() + button.height()
+            assert menu.isVisible() and paint.painted
+            assert menu.mapToGlobal(QPoint()) == QPoint(x, y)
+            menu.close()
+            paint.deleteLater()
+
+        for button, submenu in (
+            (window.attachments.add_button, window.mcp_menu),
+            (window.settings_button, window.memory_menu),
+            (window.attachments.add_button, window.skills_menu),
+        ):
+            root = button.menu()
+            paint = FirstPaint(submenu)
+            QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+            root.setActiveAction(submenu.menuAction())
+            QTest.keyClick(root, Qt.Key.Key_Right)
+            QTest.qWait(320)
+            assert root.isVisible() and submenu.isVisible() and paint.painted
+            root.close()
+            paint.deleteLater()
+    window.showNormal()
+    window.setGeometry(previous)
+    QApplication.processEvents()
+
+    button = window.reasoning_button
+    modes = button.menu().actions()
+    for action in modes:
+        action.trigger()
+        QApplication.processEvents()
+        option = QStyleOptionButton()
+        button.initStyleOption(option)
+        option.features |= QStyleOptionButton.ButtonFeature.HasMenu
+        style = button.style()
+        content = style.subElementRect(QStyle.SubElement.SE_PushButtonContents, option, button)
+        arrow = style.pixelMetric(QStyle.PixelMetric.PM_MenuButtonIndicator, option, button)
+        assert content.width() >= arrow + button.fontMetrics().horizontalAdvance(action.text())
+    modes[0].trigger()
+
+
 def test_history_panel_and_timestamps(window):
+    assert not window.findChildren(QSplitter)
+    assert not window.history_button.isChecked() and not load_sidebar_pinned()
+    rail = window.sidebar_rail
+    origin = window.chat_page.mapTo(window, QPoint()).x()
+    order = [rail.toggle, *(rail.actions[key] for key in ("new", "projects", "diagnostics", "search"))]
+    positions = [button.mapTo(rail, QPoint()) for button in order]
+    assert len({point.x() for point in positions}) == 1
+    assert all(first.y() < second.y() for first, second in zip(positions, positions[1:]))
+    preview = window.sidebar_preview
+    for widget in (rail.actions["new"], rail.actions["diagnostics"], rail.actions["search"], window.message):
+        QTest.mouseMove(widget, widget.rect().center())
+        QTest.qWait(200)
+        assert preview.width() == RAIL_WIDTH and window.chat_page.mapTo(window, QPoint()).x() == origin
+    toggle_origin = rail.toggle.mapTo(window, QPoint())
+    QTest.mouseMove(rail.toggle, rail.toggle.rect().center())
+    QTest.qWait(200)
+    assert preview.width() == DEFAULT_WIDTH and preview.shadow.isVisible()
+    assert not rail.toggle.isChecked() and not rail.toggle.toolTip()
+    assert rail.toggle.mapTo(window, QPoint()) == toggle_origin
+    assert window.chat_page.mapTo(window, QPoint()).x() == origin
+    field = window.history_panel.search
+    assert field.mapTo(rail, QPoint()).y() > rail.actions["diagnostics"].mapTo(rail, QPoint()).y()
+    QTest.mouseMove(field, field.rect().center())
+    QTest.qWait(350)
+    assert preview.floating
+    QTest.mouseMove(window.message, window.message.rect().center())
+    QTest.qWait(150)
+    assert preview.floating
+    QTest.qWait(350)
+    assert preview.width() == RAIL_WIDTH and rail.toggle.toolTip()
+    assert not preview.shadow.isVisible() and not load_sidebar_pinned()
+    QTest.mouseMove(rail.toggle, rail.toggle.rect().center())
+    QTest.qWait(200)
+    assert preview.floating
+    rail.toggle.click()
+    QApplication.processEvents()
+    assert rail.toggle.isChecked() and not preview.floating and load_sidebar_pinned()
+    assert window.chat_page.mapTo(window, QPoint()).x() == origin + DEFAULT_WIDTH - RAIL_WIDTH
+    rail.toggle.click()
+    QTest.qWait(200)
+    assert preview.width() == RAIL_WIDTH and not preview.floating and not load_sidebar_pinned()
+    rail.actions["search"].click()
+    QApplication.processEvents()
+    assert rail.width() == DEFAULT_WIDTH and window.history_panel.search.hasFocus()
+    assert window.history_panel.search.mapTo(rail, QPoint()).y() > rail.actions["diagnostics"].mapTo(rail, QPoint()).y()
+    assert window.chat_page.mapTo(window, QPoint()).x() == origin + DEFAULT_WIDTH - RAIL_WIDTH
+
     window.open_chat(1)
     QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     assert not window.chat.findChildren(QLabel, "messageTime")
@@ -450,25 +604,20 @@ def test_history_panel_and_timestamps(window):
     assert history_list.textElideMode() == Qt.TextElideMode.ElideRight
     assert history_list.horizontalScrollBar().maximum() == 0
     assert history_list.visualItemRect(item).width() <= history_list.viewport().width()
-    before = window.history_panel.width()
-    handle = window.history_splitter.handle(1)
-    point = handle.rect().center()
-    QTest.mousePress(handle, Qt.MouseButton.LeftButton, pos=point)
-    QTest.mouseMove(handle, point + QPoint(90, 0))
-    QTest.mouseRelease(handle, Qt.MouseButton.LeftButton, pos=point)
+    window.resize(1480, 800)
     QApplication.processEvents()
-    width = window.history_panel.width()
-    assert width > before and window.history_width == width
-    assert history_list.visualItemRect(item).width() <= history_list.viewport().width()
-    window.history_button.click()
-    window.history_button.click()
-    assert window.history_panel.width() == width
+    assert window.history_panel.width() == DEFAULT_WIDTH
     window.close()
-    assert appearance_settings().value("history_width", type=int) == width
+    assert load_sidebar_pinned()
     reopened = app.StoneBot()
     reopened.show()
+    reopened.activateWindow()
     QApplication.processEvents()
-    assert reopened.history_panel.width() == width
+    assert reopened.history_button.isChecked()
+    assert reopened.history_panel.width() == DEFAULT_WIDTH
+    QTest.keyClick(reopened.message, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+    QTest.qWait(150)
+    assert not load_sidebar_pinned() and reopened.sidebar_rail.width() == RAIL_WIDTH
     reopened.close()
 
 
@@ -494,12 +643,13 @@ if __name__ == "__main__":
             window.show()
             test_appearance(window)
             test_markdown(window)
+            test_bubbles_resize(window)
             test_regeneration(window)
             test_button_styles(window)
+            test_chat_menus(window)
             test_history_panel_and_timestamps(window)
             window = app.StoneBot()
             window.show()
-            with patch.object(app, "save_history_width"):
-                test_composer_shortcuts(window)
-                window.close()
+            test_composer_shortcuts(window)
+            window.close()
     print("PASS: apariencia, Markdown, actividad, historial, botón Enviar, estados, ancho y horas.")
