@@ -1,5 +1,10 @@
 """Pruebas aisladas de clasificación de solicitudes, sin iniciar la interfaz Qt."""
+import sys
 import unittest
+from pathlib import Path
+
+# Permite ejecutar este archivo directamente desde la carpeta raíz del repositorio.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from request_routing import requests_external_tools, requests_local_read, requested_web_link
 
