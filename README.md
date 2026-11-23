@@ -134,7 +134,17 @@ Integraciones previstas y ejemplos (algunas ya están conectadas; consultar «Se
 
 StoneBot inicia el servidor STDIO del repositorio hermano `StoneWave/mcp_server.py` con el mismo entorno de Python. Usa la base personal existente en `%USERPROFILE%\.stonewave\memoria.db` y el namespace `default`. Si tu instalación ya usa otra base o namespace, inicia SB con los mismos valores de `STONEWAVE_DB` y `STONEWAVE_NAMESPACE`. La ruta de la base debe ser absoluta y el archivo debe existir.
 
-En el chat puedes decir «Recuerda que…» o preguntar por un dato de otra conversación. **+ → Memoria → Ver y corregir recuerdos…** lista los recuerdos vigentes e indica el ID para corregirlos u olvidarlos. La captura automática conserva su ajuste del menú **Memoria**. `/sueno memoria` solicita el sueño a StoneWave. Los respaldos, el sueño programado y la exportación de recuerdos a Obsidian se configuran en SW.
+En el chat puedes decir «Recuerda que…» o preguntar por un dato de otra conversación. **+ → Memoria → Ver y corregir recuerdos…** lista los recuerdos vigentes e indica el ID para corregirlos u olvidarlos. En el mismo menú puedes activar o desactivar **Guardar recuerdos automáticamente**.
+
+### Ajustes de StoneWave
+
+En **Configuración → Servidores MCP…**, selecciona **StoneWave · Integrado** para ver sus herramientas y para qué sirve cada una. Desde ahí, **Ajustes de StoneWave…** permite programar o ejecutar un sueño, activar las conclusiones, elegir su modelo local de Ollama, configurar la carpeta de Obsidian y usar un archivo compartido para sincronizar. **Aplicar cambios** reinicia la sesión integrada. El comando `/sueno memoria` también ejecuta un sueño manual.
+
+### Consultar sueños y notas desde el chat
+
+- «¿Cuándo fue el último sueño de SW?», «¿Qué recuerdos relacionó?» y «¿Qué conclusiones generó?» consultan la última ejecución registrada, tanto manual como automática.
+- «¿Qué notas creó o actualizó el último sueño en Obsidian?» muestra qué archivos cambió esa ejecución. Los sueños anteriores al registro detallado solo muestran su fecha.
+- «Dime las últimas 3 notas de Obsidian» consulta las notas recientes de la carpeta configurada y muestra su texto en el chat. Una pregunta de seguimiento como «¿Y qué escribiste ahí?» puede usar el modelo para identificar qué consulta hacer. SB obtiene el resultado por la conexión integrada de SW.
 
 El asistente usa únicamente SW para sus recuerdos personales. Si SW no está disponible, un guardado explícito informa el error. El historial, los proyectos, la identidad de SB y los resultados operativos de encargos conservan su almacenamiento de aplicación.
 
@@ -213,6 +223,10 @@ La configuración se guarda en `%USERPROFILE%\.stonebot\mcp_servers.json`. Usa l
 
 Cuando se solicita confirmación, **Permitir una vez** autoriza esa llamada y **Denegar** la cancela. **Permitir siempre** está disponible solo para herramientas declaradas de solo lectura que pasan las comprobaciones de seguridad. El permiso queda asociado al servidor y a la definición de la herramienta. Puedes revisarlo y revocarlo en **MCP → Permisos guardados…**. Las lecturas automáticas configuradas por nombre pasan por la misma comprobación. Las herramientas peligrosas o sin declaración de lectura piden confirmación en cada llamada. Los permisos automáticos requieren confiar en que el servidor describe sus herramientas con veracidad.
 
+### Revisar archivos de una carpeta local
+
+Con Desktop Commander habilitado, escribe en el mismo mensaje la ruta completa y qué quieres revisar. Por ejemplo, «Revisa los archivos de `C:\Proyectos\MiProyecto` y explica cómo se inicia». SB prioriza la lectura de la carpeta aunque el chat venía hablando de memoria y aplica los permisos de MCP. Si usas OpenRouter, el modelo recibe los resultados de las lecturas para redactar. Si falla el resumen después de que MCP obtuvo resultados, SB puede mostrar una revisión parcial con las rutas consultadas.
+
 Con el ejemplo activado, pide en el chat «Usa echo del servidor ejemplo con el texto hola». Las pruebas usan configuraciones temporales.
 
 ```powershell
@@ -226,7 +240,7 @@ El panel se probó con servidores de ejemplo mediante STDIO y Streamable HTTP en
 
 ## Historial de conversaciones
 
-Usa **☰** para mostrar u ocultar el panel izquierdo. Arrastra su borde derecho para ajustar el ancho hasta 480 píxeles. StoneBot lo guarda al cerrar la ventana. Los títulos largos se muestran con puntos suspensivos. Pasa el cursor sobre uno para leerlo completo. **Nuevo chat** inicia una conversación vacía y genera un título a partir del primer mensaje. Haz clic en una conversación para retomarla. El buscador filtra por título o contenido.
+Usa **☰** para mostrar u ocultar el panel izquierdo. Arrastra su borde derecho para ajustar el ancho hasta 480 píxeles. StoneBot lo guarda al cerrar la ventana. Los títulos largos se muestran con puntos suspensivos. Pasa el cursor sobre uno para leerlo completo. **Nuevo chat** inicia una conversación vacía y genera un título a partir del primer mensaje. **Recientes** muestra diez conversaciones al principio. Pulsa **Ver más conversaciones…** para ver otras diez. El buscador filtra por título o contenido.
 
 Las conversaciones se guardan en `%USERPROFILE%\.stonebot\conversations.sqlite3`. El historial almacena los mensajes del usuario y las respuestas visibles. Los permisos MCP se guardan en `mcp_permissions.sqlite3` y el diagnóstico en `diagnostics.log`. Los recuerdos personales de StoneBot se consultan mediante el MCP de StoneWave.
 
