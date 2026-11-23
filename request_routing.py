@@ -96,7 +96,7 @@ def requests_external_tools(messages):
         return True
     if (len(messages) < 3 or messages[-2]["role"] != "assistant" or messages[-3]["role"] != "user"
             or not explicit(messages[-3]["content"]) or not 0 < len(text) <= 240 or "\n" in text
-            or re.match(r"^(?:no\b|nunca\b|gracias\b|cambia\b)", text, re.I)):
+            or re.match(r"^(?:no\b|nunca\b|gracias\b|cambia\b|(?:mejor\s+)?(?:hablemos|hablar)\s+de\b|(?:mejor\s+)?(?:cambiemos|cambiar)\s+de\s+tema\b|otra\s+cosa\b)", text, re.I)):
         return False
     question = messages[-2]["content"].rstrip()
     return question.endswith("?") and bool(EXTERNAL_CLARIFICATION.search(question.rsplit("¿", 1)[-1]))
