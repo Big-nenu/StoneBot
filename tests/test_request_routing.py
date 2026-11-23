@@ -32,6 +32,16 @@ class RequestRoutingTests(unittest.TestCase):
                     user("Abre el enlace")]
         self.assertEqual(requested_web_link(messages), "https://example.com/readme")
 
+    def test_followup_preserves_external_request(self):
+        messages = [user("Busca documentación web"), assistant("¿Qué versión necesitas?"),
+                    user("La versión 3.14")]
+        self.assertTrue(requests_external_tools(messages))
+
+    def test_alternate_topic_change(self):
+        messages = [user("Busca documentación web"), assistant("¿Qué versión necesitas?"),
+                    user("Cambiemos de tema")]
+        self.assertFalse(requests_external_tools(messages))
+
     def test_new_topic_does_not_reuse_tool_request(self):
         messages = [user("Busca documentación web"), assistant("¿Qué versión necesitas?"),
                     user("Mejor hablemos de otra cosa")]
