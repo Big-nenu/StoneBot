@@ -1,4 +1,5 @@
 """Ciclo de vida de la bandeja con un perfil de StoneBot temporal."""
+import asyncio
 import sys
 import tempfile
 from contextlib import nullcontext
@@ -20,7 +21,7 @@ def test_tray(root, *, native=False):
     failures, events, windows, applications = [], [], [], []
 
     async def chat(worker):
-        await app.asyncio.to_thread(finish_turn.wait, 20)
+        await asyncio.to_thread(finish_turn.wait, 20)
         events.append("chat")
         return "Respuesta de prueba."
 

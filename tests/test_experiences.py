@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication
 from ollama import Message
 
 from test_mcp import example_stdio
+import turn_worker
 import app
 import mcp_client
 import stonebot_service as memory_service
@@ -30,7 +31,7 @@ def demo(root, stage, *, live=False):
     db = root / "experiences.sqlite3"
     payload = "prueba-privada-42"
     with (patch.object(mcp_client, "default_root", return_value=root),
-          patch.object(app, "automatic_memory_enabled", return_value=False),
+          patch.object(turn_worker, "automatic_memory_enabled", return_value=False),
           patch.object(memory_service, "DB_PATH", root / "memoria.db")):
         if stage == "registrar":
             command, *args = example_stdio()[1:]
@@ -68,7 +69,7 @@ def demo(root, stage, *, live=False):
         window.show()
         verified = []
         if live:
-            client = app.Client(host="http://localhost:11434", timeout=110)
+            client = turn_worker.Client(host="http://localhost:11434", timeout=110)
 
             def live_model(**call):
                 last = call["messages"][-1]
@@ -96,7 +97,7 @@ def demo(root, stage, *, live=False):
             assert window.thread is None and window.messages[-1]["role"] == "assistant"
             return window.messages[-1]["content"]
 
-        with patch.object(app, "Client", return_value=SimpleNamespace(chat=live_model if live else model)):
+        with patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=live_model if live else model)):
             if stage == "registrar":
                 if not live:
                     assert "devolvió" in send("Prueba el servidor demo con echo.")

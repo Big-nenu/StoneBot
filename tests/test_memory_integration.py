@@ -14,6 +14,7 @@ from ollama import Message
 
 from test_motor import CONC, F1, F2, make_engine
 import app
+import turn_worker
 import mcp_client
 from experiences import record_experience
 from identity import load_identity
@@ -51,7 +52,7 @@ with patch.object(mcp_client, 'default_root', return_value=Path(sys.argv[1])):
         assert json.loads(definitions) == reopened
         return SimpleNamespace(message=Message(role="assistant", content=f"Mi creador es {reopened['creador']}."))
 
-    with patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)):
+    with patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=chat)):
         answer = asyncio.run(app.Worker(prompt, identity_enabled=True).chat())
     assert "Luis Eduardo Hernández Vargas" in answer
 

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QInputDialog, QMenu, QMessa
 from test_mcp import example_stdio
 from test_chat_presentation import wait_for_turn
 import app
+import turn_worker
 import stonebot_service as memory_service
 import mcp_client
 from diagnostics import read_log
@@ -94,8 +95,8 @@ def test_history_and_gui(qt):
         return SimpleNamespace(message=Message(role="assistant", content="Seguimos con el layout."))
 
     with (patch.object(app.Worker, "chat", instrument),
-          patch.object(app, "load_servers", return_value={}),
-          patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)),
+          patch.object(turn_worker, "load_servers", return_value={}),
+          patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=chat)),
           patch.object(memory_service, "get_memory", side_effect=AssertionError("El historial no debe acceder a memoria."))):
         window.message.setPlainText("Continúa con el ejemplo")
         window.send.click()

@@ -18,6 +18,8 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMessageBox, QPushButton
 
 from test_chat_presentation import wait_for_turn
+import turn_worker
+from attachment_actions import attachment_save_request
 import app
 import attachments
 import mcp_client
@@ -118,14 +120,14 @@ def test_files(root):
     assert attachments.missing_pdf_pages("¿Puedes ver la página 1?", coverage)
     assert not attachments.missing_pdf_pages("Resume las páginas 5–8", coverage)
     recent = {"role": "user", "content": "", "attachments": [part]}
-    with patch.object(app, "Client", return_value=object()):
+    with patch.object(turn_worker, "Client", return_value=object()):
         worker = app.Worker([{**recent, "content": "¿Puedes ver la página 1?"}])
         assert "no están incluidas" in asyncio.run(worker.chat())
     client = SimpleNamespace(
         show=lambda model: SimpleNamespace(capabilities=["vision"]),
         chat=lambda **request: SimpleNamespace(message=SimpleNamespace(content="Veo la página 1.")),
     )
-    with patch.object(app, "Client", return_value=client):
+    with patch.object(turn_worker, "Client", return_value=client):
         worker = app.Worker([{**recent, "content": "Resume el tramo."}])
         assert "no se muestra" in asyncio.run(worker.chat())
     calls = []
@@ -135,7 +137,7 @@ def test_files(root):
         return SimpleNamespace(message=SimpleNamespace(content=f"Hallazgo {len(calls)}"))
 
     client.chat = review
-    with patch.object(app, "Client", return_value=client):
+    with patch.object(turn_worker, "Client", return_value=client):
         worker = app.Worker([{**recent, "content": "Resume el PDF.", "attachments": [full]}])
         assert asyncio.run(worker.chat()) == "Hallazgo 4"
     assert [len(item.get("images", [])) for item in calls] == [4, 4, 1, 0]
@@ -248,8 +250,8 @@ def test_window(root):
         assert [file["name"] for file in window.attachments.files] == ["figura.png", "documento.pdf", "notas.txt"]
         assert window.attachments.add_button.geometry().left() == window.message.geometry().left()
         assert window.attachments.add_button.geometry().top() > window.message.geometry().bottom()
-        with (patch.object(app, "Client", return_value=client),
-              patch.object(app, "load_servers", side_effect=AssertionError("Los adjuntos no pasan a MCP."))):
+        with (patch.object(turn_worker, "Client", return_value=client),
+              patch.object(turn_worker, "load_servers", side_effect=AssertionError("Los adjuntos no pasan a MCP."))):
             modes[2].trigger()
             assert window.reasoning_button.text() == "Activado"
             assert (window.attachments.add_button.geometry().left() < window.reasoning_button.geometry().left()
@@ -308,11 +310,11 @@ def test_window(root):
             assert window.chat_id is None and window.message.toPlainText() == "Consulta las conclusiones de la memoria: "
             assert History().messages(chat_id) == regenerated
 
-        with patch.object(app, "Client", return_value=SimpleNamespace(show=lambda model: SimpleNamespace(capabilities=[]))):
+        with patch.object(turn_worker, "Client", return_value=SimpleNamespace(show=lambda model: SimpleNamespace(capabilities=[]))):
             worker = app.Worker([regenerated[0]])
             try:
                 asyncio.run(worker.chat())
-            except app.TurnError as exc:
+            except turn_worker.TurnError as exc:
                 assert "no admite imágenes" in str(exc)
             else:
                 raise AssertionError("Debe indicar que el modelo carece de visión.")
@@ -338,8 +340,8 @@ def test_continue_after_unsupported_image(root):
         capabilities=["vision"] if model == "test/vision-model" else [],
     ))
     try:
-        with (patch.object(app, "OpenRouter", return_value=client),
-              patch.object(app, "automatic_memory_enabled", return_value=False)):
+        with (patch.object(turn_worker, "OpenRouter", return_value=client),
+              patch.object(turn_worker, "automatic_memory_enabled", return_value=False)):
             window.attachments.add_paths([str(root / "figura.png")])
             window.message.setPlainText("Mira esta captura.")
             window.enviar()
@@ -441,7 +443,7 @@ async def test_save_from_capture(root):
             if followup or split or local:
                 assert "Petición original del usuario" in request["messages"][-1]["content"]
             alias, = (tool.function.name for tool in request["tools"]
-                      if isinstance(tool, app.Tool) and tool.function.name != "inject_memory")
+                      if isinstance(tool, turn_worker.Tool) and tool.function.name != "inject_memory")
             tool_calls = [{"function": {"name": alias, "arguments": {"path": str(path), "content": payload}}}]
             if local:
                 assert alias == "save_markdown" and len(request["tools"]) == 1
@@ -452,7 +454,7 @@ async def test_save_from_capture(root):
         messages = [{"role": "system", "content": app.SYSTEM}, original]
         if split:
             messages[-1] = {"role": "user", "content": original["content"]}
-            with patch.object(app, "Client") as waiting:
+            with patch.object(turn_worker, "Client") as waiting:
                 assert await app.Worker(messages).chat() == "Envíame la captura o pega los comandos que quieres guardar."
                 waiting.return_value.chat.assert_not_called()
             messages.extend([{"role": "assistant", "content": "Envíame la captura o pega los comandos que quieres guardar."},
@@ -471,8 +473,8 @@ async def test_save_from_capture(root):
         worker.confirm_external = AsyncMock(return_value=approve)
         client = SimpleNamespace(chat=chat, show=lambda _: SimpleNamespace(capabilities=["vision"]))
         memory_count = len(memory)
-        with (patch.object(app, "Client", return_value=client), patch.object(app, "session_for", session),
-              patch.object(app, "load_servers", return_value={} if local else {"desktop": config})):
+        with (patch.object(turn_worker, "Client", return_value=client), patch.object(turn_worker, "session_for", session),
+              patch.object(turn_worker, "load_servers", return_value={} if local else {"desktop": config})):
             response = await worker.chat()
             if split and write and approve:
                 repeated = [*messages, {"role": "assistant", "content": response},
@@ -507,10 +509,10 @@ async def test_save_from_capture(root):
     response, _ = await worker.save_local_markdown(root, {"path": str(existing), "content": "Otro texto"})
     assert "ya existe" in response and existing.read_text(encoding="utf-8") == payload
     worker.confirm_external.assert_not_called()
-    assert app.attachment_save_request([original, {"role": "user", "content": "¿Qué sabes de Excel?"},
+    assert attachment_save_request([original, {"role": "user", "content": "¿Qué sabes de Excel?"},
                                         {"role": "assistant", "content": "Puedo leer hojas."},
                                         {"role": "user", "content": "sí"}]) is None
-    assert app.attachment_save_request([original, {"role": "user", "content": "No puedes usar Desktop Commander."}]) is None
+    assert attachment_save_request([original, {"role": "user", "content": "No puedes usar Desktop Commander."}]) is None
 
 
 def test_project_documents(root):
@@ -552,7 +554,7 @@ def test_project_documents(root):
             assert messages[-1]["attachments"] == [{"name": path.name, "project_document": document_id}]
             assert history.messages(window.chat_id)[0]["attachments"] == messages[-1]["attachments"]
             context = {"project": window.project, "project_document_path": history.project_document_path}
-            with (patch.object(app, "Client", return_value=client),
+            with (patch.object(turn_worker, "Client", return_value=client),
                   patch.object(app.Worker, "enabled_skills", return_value={})):
                 answer = asyncio.run(app.Worker(messages, **context).chat())
                 assert path.name in answer and code in calls[-1]["messages"][-1]["content"]
@@ -570,7 +572,7 @@ def test_project_documents(root):
                                     project_document_path=history.project_document_path)
                 try:
                     asyncio.run(worker.chat())
-                except app.TurnError as exc:
+                except turn_worker.TurnError as exc:
                     assert "ya no está vinculado" in str(exc)
                 else:
                     raise AssertionError("El documento debe pertenecer al proyecto del chat.")

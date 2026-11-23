@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication
 from ollama import Message, ResponseError
 
 import ai_provider
+import turn_worker
 import app
 import mcp_client
 from ai_settings_ui import AISettingsDialog
@@ -27,7 +28,7 @@ def test_openrouter():
     with patch.object(ai_provider.OpenRouter, "request") as request:
         request.return_value = {"choices": [{"message": {"tool_calls": calls}}]}
         client = ai_provider.OpenRouter()
-        result = client.chat(model=model, messages=messages, tools=[app.EXPERIENCES_TOOL])
+        result = client.chat(model=model, messages=messages, tools=[turn_worker.EXPERIENCES_TOOL])
         payload = request.call_args.kwargs["payload"]
         assert payload["model"] == model and payload["tools"][0]["function"]["name"] == "query_experiences"
         assert result.message.tool_calls[0].function.arguments == {"busqueda": "prueba"}
@@ -50,7 +51,7 @@ def test_openrouter():
 def test_openrouter_retries_textual_tool_call():
     client = ai_provider.OpenRouter()
     messages = [{"role": "user", "content": "Consulta las notas de StoneWave."}]
-    tools = [app.ACTIVITY_TOOLS["recent_notes"]]
+    tools = [turn_worker.ACTIVITY_TOOLS["recent_notes"]]
     text = "<tool_call> <function=recent_notes> <parameter=limit> 1 </parameter> </function> </tool_call>"
     malformed = {"choices": [{"message": {"content": text}}]}
     call = {"id": "call_recovered", "type": "function", "function": {
@@ -98,7 +99,7 @@ def test_memory_in_chat():
     results = [Message(role="assistant", tool_calls=[{"function": {"name": "update_memory", "arguments": {
         "fact_id": 4, "new_content": "Dato corregido",
     }}}]), Message(role="assistant", content="Listo")]
-    with (patch.object(app, "Client") as ollama, patch.object(app, "load_servers", return_value={}),
+    with (patch.object(turn_worker, "Client") as ollama, patch.object(turn_worker, "load_servers", return_value={}),
           patch.object(app.Worker, "enabled_skills", return_value={})):
         ollama.return_value.chat.side_effect = [SimpleNamespace(message=result) for result in results]
         assert asyncio.run(turn.chat()) == "Listo"
@@ -107,7 +108,7 @@ def test_memory_in_chat():
 
     memory.entries.reset_mock()
     cloud = app.Worker(messages, memory=memory, ai=ai_provider.AISettings("openrouter", "fake/model"))
-    with (patch.object(app, "OpenRouter") as openrouter, patch.object(app, "load_servers", return_value={}),
+    with (patch.object(turn_worker, "OpenRouter") as openrouter, patch.object(turn_worker, "load_servers", return_value={}),
           patch.object(app.Worker, "enabled_skills", return_value={})):
         openrouter.return_value.chat.return_value = SimpleNamespace(message=results[-1])
         assert asyncio.run(cloud.chat()) == "Listo"

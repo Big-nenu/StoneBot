@@ -331,7 +331,10 @@ Para reiniciar la memoria experimental, cierra StoneBot y mueve su `memoria.db` 
 StoneBot/
 ├── README.md
 ├── README-Hermes.md
-├── app.py                # interfaz PySide6 y chat con Ollama
+├── app.py                # arranque y ventana principal
+├── turn_worker.py        # ejecución del turno de chat
+├── request_routing.py    # elección de fuente para el turno
+├── attachment_actions.py # guardado solicitado desde el chat
 ├── stonewave_memory.py   # cliente MCP de la memoria personal
 ├── stonebot_service.py   # acceso de la CLI a la base experimental
 ├── identity.py           # identidad declarada de StoneBot en SQLite local
@@ -344,7 +347,20 @@ StoneBot/
     └── 01-primer-experimento-que-ve.md
 ```
 
-El núcleo y la GUI todavía comparten un archivo. La estructura futura se decidirá conforme avance el prototipo.
+### Dónde buscar cuando quieras cambiar algo
+
+| Si quieres cambiar… | Empieza aquí |
+| --- | --- |
+| El menú, la bandeja o cómo se conectan las partes de la ventana | [`app.py`](app.py) |
+| El cuadro de mensaje, las burbujas o el panel de actividad | [`chat_ui.py`](chat_ui.py). Para colores y temas, [`appearance.py`](appearance.py). |
+| La lista de conversaciones o cómo se guardan | [`history_ui.py`](history_ui.py) para la lista y [`history.py`](history.py) para el almacenamiento. |
+| Cuándo SB interpreta que quieres abrir un enlace, leer una carpeta o usar herramientas externas | [`request_routing.py`](request_routing.py) |
+| Cómo SB procesa un mensaje, ejecuta herramientas o termina un turno | [`turn_worker.py`](turn_worker.py) |
+| Cómo se reciben adjuntos o se pide guardar su contenido | [`attachments.py`](attachments.py) para la lectura y [`attachment_actions.py`](attachment_actions.py) para el guardado. |
+| Ollama, OpenRouter o el selector de modelos | [`ai_provider.py`](ai_provider.py) para la conexión y [`ai_settings_ui.py`](ai_settings_ui.py) para el selector. |
+| Qué muestra SB sobre los sueños y las notas de SW | [`stonewave_activity.py`](stonewave_activity.py). La conexión MCP está en [`stonewave_memory.py`](stonewave_memory.py) y los ajustes en [`stonewave_settings_ui.py`](stonewave_settings_ui.py). |
+| Servidores MCP, permisos o skills | [`mcp_client.py`](mcp_client.py) para servidores, [`mcp_permissions.py`](mcp_permissions.py) para permisos y [`local_skills.py`](local_skills.py) para skills. |
+| Pausar, reanudar o registrar el avance de un encargo | [`tasks.py`](tasks.py) para su estado y [`turn_worker.py`](turn_worker.py) para su ejecución. |
 
 ## Prototipo anterior con memoria local (15 de noviembre de 2026)
 

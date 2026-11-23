@@ -10,6 +10,7 @@ from zipfile import ZipFile
 from PySide6.QtWidgets import QApplication
 
 import app
+import turn_worker
 import attachments
 import mcp_client
 from history import History
@@ -111,7 +112,7 @@ def test_chat(paths):
         return SimpleNamespace(message=SimpleNamespace(content="375, en Presupuesto.xlsx, hoja Totales, celda E7."))
 
     try:
-        with patch.object(app, "Client", return_value=SimpleNamespace(chat=answer)):
+        with patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=answer)):
             window.attachments.add_paths(paths)
             assert [file["name"] for file in window.attachments.files] == [path.name for path in paths]
             window.message.setPlainText("¿Dónde aparece el importe?")
@@ -161,7 +162,7 @@ def test_large_workbook(root):
         assert "hoja «Totales», fila 7" in source and "9175" in source and "Producto" not in source
         return SimpleNamespace(message=SimpleNamespace(content="9175 en Totales, F7."))
 
-    with patch.object(app, "Client", return_value=SimpleNamespace(chat=answer)):
+    with patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=answer)):
         response = asyncio.run(app.Worker(messages).chat())
     assert "**Alcance:**" in response and "9175" in response
 

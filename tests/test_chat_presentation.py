@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QApplication, QInputDialog, QLabel, QMessageBox, Q
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
+import turn_worker
 import mcp_client
 from chat_markdown import CodeCard
 from appearance import (
@@ -328,8 +329,8 @@ def test_regeneration(window):
         assert db.messages(chat) == before
         return SimpleNamespace(message=Message(role="assistant", content="Respuesta nueva", thinking="Traza del modelo"))
 
-    with (patch.object(app, "load_servers", return_value={}),
-          patch.object(app, "Client", return_value=SimpleNamespace(chat=reply))):
+    with (patch.object(turn_worker, "load_servers", return_value={}),
+          patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=reply))):
         window.regenerate(2, "Pregunta editada")
         pending = window.activity_panel
         assert window.transcript.itemAt(window.transcript.count() - 2).widget() is pending
@@ -349,8 +350,8 @@ def test_regeneration(window):
     assert window.activity_panel.reasoning.isVisible()
     assert "Esperando" in window.activity_panel.events.toPlainText()
 
-    with (patch.object(app, "load_servers", return_value={}),
-          patch.object(app, "Client", return_value=SimpleNamespace(
+    with (patch.object(turn_worker, "load_servers", return_value={}),
+          patch.object(turn_worker, "Client", return_value=SimpleNamespace(
               chat=lambda **kw: SimpleNamespace(message=Message(role="assistant", content=""))))):
         window.regenerate(2, "Edición sin respuesta")
         wait_for_turn(window)

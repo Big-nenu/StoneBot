@@ -72,7 +72,7 @@ def test_chat_reads_activity_without_a_model():
     def ask(text):
         return asyncio.run(Worker([{"role": "user", "content": text}], memory=memory, ai=ai).chat())
 
-    with patch("app.OpenRouter", side_effect=AssertionError("La actividad se consulta localmente")):
+    with patch("turn_worker.OpenRouter", side_effect=AssertionError("La actividad se consulta localmente")):
         assert "21/11/2026" in ask("¿Cuándo fue el último sueño de SW?")
         assert "Recuerdo B" in ask("¿Qué recuerdos relacionó?")
         assert "Conclusión C" in ask("¿Qué conclusiones generó?")
@@ -102,7 +102,7 @@ def test_chat_reads_recent_notes_without_a_model():
     def ask(text):
         return asyncio.run(Worker(messages(text), memory=memory, ai=ai).chat())
 
-    with patch("app.OpenRouter", side_effect=AssertionError("Las notas se leen localmente")):
+    with patch("turn_worker.OpenRouter", side_effect=AssertionError("Las notas se leen localmente")):
         answer = ask("¿Me puedes decir las últimas notas que apuntaste en Obsidian?")
         assert "conclusiones/aprende.md" in answer and "Ejercicios semanales" in answer
         memory.call.assert_awaited_with("recent_notes", limit=5)
@@ -133,8 +133,8 @@ def test_model_routes_contextual_stonewave_reads_locally():
                 {"role": "user", "content": "¿Y qué fue lo último que escribiste ahí?"}]
     ai = AISettings("openrouter", "test/model", cloud_memory=False)
 
-    with (patch("app.OpenRouter") as provider, patch("app.Worker.enabled_skills", return_value={}),
-          patch("app.load_servers", side_effect=AssertionError("La pregunta no requiere MCP externo"))):
+    with (patch("turn_worker.OpenRouter") as provider, patch("app.Worker.enabled_skills", return_value={}),
+          patch("turn_worker.load_servers", side_effect=AssertionError("La pregunta no requiere MCP externo"))):
         client = provider.return_value
         client.chat.return_value = SimpleNamespace(message=Message(role="assistant", tool_calls=[
             {"function": {"name": "recent_notes", "arguments": {"limit": 1, "folder": "recuerdos"}}},

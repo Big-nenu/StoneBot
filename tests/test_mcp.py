@@ -16,6 +16,8 @@ import mcp
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 from ollama import Message
 
+import turn_worker
+import request_routing
 import app
 import mcp_client
 from ai_provider import AISettings
@@ -34,12 +36,12 @@ def test_reads_link_referenced_in_chat():
     history = [{"role": "system", "content": app.SYSTEM},
                {"role": "assistant", "content": f"El repositorio es **{url}**. [README]({url})."}]
     question = {"role": "user", "content": "no puedes entrar al Enlace porque ahi viene el readme de que es"}
-    assert app.requested_web_link([*history, question]) == url
-    assert app.requested_web_link([*history, {**question, "content": "No abras el enlace."}]) is None
-    assert app.requested_web_link([*history, {**question, "content": "No puedes entrar al enlace porque es privado."}]) is None
-    assert app.requested_web_link([*history, {**question, "content": "El enlace tiene un README."}]) is None
+    assert request_routing.requested_web_link([*history, question]) == url
+    assert request_routing.requested_web_link([*history, {**question, "content": "No abras el enlace."}]) is None
+    assert request_routing.requested_web_link([*history, {**question, "content": "No puedes entrar al enlace porque es privado."}]) is None
+    assert request_routing.requested_web_link([*history, {**question, "content": "El enlace tiene un README."}]) is None
     ambiguous = {"role": "assistant", "content": f"{url} o https://example.test/otro"}
-    assert app.requested_web_link([ambiguous, question]) == ""
+    assert request_routing.requested_web_link([ambiguous, question]) == ""
 
     fetch = Tool(name="web_fetch_exa", inputSchema={"type": "object", "required": ["urls"],
                 "properties": {"urls": {"type": "array", "items": {"type": "string"}}}})
@@ -59,8 +61,8 @@ def test_reads_link_referenced_in_chat():
         assert url in kwargs["messages"][-1]["content"] and "README: descripción sintética" in kwargs["messages"][-1]["content"]
         return SimpleNamespace(message=Message(role="assistant", content="Resumen del README."))
 
-    with (patch.object(app, "load_servers", return_value={"exa": {"enabled": True, "read_tools": []}}),
-          patch.object(app, "session_for", connected), patch.object(app, "OpenRouter") as client,
+    with (patch.object(turn_worker, "load_servers", return_value={"exa": {"enabled": True, "read_tools": []}}),
+          patch.object(turn_worker, "session_for", connected), patch.object(turn_worker, "OpenRouter") as client,
           patch.object(app.Worker, "enabled_skills", return_value={})):
         client.return_value.chat.side_effect = summarize
         worker = app.Worker([*history, question], ai=AISettings("openrouter", "nvidia/nemotron-3.5-lightning:free"))
@@ -93,8 +95,8 @@ def test_cloud_chat_keeps_mcp_out_of_conversation_and_stops_repeated_calls():
         return app.Worker([{"role": "system", "content": app.SYSTEM}, {"role": "user", "content": text}], ai=ai)
 
     config = {"exa": {"enabled": True, "read_tools": []}}
-    with (patch.object(app, "load_servers", return_value=config) as load,
-          patch.object(app, "session_for", connected), patch.object(app, "OpenRouter") as client,
+    with (patch.object(turn_worker, "load_servers", return_value=config) as load,
+          patch.object(turn_worker, "session_for", connected), patch.object(turn_worker, "OpenRouter") as client,
           patch.object(app.Worker, "enabled_skills", return_value={})):
         def conversation(**kwargs):
             assert all(not spec.function.name.startswith("mcp_") for spec in kwargs["tools"])
@@ -126,12 +128,12 @@ def test_cloud_chat_keeps_mcp_out_of_conversation_and_stops_repeated_calls():
         research.confirm_external.assert_awaited_once()
         session.call_tool.assert_awaited_once_with("web_search_exa", {"query": "PySide6", "max": 1})
 
-    assert not app.requests_external_tools([{"role": "user", "content": "Busca en mi memoria mis archivos de GitHub."}])
+    assert not request_routing.requests_external_tools([{"role": "user", "content": "Busca en mi memoria mis archivos de GitHub."}])
     followup = [{"role": "user", "content": "¿Me puedes ayudar a buscar en internet sobre Qt?"},
                 {"role": "assistant", "content": "¿Qué versión?"}, {"role": "user", "content": "La 6.10"}]
-    assert app.requests_external_tools(followup)
+    assert request_routing.requests_external_tools(followup)
     followup[1]["content"] = "Encontré la versión. ¿Quieres hablar de algo más?"
-    assert not app.requests_external_tools(followup)
+    assert not request_routing.requests_external_tools(followup)
 
 
 def test_switch_from_memory_to_local_project():
@@ -141,10 +143,10 @@ def test_switch_from_memory_to_local_project():
                 {"role": "assistant", "content": "¿Quieres que revisemos los recuerdos de tu memoria?"},
                 {"role": "user", "content": f'No, ahorita así lo dejamos.\nOtra duda, esta es la ruta de un proyecto:\n'
                                             f'"{path}"\n¿Puedes entrar y revisar de qué era ese proyecto?'}]
-    assert app.requests_external_tools(messages)
-    assert not app.requests_local_read([{"role": "user", "content": f'Mi proyecto está en "{path}".'}])
-    assert not app.requests_local_read([{"role": "user", "content": f'No abras "{path}".'}])
-    assert not app.requests_local_read([{"role": "user", "content": f'Busca en mi memoria la ruta "{path}".'}])
+    assert request_routing.requests_external_tools(messages)
+    assert not request_routing.requests_local_read([{"role": "user", "content": f'Mi proyecto está en "{path}".'}])
+    assert not request_routing.requests_local_read([{"role": "user", "content": f'No abras "{path}".'}])
+    assert not request_routing.requests_local_read([{"role": "user", "content": f'Busca en mi memoria la ruta "{path}".'}])
 
     config = {"enabled": True, "read_tools": [], "transport": "stdio", "command": "npx",
               "args": ["@wonderwhy-er/desktop-commander"]}
@@ -183,11 +185,11 @@ def test_switch_from_memory_to_local_project():
 
     ai = AISettings("openrouter", "test/model", cloud_memory=True)
     memory = SimpleNamespace(entries=AsyncMock(), call=AsyncMock())
-    with (patch.object(app, "load_servers", return_value={"desktop": config, "exa": {
+    with (patch.object(turn_worker, "load_servers", return_value={"desktop": config, "exa": {
               "enabled": True, "read_tools": [], "transport": "http",
           }}) as load,
-          patch.object(app, "session_for", connected),
-          patch.object(app.OpenRouter, "request", side_effect=chat) as request,
+          patch.object(turn_worker, "session_for", connected),
+          patch.object(turn_worker.OpenRouter, "request", side_effect=chat) as request,
           patch.object(app.Worker, "enabled_skills", return_value={})):
         worker = app.Worker(messages, ai=ai, memory=memory)
         worker.confirm_external = AsyncMock(return_value=True)
@@ -286,10 +288,10 @@ def test_context7_results_are_used_to_finish_after_empty_ollama_response():
     worker.finished.connect(outputs.append)
     worker.error.connect(errors.append)
     confirm = AsyncMock(return_value=True)
-    with (patch.object(app, "load_servers", return_value={"context7": {"enabled": True, "read_tools": []}}),
-          patch.object(app, "session_for", connected),
+    with (patch.object(turn_worker, "load_servers", return_value={"context7": {"enabled": True, "read_tools": []}}),
+          patch.object(turn_worker, "session_for", connected),
           patch.object(worker, "enabled_skills", return_value={}),
-          patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)),
+          patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=chat)),
           patch.object(worker, "confirm_external", confirm)):
         worker.run()
     assert not errors, errors
@@ -343,10 +345,10 @@ def test_empty_reply_retries_selection_across_active_servers():
     confirm = AsyncMock(return_value=True)
     servers = {name: {"enabled": name != "disabled", "read_tools": []}
                for name in ("docs", "offline", "web", "disabled")}
-    with (patch.object(app, "load_servers", return_value=servers),
-          patch.object(app, "session_for", connected),
+    with (patch.object(turn_worker, "load_servers", return_value=servers),
+          patch.object(turn_worker, "session_for", connected),
           patch.object(worker, "enabled_skills", return_value={}),
-          patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)),
+          patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=chat)),
           patch.object(worker, "confirm_external", confirm)):
         worker.run()
     assert not errors and outputs == ["Encontré una fuente."], errors
@@ -422,7 +424,7 @@ def test_stdio_chat_and_permissions():
             worker.finished.connect(outputs.append)
             worker.error.connect(errors.append)
             confirm = AsyncMock(side_effect=[False, True])
-            with (patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)),
+            with (patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=chat)),
                   patch("stonebot_engine.safety.protected_paths", return_value=[protected]),
                   patch.object(worker, "confirm_external", confirm)):
                 worker.run()
@@ -448,7 +450,7 @@ def test_stdio_chat_and_permissions():
                     reply = Message(role="assistant", content="Excluida")
                 return SimpleNamespace(message=reply)
 
-            with (patch.object(app, "Client", return_value=SimpleNamespace(chat=stale_call)),
+            with (patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=stale_call)),
                   patch.object(worker, "confirm_external", confirm)):
                 worker.run()
             assert not errors, errors

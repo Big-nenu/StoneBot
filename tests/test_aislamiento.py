@@ -217,6 +217,7 @@ def test_operaciones_auxiliares_bloquean_rutas_protegidas():
 def test_worker_usa_stonewave_sin_abrir_la_base_local():
     import asyncio
     import app
+    import turn_worker
     import stonebot_service
     from mcp.types import CallToolResult, TextContent, Tool
     from ollama import Message
@@ -248,14 +249,14 @@ def test_worker_usa_stonewave_sin_abrir_la_base_local():
         return await app.Worker([{"role": "system", "content": app.SYSTEM},
                                  {"role": "user", "content": text}], memory=memory).chat()
 
-    with (patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)),
-          patch.object(app, "load_servers", return_value={}),
+    with (patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=chat)),
+          patch.object(turn_worker, "load_servers", return_value={}),
           patch.object(stonebot_service, "get_memory", side_effect=AssertionError("Base local"))):
         assert "Guardada en StoneWave" in asyncio.run(turn(f"Recuerda que {remembered}"))
         assert asyncio.run(turn("¿Qué sabes del telescopio?")) == remembered
         memory.call.assert_awaited_once_with("get_context", token_budget=600)
         remote.call_tool.assert_awaited_once_with("inject_memory", {"content": remembered})
-        memory.entries.side_effect = app.MemoryUnavailable("StoneWave no está disponible.")
+        memory.entries.side_effect = turn_worker.MemoryUnavailable("StoneWave no está disponible.")
         assert "no está disponible" in asyncio.run(turn(f"Recuerda que {remembered}"))
         remote.call_tool.assert_awaited_once()
 

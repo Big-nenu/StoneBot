@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app
+import turn_worker
 import local_skills
 import mcp_client
 from skills_ui import SkillsDialog
@@ -85,7 +86,7 @@ def test_progressive():
         return SimpleNamespace(message=Message(role="assistant", content="56"))
 
     local_skills.set_enabled(EXAMPLE, True)
-    with (patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)),
+    with (patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=chat)),
           patch.object(local_skills, "read_body", wraps=local_skills.read_body) as loaded,
           patch.object(app.StoneWaveMemory, "call", side_effect=AssertionError("La Skill no guarda memoria."))):
         assert turn("¿Cuánto es 7 por 8?") == "56"

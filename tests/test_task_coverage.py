@@ -15,6 +15,7 @@ from ollama import Message
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import turn_worker
 import app
 import mcp_client
 from experiences import ranking_evidence, ranking_scope
@@ -58,7 +59,7 @@ async def check(root, desktop):
     task = new_task(objective)
     chat_id = history.append(None, "user", objective, task=task)
     approvals = []
-    real_audit = app.Client(host="http://localhost:11434", timeout=60) if desktop else None
+    real_audit = turn_worker.Client(host="http://localhost:11434", timeout=60) if desktop else None
 
     async def approve(server, tool, arguments):
         approvals.append(Path(arguments["path"]))
@@ -118,12 +119,12 @@ async def check(root, desktop):
         if events is not None:
             worker.activity.connect(events.append)
         model = model_for(paths, audit=audit, repair=repair, verified=verified, resume_count=resume_count)
-        with (patch.object(app, "Client", return_value=SimpleNamespace(chat=model)),
+        with (patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=model)),
               patch.object(worker, "confirm_external", side_effect=approve),
-              nullcontext() if desktop else patch.object(app, "session_for", fake_session)):
+              nullcontext() if desktop else patch.object(turn_worker, "session_for", fake_session)):
             try:
                 answer = await worker.chat()
-            except app.TaskPaused as exc:
+            except turn_worker.TaskPaused as exc:
                 answer = worker.task_reply("paused", str(exc))
             finally:
                 if pool is not None:
@@ -169,7 +170,7 @@ async def check(root, desktop):
     inventory_chat = history.append(None, "user", inventory["objective"], task=inventory)
     activity = []
     with (patch("folder_inventory.downloads_folder", return_value=folder),
-          patch.object(app, "Client", side_effect=AssertionError("La clasificación local no requiere Ollama."))):
+          patch.object(turn_worker, "Client", side_effect=AssertionError("La clasificación local no requiere Ollama."))):
         answer = await run_inventory(inventory, inventory["objective"], History(), inventory_chat, activity)
     assert inventory["status"] == "completed"
     assert any("Experiencias recuperadas" in event and "mcp:" in event for event in activity)
@@ -195,7 +196,7 @@ async def check(root, desktop):
         # Las comillas delimitan la ruta cuando la petición termina con puntuación.
         learned = new_task(natural)
         events = []
-        with patch.object(app, "is_desktop_commander", return_value=True):
+        with patch.object(turn_worker, "is_desktop_commander", return_value=True):
             await run_turn(learned, natural, [nested, biggest], audit=True, verified=True, events=events)
         assert learned["status"] == "completed" and len(learned["steps"]) == 2
         assert any("Método elegido por experiencia · MCP" in event for event in events)

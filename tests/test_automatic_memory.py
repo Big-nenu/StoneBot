@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import app
+import turn_worker
 import automatic_memory
 import mcp_client
 from chat_preferences import automatic_memory_enabled, save_automatic_memory
@@ -75,7 +76,7 @@ def test_invalid_json_does_not_save_memories():
 
     memory = SimpleNamespace(call=AsyncMock())
     with (patch.object(automatic_memory, "Client") as factory,
-          patch.object(app, "automatic_memory_enabled", return_value=True),
+          patch.object(turn_worker, "automatic_memory_enabled", return_value=True),
           patch.object(app.Worker, "chat", new=AsyncMock(return_value="Respuesta de prueba."))):
         factory.return_value.chat.side_effect = [reply("respuesta de texto"), reply('{"recuerdos":[true]}')]
         worker = app.Worker([MESSAGE], capture_memory=True, memory=memory)

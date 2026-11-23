@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import turn_worker
 import app
 import mcp_client
 from experiences import task_results
@@ -87,7 +88,7 @@ def stage(root, phase, live):
             {"function": {"name": alias, "arguments": {"text": "lectura"}}}
         ]))
 
-    actual = app.Client(host="http://localhost:11434", timeout=120) if live else None
+    actual = turn_worker.Client(host="http://localhost:11434", timeout=120) if live else None
 
     def chat(**call):
         if actual is None:
@@ -98,8 +99,8 @@ def stage(root, phase, live):
         return response
 
     with (patch.object(mcp_client, "default_root", return_value=root),
-          patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)),
-          patch.object(app, "automatic_memory_enabled", return_value=False),
+          patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=chat)),
+          patch.object(turn_worker, "automatic_memory_enabled", return_value=False),
           patch.object(app.StoneWaveMemory, "entries", return_value={}),
           patch.object(app.StoneWaveMemory, "call", return_value="Preferencia de prueba")):
         window = app.StoneBot()
@@ -195,8 +196,8 @@ def inventory_stage(root, phase):
     assert not app.is_ranking_request("Busca los cinco archivos más pesados usando Desktop Commander.")
     with (patch.object(mcp_client, "default_root", return_value=root),
           patch("folder_inventory.downloads_folder", return_value=root / "archivos"),
-          patch.object(app, "automatic_memory_enabled", return_value=False),
-          patch.object(app, "Client", side_effect=AssertionError("La clasificación local no necesita Ollama."))):
+          patch.object(turn_worker, "automatic_memory_enabled", return_value=False),
+          patch.object(turn_worker, "Client", side_effect=AssertionError("La clasificación local no necesita Ollama."))):
         window = app.StoneBot()
         try:
             first = phase == "inventory"

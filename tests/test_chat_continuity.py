@@ -9,6 +9,7 @@ from ollama import Message
 from PySide6.QtCore import QEvent, QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication, QInputDialog
 
+import turn_worker
 import app
 import mcp_client
 from test_mcp import example_stdio
@@ -48,7 +49,7 @@ def check_continuity(live):
         challenge = "LIMA-631"
         objective = ("Verifica el eco con la herramienta MCP del servidor ejemplo. Necesitas una clave que "
                      "todavía no te he dado. Pídeme la clave y, cuando la tenga, usa la herramienta para verificarla.")
-        actual = app.Client(host="http://localhost:11434", timeout=90) if live else None
+        actual = turn_worker.Client(host="http://localhost:11434", timeout=90) if live else None
         calls = []
 
         def chat(**kwargs):
@@ -71,7 +72,7 @@ def check_continuity(live):
                 reply = Message(role="assistant", content=f"Eco confirmado. Recibí {challenge}.")
             return SimpleNamespace(message=reply)
 
-        with (patch.object(app, "Client", return_value=SimpleNamespace(chat=chat)),
+        with (patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=chat)),
               patch.object(app.StoneWaveMemory, "entries", return_value={}),
               patch.object(app.Worker, "enabled_skills", return_value={})):
             window = app.StoneBot()
@@ -101,6 +102,6 @@ def check_continuity(live):
 
 if __name__ == "__main__":
     qt = QApplication([])
-    assert app.model_context(48_164) == 32_768
+    assert turn_worker.model_context(48_164) == 32_768
     check_continuity("--live" in sys.argv)
     print("PASS: aclaración, reapertura, preferencias de idioma y MCP STDIO.")
