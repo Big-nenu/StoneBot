@@ -29,7 +29,6 @@ from mcp_setup import is_setup_request
 from mcp_ui import McpDialog
 from memory_ui import MemoryDialog
 from projects_ui import ProjectDialog, ProjectPage
-from skills_ui import SkillsDialog
 from stonebot_engine.safety import check_path
 from stonewave_memory import StoneWaveMemory
 from tasks import LABELS as TASK_LABELS, new_task, step_caption, upgrade_task
@@ -267,7 +266,7 @@ class StoneBot(QMainWindow):
         self.skills_menu.setObjectName("chatMenu")
         self.skills_menu.aboutToShow.connect(self.refresh_skills_menu)
         menu.addAction("Instrucciones generales…", self.open_instructions)
-        self.settings_menu.addAction("Servidores MCP…", self.open_mcp)
+        self.settings_menu.addAction("Extensiones…", self.open_mcp)
         self.settings_menu.addMenu(self.memory_menu)
         self.settings_menu.addMenu(self.skills_menu)
         self.settings_menu.aboutToShow.connect(self.update_composer_menu)
@@ -795,17 +794,13 @@ class StoneBot(QMainWindow):
         return self.mcp_dialog
 
     def open_mcp(self):
-        manager = self.mcp_manager()
-        manager.reload()
-        manager.exec()
+        self.mcp_manager().open_section()
 
     def refresh_mcp_menu(self):
         self.mcp_manager().quick_switches(self.mcp_menu, self.show_problem, idle=self.thread is None)
 
     def open_skills(self):
-        dialog = SkillsDialog(self, self.appearance)
-        dialog.exec()
-        dialog.deleteLater()
+        self.mcp_manager().open_section(skills=True)
 
     def open_instructions(self):
         try:

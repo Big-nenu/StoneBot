@@ -227,12 +227,14 @@ def test_worker_usa_stonewave_sin_abrir_la_base_local():
     tool = Tool(name="inject_memory", inputSchema={
         "type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"],
     })
-    remote = SimpleNamespace(call_tool=AsyncMock(return_value=CallToolResult(
-        content=[TextContent(type="text", text="📍 NUEVA ONDA.")],
-    )))
+    query = Tool(name="query_memory", inputSchema={"type": "object"})
+    remote = SimpleNamespace(call_tool=AsyncMock(side_effect=[
+        CallToolResult(content=[TextContent(type="text", text=result)])
+        for result in ("📍 NUEVA ONDA.", remembered)
+    ]))
     memory = SimpleNamespace(
-        entries=AsyncMock(return_value={tool.name: (remote, "stonewave", tool, False)}),
-        call=AsyncMock(return_value=remembered),
+        entries=AsyncMock(return_value={item.name: (remote, "stonewave", item, False) for item in (tool, query)}),
+        call=AsyncMock(),
     )
 
     def chat(**kwargs):
@@ -242,8 +244,15 @@ def test_worker_usa_stonewave_sin_abrir_la_base_local():
             return SimpleNamespace(message=Message(role="assistant", tool_calls=[{
                 "function": {"name": "inject_memory", "arguments": {"content": remembered}},
             }]))
-        assert remembered in messages[0]["content"]
-        return SimpleNamespace(message=Message(role="assistant", content=remembered))
+        assert remembered not in messages[0]["content"]
+        if isinstance(messages[-1], dict) and messages[-1]["role"] == "tool":
+            assert messages[-1]["content"] == remembered
+            return SimpleNamespace(message=Message(role="assistant", content=remembered))
+        if "telescopio" in messages[-1]["content"]:
+            return SimpleNamespace(message=Message(role="assistant", tool_calls=[{
+                "function": {"name": "query_memory", "arguments": {"text": "telescopio"}},
+            }]))
+        return SimpleNamespace(message=Message(role="assistant", content="Hablemos de otra cosa."))
 
     async def turn(text):
         return await app.Worker([{"role": "system", "content": app.SYSTEM},
@@ -253,12 +262,15 @@ def test_worker_usa_stonewave_sin_abrir_la_base_local():
           patch.object(turn_worker, "load_servers", return_value={}),
           patch.object(stonebot_service, "get_memory", side_effect=AssertionError("Base local"))):
         assert "Guardada en StoneWave" in asyncio.run(turn(f"Recuerda que {remembered}"))
-        assert asyncio.run(turn("¿Qué sabes del telescopio?")) == remembered
-        memory.call.assert_awaited_once_with("get_context", token_budget=600)
-        remote.call_tool.assert_awaited_once_with("inject_memory", {"content": remembered})
+        assert asyncio.run(turn("¿Qué recuerdas del telescopio?")) == remembered
+        assert asyncio.run(turn("Cuéntame un chiste.")) == "Hablemos de otra cosa."
+        memory.call.assert_not_awaited()
+        assert remote.call_tool.await_count == 2
+        remote.call_tool.assert_any_await("inject_memory", {"content": remembered})
+        remote.call_tool.assert_any_await("query_memory", {"text": "telescopio"})
         memory.entries.side_effect = turn_worker.MemoryUnavailable("StoneWave no está disponible.")
         assert "no está disponible" in asyncio.run(turn(f"Recuerda que {remembered}"))
-        remote.call_tool.assert_awaited_once()
+        assert remote.call_tool.await_count == 2
 
 
 def test_auditoria_en_ejecucion_ningun_open_ni_sqlite_toca_rutas_protegidas():

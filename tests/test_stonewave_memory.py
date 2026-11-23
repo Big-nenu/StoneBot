@@ -136,14 +136,21 @@ def test_model_routes_contextual_stonewave_reads_locally():
     with (patch("turn_worker.OpenRouter") as provider, patch("app.Worker.enabled_skills", return_value={}),
           patch("turn_worker.load_servers", side_effect=AssertionError("La pregunta no requiere MCP externo"))):
         client = provider.return_value
-        client.chat.return_value = SimpleNamespace(message=Message(role="assistant", tool_calls=[
+        decision = SimpleNamespace(message=Message(role="assistant", tool_calls=[
+            {"function": {"name": "elegir_fuente", "arguments": {"fuente": "memoria"}}},
+        ]))
+        notes_reply = SimpleNamespace(message=Message(role="assistant", tool_calls=[
             {"function": {"name": "recent_notes", "arguments": {"limit": 1, "folder": "recuerdos"}}},
         ]))
+        client.chat.side_effect = [decision, notes_reply]
         turn = Worker(messages, memory=memory, ai=ai)
         assert "Texto privado de una nota" in asyncio.run(turn.chat())
         memory.call.assert_awaited_once_with("recent_notes", limit=1, folder="recuerdos")
         memory.entries.assert_not_awaited()
-        client.chat.assert_called_once()
+        assert client.chat.call_count == 2
+        first = client.chat.call_args_list[0].kwargs
+        assert "elegir_fuente" in {tool.function.name for tool in first["tools"]}
+        assert "recent_notes" not in {tool.function.name for tool in first["tools"]}
         request = client.chat.call_args.kwargs
         assert "Texto privado de una nota" not in str(request["messages"])
         assert "Obsidian" in request["messages"][-2]["content"]
@@ -153,15 +160,17 @@ def test_model_routes_contextual_stonewave_reads_locally():
 
         memory.call.reset_mock()
         memory.call.return_value = json.dumps({"status": "date_only", "finished_at": "2026-11-22T15:00:00Z"})
-        client.chat.return_value = SimpleNamespace(message=Message(role="assistant", tool_calls=[
+        activity_reply = SimpleNamespace(message=Message(role="assistant", tool_calls=[
             {"function": {"name": "dream_activity", "arguments": {"focus": "date"}}},
         ]))
+        client.chat.side_effect = [decision, activity_reply]
         messages[-2] = {"role": "assistant", "content": "Hablábamos de la consolidación de StoneWave."}
         messages[-1] = {"role": "user", "content": "¿A qué hora fue eso?"}
         assert "22/11/2026" in asyncio.run(Worker(messages, memory=memory, ai=ai).chat())
         memory.call.assert_awaited_once_with("dream_activity")
 
         memory.call.reset_mock()
+        client.chat.side_effect = None
         client.chat.return_value = SimpleNamespace(message=Message(role="assistant", content="Sigamos hablando."))
         messages[-1] = {"role": "user", "content": "¿Qué opinas de mis sueños personales?"}
         assert asyncio.run(Worker(messages, memory=memory, ai=ai).chat()) == "Sigamos hablando."

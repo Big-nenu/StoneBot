@@ -127,7 +127,7 @@ def test_manager():
               patch.object(mcp_client, "read_key", return_value=None)):
             window = app.StoneBot()
             with patch.object(McpDialog, "exec", return_value=0) as open_dialog:
-                next(action for action in window.settings_menu.actions() if action.text() == "Servidores MCP…").trigger()
+                next(action for action in window.settings_menu.actions() if action.text() == "Extensiones…").trigger()
             open_dialog.assert_called_once()
             dialog = window.mcp_dialog
             dialog.show()
@@ -336,7 +336,7 @@ def test_manager():
             assert "Correcta" in status().text()
             assert mcp_client.credential_target("ejemplo", dict(server, url="https://other.test/mcp")) != target
             with patch.object(McpDialog, "exec", return_value=0):
-                next(action for action in window.settings_menu.actions() if action.text() == "Servidores MCP…").trigger()
+                next(action for action in window.settings_menu.actions() if action.text() == "Extensiones…").trigger()
             assert window.mcp_dialog is dialog and dialog.selected() == "ejemplo"
             with (patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes),
                   patch("mcp_ui.delete_key", side_effect=lambda key: vault.pop(key, None))):

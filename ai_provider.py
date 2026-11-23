@@ -15,6 +15,7 @@ from PySide6.QtCore import QSettings
 
 from mcp_client import data_path
 from mcp_credentials import read_key, store_key
+from request_routing import SELECT_SOURCE
 
 
 PROVIDERS = {"ollama": "Ollama", "openrouter": "OpenRouter"}
@@ -23,13 +24,13 @@ OLLAMA_URL = "http://localhost:11434"
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
 KEY_TARGET = "StoneBot/AI/OpenRouter"
 TEXT_TOOL_CALL = re.compile(r"^\s*<tool_call>\s*<function\s*=", re.I)
-TEXT_READ = re.compile(r"<tool_call>\s*<function\s*=\s*(\w+)\s*>(.*?)</function>\s*</tool_call>", re.S)
+TEXT_CALL = re.compile(r"<tool_call>\s*<function\s*=\s*(\w+)\s*>(.*?)</function>\s*</tool_call>", re.S)
 TEXT_PARAMETER = re.compile(r"\s*<parameter\s*=\s*(\w+)\s*>([^<>]*)</parameter>")
 
 
-def recover_text_read(content, tools):
+def recover_text_call(content, tools):
     # shortcut: solo el formato observado de Nemotron; otros formatos siguen por el reintento.
-    call = TEXT_READ.fullmatch(content.strip())
+    call = TEXT_CALL.fullmatch(content.strip())
     if call is None:
         return []
     name, raw = call.groups()
@@ -229,8 +230,12 @@ class OpenRouter:
                 raise ResponseError("OpenRouter devolvió una respuesta que StoneBot no pudo interpretar.") from None
             if not isinstance(content, str) or not TEXT_TOOL_CALL.match(content):
                 break
-            if not calls and recover_local_reads and tools:
-                calls = recover_text_read(content, payload["tools"])
+            if not calls and tools:
+                recoverable = payload["tools"] if recover_local_reads else [
+                    tool for tool in payload["tools"] if tool["function"]["name"] == SELECT_SOURCE.function.name
+                ]
+                if recoverable:
+                    calls = recover_text_call(content, recoverable)
             if calls:
                 content = ""
                 break

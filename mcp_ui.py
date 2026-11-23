@@ -6,14 +6,15 @@ import sqlite3
 from collections import defaultdict
 
 from PySide6.QtCore import QSize, QSignalBlocker, Qt, QThread, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QListWidget, QMessageBox, QPlainTextEdit, QPushButton, QTreeWidget, QTreeWidgetItem,
-    QVBoxLayout, QWidget, QWidgetAction,
+    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QHBoxLayout, QHeaderView,
+    QLabel, QLineEdit, QListWidget, QMessageBox, QPlainTextEdit, QPushButton, QStackedWidget, QTabBar,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QWidgetAction,
 )
 
-from appearance import COLORS, control_colors, dialog_style, link_color, readable_text, shade
+from appearance import COLORS, control_colors, readable_text
+from extension_ui import Toggle, extension_style
 from mcp_client import (
     connection_error, is_desktop_commander, load_servers, probe_server, save_servers, startup_timeout, validate_server,
 )
@@ -21,6 +22,7 @@ from mcp_credentials import credential_target, delete_key, read_key, store_key
 from mcp_permissions import list_permissions, permission_signature, remember_many, revoke, revoke_many, safe_read, saved_permissions
 from mcp_setup import ensure_new, prepare
 from mcp_tool_groups import category, operation
+from skills_ui import SkillsPanel
 from stonewave_memory import MemoryUnavailable, REVIEWED_WRITES, TOOLS
 from stonewave_settings_ui import StoneWaveSettingsDialog
 
@@ -29,35 +31,6 @@ TRANSPORTS = {"stdio": "STDIO", "http": "Streamable HTTP"}
 STATUS_COLORS = {"Correcta": "#86efac", "Falló": "#fca5a5"}
 TOOL_NAMES = Qt.ItemDataRole.UserRole
 INTEGRATED_MEMORY = "StoneWave · Integrado"
-
-
-class Toggle(QCheckBox):
-    def __init__(self, checked, label, accent, surface=COLORS["background"]):
-        super().__init__()
-        self.accent = accent
-        self.surface = surface
-        self.setAccessibleName(label)
-        self.setChecked(checked)
-        self.setFixedSize(QSize(38, 24))
-
-    def hitButton(self, position):
-        return self.rect().contains(position)
-
-    def paintEvent(self, event):
-        checked = self.isChecked()
-        enabled = self.isEnabled()
-        track = self.accent if checked and enabled else shade(self.surface, .16 if enabled else .07)
-        if enabled and (self.underMouse() or self.isDown()):
-            track = shade(track, .18 if self.isDown() else .09)
-        edge = link_color(self.surface) if self.hasFocus() else shade(self.surface, .42 if enabled else .26)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor(edge), 2 if self.hasFocus() else 1))
-        painter.setBrush(QColor(track))
-        painter.drawRoundedRect(self.rect().adjusted(2, 3, -2, -3), 9, 9)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(readable_text(track) if enabled else shade(self.surface, .42)))
-        painter.drawEllipse(22 if checked else 5, 6, 12, 12)
 
 
 class ServerForm(QDialog):
@@ -172,11 +145,11 @@ class McpDialog(QDialog):
     def __init__(self, parent, *, memory=None):
         super().__init__(parent)
         self.setObjectName("mcpManager")
-        self.setWindowTitle("Servidores MCP")
-        self.resize(700, 510)
-        self.setMinimumSize(560, 410)
+        self.setWindowTitle("Extensiones de StoneBot")
+        self.resize(820, 610)
+        self.setMinimumSize(620, 470)
         self.theme = COLORS
-        self.setStyleSheet(dialog_style(self.theme))
+        self.setStyleSheet(extension_style(self.theme))
         self.servers = {}
         self.memory = memory
         self.results = {}
@@ -194,6 +167,8 @@ class McpDialog(QDialog):
         self.tools.itemSelectionChanged.connect(self.update_tool_actions)
         self.tools_server = None
         for tree in (self.table, self.tools):
+            tree.setProperty("extensionList", True)
+            tree.setMouseTracking(True)
             tree.setAlternatingRowColors(True)
             tree.setUniformRowHeights(True)
             header = tree.header()
@@ -201,7 +176,8 @@ class McpDialog(QDialog):
             header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
             header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.tools.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.notice = QLabel("Probar conexión descubre herramientas. En STDIO también inicia el ejecutable.")
+        self.notice = QLabel()
+        self.notice.setTextFormat(Qt.TextFormat.PlainText)
         self.notice.setWordWrap(True)
         self.notice.setObjectName("mcpNotice")
 
@@ -210,7 +186,7 @@ class McpDialog(QDialog):
         servers_title.setProperty("sectionHeading", True)
         servers_header.addWidget(servers_title)
         servers_header.addStretch()
-        self.add = QPushButton("Agregar")
+        self.add = QPushButton("Agregar servidor…")
         servers_header.addWidget(self.add)
         controls = QHBoxLayout()
         self.edit = QPushButton("Editar")
@@ -231,13 +207,14 @@ class McpDialog(QDialog):
         self.probe.setProperty("primary", True)
         controls.addWidget(self.probe)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(9)
+        mcp_page = QWidget()
+        layout = QVBoxLayout(mcp_page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
         layout.addLayout(servers_header)
         layout.addWidget(self.table, 2)
         layout.addLayout(controls)
-        layout.addSpacing(4)
+        layout.addSpacing(7)
         tools_header = QHBoxLayout()
         tools_title = QLabel("Herramientas descubiertas")
         tools_title.setProperty("sectionHeading", True)
@@ -250,13 +227,75 @@ class McpDialog(QDialog):
         self.permissions.clicked.connect(self.review_permissions)
         tools_header.addWidget(self.permissions)
         layout.addLayout(tools_header)
-        layout.addWidget(self.tools, 2)
+        self.tools_empty = QLabel()
+        self.tools_empty.setObjectName("extensionEmpty")
+        self.tools_empty.setProperty("muted", True)
+        self.tools_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.tools_empty.setWordWrap(True)
+        self.tools_view = QStackedWidget()
+        self.tools_view.addWidget(self.tools)
+        self.tools_view.addWidget(self.tools_empty)
+        layout.addWidget(self.tools_view, 2)
         layout.addWidget(self.notice)
+
+        self.skills_panel = SkillsPanel(self, self.theme)
+        self.pages = QStackedWidget()
+        self.pages.addWidget(mcp_page)
+        self.pages.addWidget(self.skills_panel)
+        self.tabs = QTabBar()
+        self.tabs.setObjectName("extensionTabs")
+        self.tabs.setAccessibleName("Secciones de extensiones")
+        self.tabs.setExpanding(False)
+        self.tabs.setDrawBase(False)
+        self.tabs.addTab("MCP")
+        self.tabs.addTab("Skills")
+        self.tabs.currentChanged.connect(self.show_section)
+
+        title = QLabel("Extensiones")
+        title.setObjectName("extensionsTitle")
+        close = QPushButton("Cerrar")
+        close.setProperty("quiet", True)
+        close.clicked.connect(self.reject)
+        for button in (*mcp_page.findChildren(QPushButton), close):
+            button.setAutoDefault(False)
+        header = QHBoxLayout()
+        header.addWidget(title, 1)
+        header.addWidget(close)
+        divider = QFrame()
+        divider.setObjectName("extensionDivider")
+        divider.setFixedHeight(1)
+
+        shell = QVBoxLayout(self)
+        shell.setContentsMargins(24, 19, 24, 16)
+        shell.setSpacing(0)
+        shell.addLayout(header)
+        shell.addSpacing(8)
+        shell.addWidget(self.tabs)
+        shell.addWidget(divider)
+        shell.addSpacing(16)
+        shell.addWidget(self.pages, 1)
         self.reload()
+
+    def show_section(self, index):
+        if self.pages.widget(index) is self.skills_panel:
+            self.skills_panel.refresh()
+        self.pages.setCurrentIndex(index)
+
+    def open_section(self, *, skills=False):
+        index = self.pages.indexOf(self.skills_panel) if skills else 0
+        if not skills:
+            self.reload()
+        if self.tabs.currentIndex() == index:
+            self.show_section(index)
+        else:
+            self.tabs.setCurrentIndex(index)
+        self.exec()
 
     def set_appearance(self, theme):
         self.theme = theme
-        self.setStyleSheet(dialog_style(theme))
+        self.setStyleSheet(extension_style(theme))
+        self.skills_panel.theme = theme
+        self.skills_panel.refresh()
         self.refresh(self.selected())
 
     def add_toggle(self, tree, item, column, checked, label, on_change, *, show_state=False, state_text=None):
@@ -277,7 +316,7 @@ class McpDialog(QDialog):
         if show_state or state_text is not None:
             state.ensurePolished()
             state.setMinimumWidth(state.fontMetrics().horizontalAdvance("Inactivo"))
-        item.setSizeHint(column, holder.sizeHint().expandedTo(QSize(70, 30)))
+        item.setSizeHint(column, holder.sizeHint().expandedTo(QSize(70, 33)))
 
     def reload(self):
         selected = self.selected()
@@ -287,8 +326,8 @@ class McpDialog(QDialog):
                             if name == INTEGRATED_MEMORY or current.get(name) == self.servers.get(name)}
             self.servers = current
         except (ValueError, OSError, RuntimeError):
-            self.notice.setText("No se pudo leer la configuración MCP.")
             self.refresh(selected)
+            self.notice.setText("No se pudo leer la configuración MCP.")
             return False
         self.refresh(selected)
         return True
@@ -323,7 +362,7 @@ class McpDialog(QDialog):
             label.ensurePolished()
             status_width = max(label.fontMetrics().horizontalAdvance(f"●  {text}")
                                for text in ("Sin probar", "Probando…", "Correcta", "Falló"))
-            item.setSizeHint(3, QSize(status_width + 12, 30))
+            item.setSizeHint(3, QSize(status_width + 12, 39))
             if name == selected:
                 self.table.setCurrentItem(item)
         if self.table.currentItem() is None and self.table.topLevelItemCount():
@@ -335,18 +374,24 @@ class McpDialog(QDialog):
         name = self.selected()
         idle = self.test is None
         integrated = name == INTEGRATED_MEMORY
+        external = name in self.servers
         self.add.setEnabled(idle)
+        for button in (self.edit, self.remove, self.api_key, self.permissions, self.selection_permissions):
+            button.setVisible(external)
         for button in (self.edit, self.remove, self.permissions):
-            button.setEnabled(idle and name in self.servers)
+            button.setEnabled(idle and external)
         self.probe.setEnabled(idle and name is not None)
         self.probe.setText("Consultar catálogo" if integrated else "Probar conexión")
         self.memory_settings.setVisible(integrated)
         self.memory_settings.setEnabled(integrated and idle)
-        self.api_key.setEnabled(idle and name in self.servers and bool(credential_target(name, self.servers[name])))
+        self.api_key.setEnabled(idle and external and bool(credential_target(name, self.servers[name])))
         if integrated and idle:
             _, tools, detail = self.results.get(name, ("Sin probar", [], ""))
-            self.notice.setText(detail or (f"{len(tools)} herramientas en la conexión integrada de StoneBot." if tools else
-                                           "Consulta el catálogo de la conexión que StoneBot usa para su memoria."))
+            self.notice.setText(detail or (f"{len(tools)} herramientas en la conexión integrada de StoneBot."
+                                           if tools else ""))
+        elif idle and name != self.tools_server:
+            self.notice.setText("Las conexiones STDIO inician el ejecutable al probarlas."
+                                if self.servers.get(name, {}).get("transport") == "stdio" else "")
         self.refresh_tools(name)
 
     def refresh_tools(self, name):
@@ -361,7 +406,20 @@ class McpDialog(QDialog):
                     for item in self.tools.selectedItems()} if same_server else set()
         self.tools_server = name
         self.tools.clear()
-        _, tools, _ = self.results.get(name, ("", [], ""))
+        status, tools, _ = self.results.get(name, ("", [], ""))
+        if name is None:
+            empty_message = "Agrega un servidor MCP para ver sus herramientas."
+        elif status == "Probando…":
+            empty_message = "Consultando herramientas…"
+        elif status == "Falló":
+            empty_message = "La conexión falló antes de obtener las herramientas."
+        elif name in self.results:
+            empty_message = "No se encontraron herramientas para esta conexión."
+        else:
+            empty_message = ("Consulta el catálogo para ver las herramientas de StoneWave." if integrated else
+                             "Prueba la conexión para descubrir las herramientas del servidor.")
+        self.tools_empty.setText(empty_message)
+        self.tools_view.setCurrentWidget(self.tools if tools else self.tools_empty)
         if integrated:
             for tool in sorted(tools, key=lambda tool: tool.name):
                 usage, permission = "Reservada", ""

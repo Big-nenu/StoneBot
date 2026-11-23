@@ -181,18 +181,20 @@ def test_window(root):
         modes = window.reasoning_button.menu().actions()
         assert [mode.data() for mode in modes] == [None, False, True] and modes[0].isChecked()
         assert attach.isEnabled() and mcp.isEnabled() and skills.isEnabled()
-        with patch.object(app.SkillsDialog, "exec") as opened:
+        with patch.object(app.McpDialog, "exec") as opened:
             skills.menu().aboutToShow.emit()
             skills.menu().actions()[-1].trigger()
             opened.assert_called_once_with()
+            assert window.mcp_dialog.pages.currentWidget() is window.mcp_dialog.skills_panel
         memory.menu().actions()[0].trigger()
         assert window.message.toPlainText() == "Busca en la memoria: "
         window.message.clear()
         mcp.menu().aboutToShow.emit()
         assert not mcp.menu().actions()[0].isEnabled()
         with patch.object(app.McpDialog, "exec") as opened:
-            next(action for action in window.settings_menu.actions() if action.text() == "Servidores MCP…").trigger()
+            next(action for action in window.settings_menu.actions() if action.text() == "Extensiones…").trigger()
             opened.assert_called_once_with()
+            assert window.mcp_dialog.tabs.currentIndex() == 0
 
         def paste(mime):
             QApplication.clipboard().setMimeData(mime)

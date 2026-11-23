@@ -42,6 +42,16 @@ def test_reads_link_referenced_in_chat():
     assert request_routing.requested_web_link([*history, {**question, "content": "El enlace tiene un README."}]) is None
     ambiguous = {"role": "assistant", "content": f"{url} o https://example.test/otro"}
     assert request_routing.requested_web_link([ambiguous, question]) == ""
+    repository = {"role": "user", "content": (
+        "hola, aún funcionas, le pedí que organizara el código, y mira ya como quedo\n"
+        "https://github.com/ejemplo/StoneBot.git\n\n¿Qué cambiarías de sus funciones?"
+    )}
+    followup = {"role": "user", "content": "que entres al repositorio no solo que lo notes"}
+    git_page = "https://github.com/ejemplo/StoneBot"
+    assert request_routing.requested_web_link([repository]) == git_page
+    assert request_routing.requested_web_link([repository, {"role": "assistant", "content": "Vi que compartiste un enlace."},
+                                              followup]) == git_page
+    assert request_routing.requested_web_link([{"role": "user", "content": "Mira cómo quedó mi ejemplo en el chat."}]) is None
 
     fetch = Tool(name="web_fetch_exa", inputSchema={"type": "object", "required": ["urls"],
                 "properties": {"urls": {"type": "array", "items": {"type": "string"}}}})
@@ -58,10 +68,11 @@ def test_reads_link_referenced_in_chat():
 
     def summarize(**kwargs):
         assert kwargs["tools"] == []
-        assert url in kwargs["messages"][-1]["content"] and "README: descripción sintética" in kwargs["messages"][-1]["content"]
+        evidence = kwargs["messages"][-1]["content"]
+        assert (url in evidence or git_page in evidence) and "README: descripción sintética" in evidence
         return SimpleNamespace(message=Message(role="assistant", content="Resumen del README."))
 
-    with (patch.object(turn_worker, "load_servers", return_value={"exa": {"enabled": True, "read_tools": []}}),
+    with (patch.object(turn_worker, "load_servers", return_value={"exa": {"enabled": True, "read_tools": []}}) as servers,
           patch.object(turn_worker, "session_for", connected), patch.object(turn_worker, "OpenRouter") as client,
           patch.object(app.Worker, "enabled_skills", return_value={})):
         client.return_value.chat.side_effect = summarize
@@ -75,6 +86,18 @@ def test_reads_link_referenced_in_chat():
         assert "no autorizó" in asyncio.run(worker.chat())
         session.call_tool.assert_awaited_once()
         client.return_value.chat.assert_called_once()
+        memory = SimpleNamespace(entries=AsyncMock(), call=AsyncMock())
+        for messages in ([repository], [repository, {"role": "assistant", "content": "Vi tu enlace."}, followup]):
+            session.call_tool.reset_mock()
+            worker = app.Worker([history[0], *messages], memory=memory,
+                                ai=AISettings("openrouter", "fake/model", cloud_memory=True))
+            worker.confirm_external = AsyncMock(return_value=True)
+            assert asyncio.run(worker.chat()) == "Resumen del README."
+            session.call_tool.assert_awaited_once_with("web_fetch_exa", {"urls": [git_page]})
+        servers.return_value = {}
+        assert "No pude abrir el enlace" in asyncio.run(worker.chat())
+        memory.entries.assert_not_awaited()
+        memory.call.assert_not_awaited()
 
 
 def test_cloud_chat_keeps_mcp_out_of_conversation_and_stops_repeated_calls():
@@ -129,11 +152,78 @@ def test_cloud_chat_keeps_mcp_out_of_conversation_and_stops_repeated_calls():
         session.call_tool.assert_awaited_once_with("web_search_exa", {"query": "PySide6", "max": 1})
 
     assert not request_routing.requests_external_tools([{"role": "user", "content": "Busca en mi memoria mis archivos de GitHub."}])
+    assert not request_routing.requests_external_tools([{"role": "user", "content": "Consulta las conclusiones de la memoria."}])
     followup = [{"role": "user", "content": "¿Me puedes ayudar a buscar en internet sobre Qt?"},
                 {"role": "assistant", "content": "¿Qué versión?"}, {"role": "user", "content": "La 6.10"}]
     assert request_routing.requests_external_tools(followup)
     followup[1]["content"] = "Encontré la versión. ¿Quieres hablar de algo más?"
     assert not request_routing.requests_external_tools(followup)
+
+
+def test_contextual_source_selection_without_opening_memory_first():
+    web = Tool(name="web_search_exa", inputSchema={"type": "object"})
+    calendar = Tool(name="list_events", inputSchema={"type": "object"})
+    directory = Tool(name="list_directory", inputSchema={"type": "object"})
+    folder = str(Path(tempfile.gettempdir()) / "Proyecto de prueba")
+    memory = SimpleNamespace(entries=AsyncMock(), call=AsyncMock())
+    routes = {"web": ("¿Hay algún anuncio más reciente de eso?", web),
+              "mcp": ("¿Y cómo pinta el viernes con lo que tengo agendado?", calendar),
+              "archivos": (f"Me serviría saber qué hay dentro de {folder} para etiquetar el respaldo.", directory)}
+    sessions = {name: SimpleNamespace(list_tools=AsyncMock(return_value=ListToolsResult(tools=[tool])),
+                                     call_tool=AsyncMock(return_value=CallToolResult(content=[
+                                         TextContent(type="text", text="Resultado de la fuente elegida"),
+                                     ]))) for name, (_, tool) in routes.items()}
+
+    @contextlib.asynccontextmanager
+    async def connected(name, _):
+        yield sessions[name]
+
+    def call(name, **arguments):
+        return SimpleNamespace(message=Message(role="assistant", tool_calls=[
+            {"function": {"name": name, "arguments": arguments}},
+        ]))
+
+    config = {name: {"enabled": True, "read_tools": [], "transport": "http"} for name in routes}
+    config["archivos"].update(transport="stdio", command="npx", args=["@wonderwhy-er/desktop-commander"])
+    with (patch.object(turn_worker, "load_servers", return_value=config) as load,
+          patch.object(turn_worker, "session_for", connected),
+          patch.object(turn_worker, "OpenRouter") as provider,
+          patch.object(app.Worker, "enabled_skills", return_value={})):
+        client = provider.return_value
+        for route, (question, expected_tool) in routes.items():
+            messages = [{"role": "system", "content": app.SYSTEM}, {"role": "user", "content": question}]
+            assert not request_routing.requests_external_tools(messages)
+            arguments = {"path": folder} if route == "archivos" else {"consulta": "prueba"}
+
+            def chat(**kwargs):
+                names = {tool.function.name: tool.function.description for tool in kwargs["tools"]}
+                if "elegir_fuente" in names:
+                    assert set(names) == {"query_experiences", "elegir_fuente"}
+                    return call("elegir_fuente", fuente=route)
+                if kwargs["messages"][-1]["role"] == "tool":
+                    assert kwargs["messages"][-1]["content"] == "Resultado de la fuente elegida"
+                    return SimpleNamespace(message=Message(role="assistant", content="Respuesta verificada."))
+                alias, = [name for name, desc in names.items() if f" / {expected_tool.name}." in desc]
+                if route == "web":
+                    assert not any(" / list_events." in desc for desc in names.values())
+                return call(alias, **arguments)
+
+            client.chat.side_effect = chat
+            worker = app.Worker(messages, memory=memory, ai=AISettings("openrouter", "fake/model", cloud_memory=True))
+            worker.confirm_external = AsyncMock(return_value=True)
+            assert asyncio.run(worker.chat()) == "Respuesta verificada."
+            sessions[route].call_tool.assert_awaited_once_with(expected_tool.name, arguments)
+            worker.confirm_external.assert_awaited_once_with(route, expected_tool.name, arguments)
+
+        client.chat.side_effect = None
+        client.chat.return_value = SimpleNamespace(message=Message(role="assistant", content="Sigamos conversando."))
+        load.reset_mock()
+        worker = app.Worker([{"role": "user", "content": "Cuéntame un chiste"}], memory=memory)
+        with patch.object(turn_worker, "Client", return_value=client):
+            assert asyncio.run(worker.chat()) == "Sigamos conversando."
+        load.assert_not_called()
+        memory.entries.assert_not_awaited()
+        memory.call.assert_not_awaited()
 
 
 def test_switch_from_memory_to_local_project():
@@ -467,6 +557,8 @@ if __name__ == "__main__":
     print("PASS: enlace contextual, lectura web exacta y autorización.")
     test_cloud_chat_keeps_mcp_out_of_conversation_and_stops_repeated_calls()
     print("PASS: chat sin MCP externo y cierre de solicitudes repetidas en OpenRouter simulado.")
+    test_contextual_source_selection_without_opening_memory_first()
+    print("PASS: selección contextual de web o servicios MCP sin consultar la memoria.")
     test_switch_from_memory_to_local_project()
     print("PASS: cambio de tema a una ruta local, herramientas de lectura y permisos.")
     test_context7_results_are_used_to_finish_after_empty_ollama_response()

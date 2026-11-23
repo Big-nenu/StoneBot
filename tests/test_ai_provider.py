@@ -85,6 +85,14 @@ def test_openrouter_retries_textual_tool_call():
         payload = request.call_args.kwargs["payload"]
         assert "tools" not in payload and "No solicites herramientas" in payload["messages"][0]["content"]
 
+    selector = {"choices": [{"message": {
+        "content": "<tool_call><function=elegir_fuente><parameter=fuente>web</parameter></function></tool_call>"
+    }}]}
+    with patch.object(client, "request", return_value=selector) as request:
+        reply = client.chat(model="fake/model", messages=messages, tools=[turn_worker.SELECT_SOURCE]).message
+        assert reply.tool_calls[0].function.arguments == {"fuente": "web"}
+        request.assert_called_once()
+
 
 def test_memory_in_chat():
     messages = [{"role": "system", "content": app.SYSTEM}, {"role": "user", "content": "Actualiza mi recuerdo"}]
@@ -137,7 +145,7 @@ def test_preferences_and_history():
             assert "OpenRouter" in window.sidebar_rail.provider_badge.text()
             assert "fake/model" in window.sidebar_rail.provider_badge.toolTip()
             labels = {action.text() for action in window.settings_menu.actions()}
-            assert {"Modelo y proveedor de IA…", "Apariencia…", "Servidores MCP…", "Memoria", "Skills"} <= labels
+            assert {"Modelo y proveedor de IA…", "Apariencia…", "Extensiones…", "Memoria", "Skills"} <= labels
             save_key.assert_called_once_with(ai_provider.KEY_TARGET, "test-key")
             assert "test-key" not in (Path(folder) / "chat.ini").read_text(encoding="utf-8")
         finally:

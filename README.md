@@ -136,9 +136,11 @@ StoneBot inicia el servidor STDIO del repositorio hermano `StoneWave/mcp_server.
 
 En el chat puedes decir «Recuerda que…» o preguntar por un dato de otra conversación. **+ → Memoria → Ver y corregir recuerdos…** lista los recuerdos vigentes e indica el ID para corregirlos u olvidarlos. En el mismo menú puedes activar o desactivar **Guardar recuerdos automáticamente**.
 
+SB puede responder directamente o elegir la fuente según lo que le pidas y el contexto del chat: abrir un enlace, buscar en internet, revisar archivos, usar un servicio MCP o consultar StoneWave. Las herramientas se habilitan para la solicitud de ese turno y conservan sus permisos. Si falta la fuente, SB te pide el dato o indica qué recurso no pudo consultar. Las conversaciones comunes no cargan los recuerdos ni abren servidores MCP externos.
+
 ### Ajustes de StoneWave
 
-En **Configuración → Servidores MCP…**, selecciona **StoneWave · Integrado** para ver sus herramientas y para qué sirve cada una. Desde ahí, **Ajustes de StoneWave…** permite programar o ejecutar un sueño, activar las conclusiones, elegir su modelo local de Ollama, configurar la carpeta de Obsidian y usar un archivo compartido para sincronizar. **Aplicar cambios** reinicia la sesión integrada. El comando `/sueno memoria` también ejecuta un sueño manual.
+En **Configuración → Extensiones… → MCP**, selecciona **StoneWave · Integrado** para ver sus herramientas y para qué sirve cada una. Desde ahí, **Ajustes de StoneWave…** permite programar o ejecutar un sueño, activar las conclusiones, elegir su modelo local de Ollama, configurar la carpeta de Obsidian y usar un archivo compartido para sincronizar. **Aplicar cambios** reinicia la sesión integrada. El comando `/sueno memoria` también ejecuta un sueño manual.
 
 ### Consultar sueños y notas desde el chat
 
@@ -223,7 +225,9 @@ La configuración se guarda en `%USERPROFILE%\.stonebot\mcp_servers.json`. Usa l
 
 Cuando se solicita confirmación, **Permitir una vez** autoriza esa llamada y **Denegar** la cancela. **Permitir siempre** está disponible solo para herramientas declaradas de solo lectura que pasan las comprobaciones de seguridad. El permiso queda asociado al servidor y a la definición de la herramienta. Puedes revisarlo y revocarlo en **MCP → Permisos guardados…**. Las lecturas automáticas configuradas por nombre pasan por la misma comprobación. Las herramientas peligrosas o sin declaración de lectura piden confirmación en cada llamada. Los permisos automáticos requieren confiar en que el servidor describe sus herramientas con veracidad.
 
-### Revisar archivos de una carpeta local
+### Abrir enlaces y revisar archivos locales
+
+Para revisar un repositorio en GitHub, comparte su enlace y pide «Abre el repositorio y dime qué funciones mejorarías». También puedes decir «Que entres al repositorio» después de compartir el enlace en el mismo chat. Esta consulta necesita una herramienta web habilitada en **Configuración → Extensiones… → MCP**.
 
 Con Desktop Commander habilitado, escribe en el mismo mensaje la ruta completa y qué quieres revisar. Por ejemplo, «Revisa los archivos de `C:\Proyectos\MiProyecto` y explica cómo se inicia». SB prioriza la lectura de la carpeta aunque el chat venía hablando de memoria y aplica los permisos de MCP. Si usas OpenRouter, el modelo recibe los resultados de las lecturas para redactar. Si falla el resumen después de que MCP obtuvo resultados, SB puede mostrar una revisión parcial con las rutas consultadas.
 

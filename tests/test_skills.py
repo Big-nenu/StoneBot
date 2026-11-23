@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from ollama import Message
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFileDialog
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -16,7 +17,8 @@ import app
 import turn_worker
 import local_skills
 import mcp_client
-from skills_ui import SkillsDialog
+from skills_ui import SkillsPanel
+from extension_ui import Toggle
 
 
 EXAMPLE = "faro-de-prueba"
@@ -37,7 +39,7 @@ def install_from_ui(root):
     (source / "scripts").mkdir()
     (source / "scripts" / "no-ejecutar.py").write_text("raise AssertionError('Este script no debe ejecutarse')", encoding="utf-8")
 
-    panel = SkillsDialog(None, app.load_appearance())
+    panel = SkillsPanel(None, app.load_appearance())
     with patch.object(QFileDialog, "getExistingDirectory", return_value=str(source)):
         panel.add()
     item = panel.list.currentItem()
@@ -45,7 +47,16 @@ def install_from_ui(root):
     assert item.checkState() == Qt.CheckState.Unchecked
     assert (root / "skills" / "prueba-local" / "SKILL.md").is_file()
     assert not (root / "skills" / "prueba-local" / "scripts").exists()
-    item.setCheckState(Qt.CheckState.Checked)
+    panel.search.setText("NOTA DE PRUEBA")
+    assert panel.list.currentItem() is item
+    panel.search.setText("sin-coincidencias")
+    assert panel.list.currentItem() is None
+    assert panel.results.currentWidget() is panel.empty
+    panel.search.clear()
+    panel.show()
+    switch = panel.list.itemWidget(item).findChild(Toggle)
+    QTest.mouseClick(switch, Qt.MouseButton.LeftButton)
+    assert item.checkState() == Qt.CheckState.Checked
     assert local_skills.enabled("prueba-local")
     panel.refresh("prueba-local")
     panel.list.currentItem().setCheckState(Qt.CheckState.Unchecked)
@@ -96,7 +107,7 @@ def test_progressive():
         local_skills.set_enabled(EXAMPLE, False)
         assert turn("¿Cuánto es 7 por 8?") == "56"
         assert loaded.call_count == 1
-        assert all(getattr(tool, "__name__", None) for tool in calls[-1]["tools"])
+        assert {tool.function.name for tool in calls[-1]["tools"] if not callable(tool)} == {"elegir_fuente"}
 
 
 def test_live():

@@ -2,6 +2,30 @@
 import re
 from urllib.parse import urlsplit
 
+from ollama import Tool
+
+
+TURN_SOURCES = {
+    "enlace": "abrir una URL que el usuario señaló en el chat",
+    "web": "buscar o verificar información en internet",
+    "archivos": "inspeccionar archivos o carpetas del equipo",
+    "mcp": "usar una aplicación, servicio o servidor MCP solicitado",
+    "memoria": "consultar o corregir recuerdos, o leer notas y actividad de StoneWave",
+}
+SELECT_SOURCE = Tool.model_validate({
+    "type": "function",
+    "function": {
+        "name": "elegir_fuente",
+        "description": (
+            "Habilita la fuente que requiere la solicitud actual, incluso si la señala por contexto. "
+            "No ejecuta acciones. Para preguntas que puedas responder con el chat o conocimiento general, responde directamente. "
+            "Elige memoria solo para recuerdos personales o funciones de StoneWave. "
+            "Fuentes: " + ", ".join(f"{key}: {description}" for key, description in TURN_SOURCES.items())
+        ),
+        "parameters": {"type": "object", "properties": {"fuente": {"type": "string", "enum": list(TURN_SOURCES)}},
+                       "required": ["fuente"], "additionalProperties": False},
+    },
+})
 
 EXTERNAL_ACTION = re.compile(
     r"^\s*[¿¡]?\s*(?:(?:por favor[\s,]+|(?:me (?:puedes ayudar|podrías ayudar|ayudas) a|"
@@ -17,17 +41,25 @@ EXTERNAL_SOURCE = re.compile(
     r"files?|folders?|directories|repositories|noticias|p[aá]ginas?|sitios?|fuentes?|sources?|url)\b|https?://", re.I,
 )
 EXTERNAL_LOOKUP = re.compile(r"\b(?:busca|buscar|busques|investiga|investigar|investigues|consulta|consultar|consultes|search|look up)\b", re.I)
-INTERNAL_LOOKUP = re.compile(r"\b(?:en (?:tu|la|mi) memoria|(?:en|con) StoneWave|(?:tus|mis) recuerdos|"
+INTERNAL_LOOKUP = re.compile(r"\b(?:(?:en|de) (?:tu|la|mi) memoria|(?:en|con) StoneWave|(?:tus|mis) recuerdos|"
                              r"historial (?:del chat|de conversaciones))\b", re.I)
+MEMORY_REQUEST = re.compile(
+    r"^\s*¿?\s*(?:qu[eé]\s+recuerdas|recuerdas\s+(?:si|qu[eé]|cu[aá]l)|"
+    r"(?:actualiza|corrige|olvida|restaura)\s+(?:(?:mi|el|ese|este)\s+)?recuerdo)\b", re.I,
+)
 EXTERNAL_CLARIFICATION = re.compile(
     r"\b(?:clave|ruta|carpeta|archivo|repositorio|servidor|fuente|t[eé]rmino|versi[oó]n|path|folder|file|repository|server|source|version|key)\b", re.I,
 )
 WEB_OPEN = re.compile(
-    r"^\s*¿?\s*(?:por favor[\s,]+)?(?:(?:me\s+)?(?:puedes|podr[ií]as|(?P<negative>no\s+puedes))\s+)?"
-    r"(?:entra(?:r)?|abre|abrir|visita(?:r)?|lee|leer|revisa(?:r)?|ve|ver|consulta(?:r)?)\b", re.I,
+    r"^\s*¿?\s*(?:por favor[\s,]+)?"
+    r"(?:(?:(?:me\s+)?(?:puedes|podr[ií]as|(?P<negative>no\s+puedes))\s+)?"
+    r"(?:entra(?:r)?|abre|abrir|visita(?:r)?|lee|leer|revisa(?:r)?|ve|ver|consulta(?:r)?|explora(?:r)?)"
+    r"|(?:(?:quiero|necesito)\s+)?que\s+(?:entres|abras|visites|leas|revises|consultes|explores))\b", re.I,
 )
-WEB_REFERENCE = re.compile(r"\b(?:enlace|link|url|p[aá]gina|sitio|readme)\b", re.I)
+WEB_REFERENCE = re.compile(r"\b(?:enlace|link|url|p[aá]gina|sitio|readme|repositorio)\b", re.I)
 WEB_URL = re.compile(r"https?://[^\s<>`\"'\])]+", re.I)
+WEB_SHOW_RESULT = re.compile(r"(?:^|[,\n.!?])\s*(?:y\s+)?mira\s+(?:ya\s+)?c[oó]mo\s+qued[oó]\b", re.I)
+GITHUB_CLONE_PATH = re.compile(r"/[^/]+/[^/]+\.git/?\Z", re.I)
 WEB_LINK_TOOLS = {"web_fetch_exa", "web_search_exa", "crawling_exa", "tavily_extract", "tavily_search"}
 LOCAL_PATH = re.compile(r"(?<![\w/])(?:[a-z]:[\\/][^\s\r\n\x22<>]|/(?:home|Users|mnt|tmp|var|opt|srv)/[^\s<>])", re.I)
 LOCAL_READ_ACTION = re.compile(
@@ -53,12 +85,21 @@ def requested_web_link(messages):
         return None
     text = messages[-1]["content"].strip()
     action = WEB_OPEN.match(text)
-    if not action or INTERNAL_LOOKUP.search(text) or not (WEB_REFERENCE.search(text) or WEB_URL.search(text)):
+    has_url = WEB_URL.search(text)
+    if (not (action or (has_url and WEB_SHOW_RESULT.search(text))) or INTERNAL_LOOKUP.search(text)
+            or not (has_url or WEB_REFERENCE.search(text))):
         return None
-    if action["negative"] and not (text.startswith("¿") or text.endswith("?") or re.search(
+    if action and action["negative"] and not (text.startswith("¿") or text.endswith("?") or re.search(
             r"\bporque\s+(?:ah[ií]|all[ií])\b.*\breadme\b", text, re.I)):
         return None
 
+    link = referenced_web_link(messages)
+    if link is not None:
+        return link
+    return "" if re.search(r"\b(?:enlace|link|url|repositorio)\b", text, re.I) else None
+
+
+def referenced_web_link(messages):
     for message in reversed(messages[-5:]):
         if message["role"] not in {"user", "assistant"}:
             continue
@@ -68,12 +109,18 @@ def requested_web_link(messages):
             try:
                 parts = urlsplit(link)
                 if parts.hostname and parts.username is None and parts.password is None:
+                    if parts.hostname == "github.com" and GITHUB_CLONE_PATH.fullmatch(parts.path):
+                        link = parts._replace(path=parts.path.rstrip("/")[:-4]).geturl()
                     links.add(link)
             except ValueError:
                 continue
         if links:
             return next(iter(links)) if len(links) == 1 else ""
-    return "" if re.search(r"\b(?:enlace|link|url)\b", text, re.I) else None
+    return None
+
+
+def requests_memory(text):
+    return bool(MEMORY_REQUEST.search(text) or INTERNAL_LOOKUP.search(text))
 
 
 def requests_external_tools(messages):
