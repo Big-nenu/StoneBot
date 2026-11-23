@@ -164,7 +164,7 @@ Para OpenRouter, introduce tu clave API para guardarla en el Administrador de cr
 
 ### Abrir desde Windows
 
-Para instalar o volver a crear el acceso directo, ejecuta una vez `powershell -NoProfile -ExecutionPolicy Bypass -File .\crear_acceso_directo.ps1` desde el repositorio con el entorno Python habitual. El acceso **StoneBot** del Escritorio usa `pythonw.exe` y abre la aplicación sin consola. El icono de la bandeja y del acceso se puede reemplazar en `assets/stonebot.ico`.
+Para instalar o volver a crear el acceso directo, ejecuta una vez `powershell -NoProfile -ExecutionPolicy Bypass -File .\crear_acceso_directo.ps1` desde el repositorio con el entorno Python habitual. El acceso **StoneBot** del Escritorio usa `pythonw.exe` y abre la aplicación sin consola. La ventana, la bandeja y el acceso directo de Windows usan `assets/stonebot-icon.ico`.
 
 La **X** oculta StoneBot. Haz clic en el icono **SB** de la bandeja o usa **Abrir StoneBot**. Para cerrarlo del todo, abre el menú de la bandeja y elige **Salir**. Usa **Salir** antes de ejecutar los comandos de memoria desde una terminal, porque el proceso oculto conserva el candado. Si la bandeja de Windows no está disponible, la X cierra la aplicación.
 

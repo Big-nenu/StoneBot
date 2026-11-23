@@ -5,7 +5,7 @@ from math import ceil
 from pathlib import Path
 from string import Template
 
-from PySide6.QtCore import QEvent, QPoint, Qt, QStringListModel, QUrl, Signal
+from PySide6.QtCore import QEvent, QPoint, Qt, QStringListModel, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QColor, QContextMenuEvent, QImage, QLinearGradient, QPainter, QPixmap, QSyntaxHighlighter, QTextCharFormat,
     QTextCursor, QTextOption,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from sprites import SpriteLabel
 from appearance import DEFAULT_FONT_SIZE, control_colors, link_color, readable_text, secondary_button, shade
 from attachments import (
     FILE_FILTER, attachment_label, clipboard_attachment, read_attachment,
@@ -612,9 +613,41 @@ class ActivityPanel(QWidget):
         controls.addWidget(self.summary, 1)
         controls.addWidget(self.pause_button)
         controls.addWidget(self.correction_button)
+        self.mascot_row = QWidget()
+        mascot_layout = QHBoxLayout(self.mascot_row)
+        mascot_layout.setContentsMargins(0, 0, 0, 0)
+        mascot_layout.setSpacing(8)
+        self.mascot = SpriteLabel(40)
+        self.mascot_caption = QLabel("StoneBot está pensando…")
+        mascot_layout.addWidget(self.mascot)
+        mascot_layout.addWidget(self.mascot_caption, 1)
+        self.mascot_row.hide()
+        self.mascot_timer = QTimer(self)
+        self.mascot_timer.setSingleShot(True)
+        self.mascot_timer.timeout.connect(self.hide_mascot)
+        layout.addWidget(self.mascot_row)
         layout.addLayout(controls)
         layout.addWidget(self.detail)
         self.detail.hide()
+
+    def show_mascot(self, animation):
+        self.mascot_animation = animation
+        animation.frame_changed.connect(self.mascot.set_frame)
+        self.mascot_row.show()
+
+    def hide_mascot(self):
+        self.mascot_animation.frame_changed.disconnect(self.mascot.set_frame)
+        self.mascot_row.hide()
+
+    def finish_mascot(self, success, *, cancelled):
+        if success:
+            caption = "Respuesta lista"
+        elif cancelled:
+            caption = "Respuesta detenida"
+        else:
+            caption = "Error en la respuesta"
+        self.mascot_caption.setText(caption)
+        self.mascot_timer.start(2000)
 
     def enable_pause(self, pause):
         def request_pause():

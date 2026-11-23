@@ -246,3 +246,9 @@ QDialog#extensionsWindow { background: $background; }
 #extensionsWindow QDoubleSpinBox::up-button { subcontrol-position: top right; }
 #extensionsWindow QDoubleSpinBox::down-button { subcontrol-position: bottom right; }
 #extensionsWindow QCheckBox { color: $text; font-family: "Segoe UI"; font-size: 11pt; }
+
+#chatPage QLabel#welcomeGreeting { font-size: 28px; font-weight: 500; color: $window_text; }
+
+#chatPage QLabel#partialReply {
+    background: $bot; color: $bot_text; border-radius: 16px; padding: 12px; font-size: $message_font;
+}

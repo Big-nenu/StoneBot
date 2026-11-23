@@ -5,7 +5,7 @@ import re
 from PySide6.QtCore import QPointF, QRectF, QSettings, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPalette, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
-    QAbstractSpinBox, QApplication, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QGridLayout,
+    QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QGridLayout,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton, QSlider, QSpinBox,
     QStyle, QStyleOptionComboBox, QStyleOptionSpinBox, QVBoxLayout, QWidget,
 )
@@ -521,7 +521,7 @@ class ColorEditor(QDialog):
 
 
 class AppearanceDialog(QDialog):
-    def __init__(self, parent, theme, on_change):
+    def __init__(self, parent, theme, on_change, *, user_name=None, reduce_animations=None):
         super().__init__(parent)
         self.setWindowTitle("Apariencia")
         self.theme = theme.copy()
@@ -537,6 +537,13 @@ class AppearanceDialog(QDialog):
         title = QLabel("Apariencia")
         title.setObjectName("settingsTitle")
         form.addRow(title)
+        if user_name is not None:
+            self.user_name = QLineEdit(user_name)
+            form.addRow("Tu nombre", self.user_name)
+        if reduce_animations is not None:
+            self.reduce_animations = QCheckBox("Reducir animaciones")
+            self.reduce_animations.setChecked(reduce_animations)
+            form.addRow(self.reduce_animations)
         self.preset = SettingsComboBox()
         self.preset.activated.connect(self.select_preset)
         form.addRow("Tema", self.preset)

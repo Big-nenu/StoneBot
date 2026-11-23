@@ -23,10 +23,12 @@ from chat_ui import (
     ActivityPanel, AttachmentCard, AttachmentTray, ChatBottomFade, ChatText, ChatTranscript, Composer, ComposerPanel,
     MessageCard, PopupButton, chat_style, style_chat_menu,
 )
-from diagnostics import read_log, record
+from diagnostics import record
+from diagnostics_ui import DiagnosticsDialog
 from extension_ui import Toggle
 from experiences import save_task_correction, task_correction
 from folder_inventory import HIDDEN_MISTAKE, inventory_followup, is_ranking_request, ranking_count, uses_mcp
+from greetings import choose_greeting, format_greeting, greeting_settings
 from history import History
 from history_ui import SEARCH_SHORTCUT, HistoryPanel, SidebarPreview, SidebarRail, load_sidebar_pinned, save_sidebar_pinned, sidebar_icon
 import local_skills
@@ -37,22 +39,23 @@ from mcp_ui import McpDialog
 from memory_ui import MemoryDialog
 from projects_ui import ProjectDialog, ProjectPage
 from stonebot_engine.safety import check_path
+from sprites import SpriteLabel, SpritePlayer
 from stonewave_memory import StoneWaveMemory
 from tasks import LABELS as TASK_LABELS, new_task, step_caption, upgrade_task
 from tasks_ui import TaskCorrectionDialog
 from win_caption import apply_native_caption
-from PySide6.QtCore import QEvent, QIODevice, QSaveFile, QLockFile, QSignalBlocker, QSize, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QEasingCurve, QEvent, QIODevice, QSettings, QVariantAnimation, QSaveFile, QLockFile, QSignalBlocker, QSize, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QActionGroup, QColor, QIcon, QKeySequence, QShortcut, QTextCursor, QTextDocument, QPdfWriter
 from PySide6.QtWidgets import (
     QApplication, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
-    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QSystemTrayIcon,
+    QMessageBox, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QSystemTrayIcon,
     QVBoxLayout, QWidget, QWidgetAction,
 )
 from turn_worker import COMMANDS, SYSTEM, TASK_COMMANDS, Worker
 
 
 MODEL = DEFAULT_MODEL
-ICON_PATH = Path(__file__).resolve().parent / "assets" / "stonebot.ico"
+ICON_PATH = Path(__file__).resolve().parent / "assets" / "stonebot-icon.ico"
 COMPOSER_COMMANDS = (
     ("/buscar", "Buscar conversaciones", True),
     ("/resumir", "Resumir contenido", True),
@@ -74,7 +77,10 @@ class StoneBot(QMainWindow):
     def __init__(self, *, use_tray=False):
         super().__init__()
         self.setWindowTitle("StoneBot")
-        self.setWindowIcon(QIcon(str(ICON_PATH)))
+        icon_path = ICON_PATH if sys.platform == "win32" else ICON_PATH.with_suffix(".png")
+        icon = QIcon(str(icon_path))
+        QApplication.setWindowIcon(icon)
+        self.setWindowIcon(icon)
         self.resize(1100, 740)
         self.setMinimumSize(340, 360)
 
@@ -225,12 +231,34 @@ class StoneBot(QMainWindow):
         canvas_layout.addStretch(1)
         self.chat.setWidget(canvas)
         self.chat_fade = ChatBottomFade(self.chat, self.appearance["background"])
+        self.welcome_top = QWidget()
+        layout.addWidget(self.welcome_top, 1)
+        self.welcome = QWidget()
+        greeting = QVBoxLayout(self.welcome)
+        greeting.setContentsMargins(22, 0, 22, 24)
+        greeting.setSpacing(24)
+        self.welcome_logo = SpriteLabel(220)
+        greeting.addWidget(self.welcome_logo, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.greeting_profile = greeting_settings()
+        self.avatar = SpritePlayer(self, reduced=self.greeting_profile.value("reduce_animations", False, type=bool))
+        self.avatar.frame_changed.connect(self.welcome_logo.set_frame)
+        self.greeting_phrase = choose_greeting(self.greeting_profile)
+        self.greeting_label = QLabel()
+        self.greeting_label.setObjectName("welcomeGreeting")
+        self.greeting_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.greeting_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.greeting_label.setWordWrap(True)
+        self.update_greeting()
+        greeting.addWidget(self.greeting_label)
+        layout.addWidget(self.welcome)
         layout.addWidget(self.chat, 1)
 
         self.activity_panel = None
+        self.partial_reply = None
         self.task_panel = None
 
         self.message = Composer()
+        self.message.textChanged.connect(self.update_typing_expression)
         composer = ComposerPanel(self.message)
         composer.setMaximumWidth(CHAT_WIDTH)
         composer_layout = QVBoxLayout(composer)
@@ -333,7 +361,19 @@ class StoneBot(QMainWindow):
         self.problem.setWordWrap(True)
         self.problem.hide()
         layout.addWidget(self.problem)
+        self.composer_panel = composer
         layout.addLayout(footer)
+        self.welcome_bottom = QWidget()
+        layout.addWidget(self.welcome_bottom, 1)
+        self.composer_offset = QWidget()
+        self.composer_offset.setFixedHeight(0)
+        layout.addWidget(self.composer_offset)
+        self.composer_transition = QVariantAnimation(self)
+        self.composer_transition.setDuration(200)
+        self.composer_transition.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.composer_transition.valueChanged.connect(self.composer_offset.setFixedHeight)
+        self.set_welcome(True, greet=True)
+        self.pages.currentChanged.connect(self.update_mascot_page)
         self.refresh_appearance()
         self.chat_min_width = max(340, header.minimumSizeHint().width())
         conversation.setMinimumWidth(self.chat_min_width)
@@ -703,10 +743,28 @@ class StoneBot(QMainWindow):
             except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
                 QMessageBox.warning(self, "Proyectos", str(exc))
 
+    def update_mascot_page(self, *_):
+        self.avatar.set_empty(self.pages.currentWidget() is self.chat_page and not self.welcome.isHidden())
+
+    def set_welcome(self, empty, *, animate=False, greet=False):
+        show_transition = animate and not self.welcome.isHidden() and self.chat_page.isVisible()
+        offset = max(0, self.chat_page.height() - self.composer_panel.geometry().bottom() - 1)
+        self.composer_transition.stop()
+        self.composer_offset.setFixedHeight(offset if show_transition else 0)
+        for widget in (self.welcome_top, self.welcome, self.welcome_bottom):
+            widget.setVisible(empty)
+        self.chat.setVisible(not empty)
+        self.avatar.set_empty(empty, greet=greet)
+        if show_transition:
+            self.composer_transition.setStartValue(offset)
+            self.composer_transition.setEndValue(0)
+            self.composer_transition.start()
+
     def render_chat(self, chat_id, saved, *, keep_activity=False):
         if self.inline_cancel:
             self.inline_cancel()
         self.chat_id = chat_id
+        self.set_welcome(not saved, greet=chat_id is None)
         self.chat_options.setVisible(chat_id is not None)
         self.last_regenerate = None
         self.task = None
@@ -842,17 +900,17 @@ class StoneBot(QMainWindow):
         self.problem.setText(message)
         self.problem.show()
 
+    @Slot(str)
+    def show_turn_warning(self, message):
+        self.show_problem(message)
+        self.avatar.warning(briefly=True)
+
     def open_diagnostics(self):
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Diagnóstico de StoneBot")
-        dialog.setStyleSheet(dialog_style(self.appearance))
-        newest_first = "\n".join(reversed(read_log().splitlines()))
-        text = QPlainTextEdit(newest_first or "Todavía no hay eventos de diagnóstico.")
-        text.setReadOnly(True)
-        layout = QVBoxLayout(dialog)
-        layout.addWidget(text)
-        dialog.resize(680, 420)
-        dialog.exec()
+        dialog = DiagnosticsDialog(self, self.appearance)
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
 
     def refresh_provider(self):
         provider = PROVIDERS[self.ai.provider]
@@ -869,8 +927,35 @@ class StoneBot(QMainWindow):
             self.refresh_provider()
         dialog.deleteLater()
 
+    def update_typing_expression(self):
+        if self.message.toPlainText():
+            self.avatar.typing()
+        else:
+            self.avatar.end_typing()
+
+    def update_greeting(self):
+        name = self.greeting_profile.value("name", "Luis", type=str)
+        self.greeting_label.setText(format_greeting(self.greeting_phrase, name))
+
     def open_appearance(self):
-        AppearanceDialog(self, self.appearance, self.change_appearance).exec()
+        name = self.greeting_profile.value("name", "Luis", type=str)
+        dialog = AppearanceDialog(self, self.appearance, self.change_appearance, user_name=name,
+                                  reduce_animations=self.avatar.reduced)
+        try:
+            dialog.exec()
+            updated = dialog.user_name.text().strip()
+            reduced = dialog.reduce_animations.isChecked()
+            if updated != name or reduced != self.avatar.reduced:
+                self.greeting_profile.setValue("name", updated)
+                self.greeting_profile.setValue("reduce_animations", reduced)
+                self.greeting_profile.sync()
+                if self.greeting_profile.status() != QSettings.Status.NoError:
+                    QMessageBox.warning(self, "Apariencia", "No se pudo guardar tu nombre.")
+                else:
+                    self.update_greeting()
+                    self.avatar.set_reduced(reduced)
+        finally:
+            dialog.deleteLater()
 
     def change_appearance(self, theme):
         try:
@@ -924,6 +1009,10 @@ class StoneBot(QMainWindow):
         return False
 
     def eventFilter(self, watched, event):
+        kind = event.type()
+        if kind in (QEvent.Type.KeyPress, QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove, QEvent.Type.Wheel):
+            if isinstance(watched, QWidget) and (watched is self or self.isAncestorOf(watched)):
+                self.avatar.user_activity()
         if (event.type() == QEvent.Type.Show and watched is not self and QApplication.platformName() == "windows"
                 and self.owns_caption(watched)):
             apply_native_caption(watched, self.appearance["background"])
@@ -1108,6 +1197,8 @@ class StoneBot(QMainWindow):
         self.message.setFocus()
 
     def append_message(self, text, *, user=False, created=None, index=None, attachments=None):
+        if not self.welcome.isHidden():
+            self.set_welcome(False, animate=user)
         if user:
             self.follow_latest = True
         row = QHBoxLayout()
@@ -1478,6 +1569,9 @@ class StoneBot(QMainWindow):
         for button in self.sidebar_rail.actions.values():
             button.setEnabled(False)
         self.activity_panel = ActivityPanel()
+        self.activity_panel.show_mascot(self.avatar)
+        self.avatar.thinking()
+        self.turn_failed = False
         self.transcript.insertWidget(self.transcript.count() - 1, self.activity_panel)
         if task is None:
             self.activity_panel.add_event("Procesando el mensaje…")
@@ -1524,10 +1618,12 @@ class StoneBot(QMainWindow):
 
         self.thread.started.connect(self.worker.run)
         self.thread.finished.connect(self.worker.deleteLater)
+        self.worker.partial.connect(self.show_partial_reply)
+        self.worker.interrupted_reply.connect(self.keep_interrupted_reply)
         self.worker.finished.connect(self.respuesta)
         self.worker.error.connect(self.error)
         self.worker.mcp_notice.connect(record)
-        self.worker.operation_error.connect(self.show_problem)
+        self.worker.operation_error.connect(self.show_turn_warning)
         self.worker.activity.connect(self.activity_panel.add_event)
         self.worker.reasoning.connect(self.activity_panel.add_reasoning)
         self.worker.mcp_confirmation.connect(self.confirmar_mcp, Qt.ConnectionType.BlockingQueuedConnection)
@@ -1586,7 +1682,11 @@ class StoneBot(QMainWindow):
         deny = dialog.addButton("Denegar", roles.RejectRole)
         dialog.setDefaultButton(deny)
         dialog.setEscapeButton(deny)
-        dialog.exec()
+        self.avatar.warning()
+        try:
+            dialog.exec()
+        finally:
+            self.avatar.end_warning()
         clicked = dialog.clickedButton()
         request["approved"] = clicked is once or (always is not None and clicked is always)
         request["remember"] = bool(always is not None and clicked is always)
@@ -1606,8 +1706,40 @@ class StoneBot(QMainWindow):
                 QTimer.singleShot(0, QApplication.instance().quit)
             super().closeEvent(event)
 
-    def respuesta(self, texto):
-        if self.stopping_turn and (self.worker is None or self.worker.task is None):
+    @Slot(str)
+    def show_partial_reply(self, text):
+        if self.stopping_turn:
+            return
+        if not text:
+            self.clear_partial_reply()
+            return
+        if self.partial_reply is None:
+            self.partial_reply = QLabel()
+            self.partial_reply.setObjectName("partialReply")
+            self.partial_reply.setWordWrap(True)
+            self.partial_reply.setTextFormat(Qt.TextFormat.PlainText)
+            self.transcript.insertWidget(self.transcript.count() - 1, self.partial_reply)
+        self.partial_reply.setText(text)
+        self.scroll_to_latest()
+
+    def clear_partial_reply(self):
+        if self.partial_reply is not None:
+            self.transcript.removeWidget(self.partial_reply)
+            self.partial_reply.hide()
+            self.partial_reply.deleteLater()
+            self.partial_reply = None
+
+    @Slot(str)
+    def keep_interrupted_reply(self, text):
+        self.clear_partial_reply()
+        if text:
+            self.respuesta(text, interrupted=True)
+
+    def respuesta(self, texto, *, interrupted=False):
+        self.clear_partial_reply()
+        if self.stopping_turn and not interrupted and (self.worker is None or self.worker.task is None):
+            if texto.strip() and texto.strip() != "(Sin respuesta)":
+                self.keep_interrupted_reply(texto)
             return
         created = time.time_ns()
         if self.pending_edit is None:
@@ -1643,6 +1775,7 @@ class StoneBot(QMainWindow):
         if self.worker is not None and self.worker.task is not None:
             self.worker.task_reply("paused", detalle)
             self.respuesta(detalle)
+        self.turn_failed = True
         self.restore_pending_edit()
         self.activity_panel.add_event(f"Error del turno · {detalle}")
         self.show_problem(detalle)
@@ -1659,6 +1792,7 @@ class StoneBot(QMainWindow):
 
     @Slot()
     def limpiar(self):
+        self.clear_partial_reply()
         task = self.task if self.activity_panel is self.task_panel else None
         self.thread.wait()
         self.thread.deleteLater()
@@ -1674,6 +1808,9 @@ class StoneBot(QMainWindow):
             self.activity_panel.add_event("Respuesta detenida.")
         elif not self.activity_panel.latest.startswith("Error del turno"):
             self.activity_panel.add_event("Turno finalizado.")
+        success = not (self.stopping_turn or self.turn_failed)
+        self.avatar.finish(success)
+        self.activity_panel.finish_mascot(success, cancelled=self.stopping_turn)
         self.message.setEnabled(True)
         self.attachments.add_button.setEnabled(True)
         self.reasoning_button.setEnabled(True)
@@ -1700,7 +1837,7 @@ def main():
         lock.setStaleLockTime(0)
         if not lock.tryLock(0):
             QMessageBox.information(None, "StoneBot", "No se pudo iniciar otra instancia de StoneBot. "
-                                    "Si ya está abierto, usa el icono SB de la bandeja.")
+                                    "Si ya está abierto, usa el icono de StoneBot en la bandeja.")
             return 1
     except (OSError, RuntimeError, ValueError) as exc:
         QMessageBox.warning(None, "StoneBot", str(exc))

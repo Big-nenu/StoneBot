@@ -243,16 +243,66 @@ class OpenRouter:
             except StopIteration as done:
                 return done.value
 
-    async def chat_async(self, **options):
+    async def chat_async(self, *, on_partial=None, **options):
         exchange = self.chat_exchange(**options)
         payload = next(exchange)
         async with httpx.AsyncClient(follow_redirects=False) as client:
             while True:
-                data = await self.request_async(client, "POST", "/chat/completions", payload=payload)
+                if on_partial is None:
+                    data = await self.request_async(client, "POST", "/chat/completions", payload=payload)
+                else:
+                    data = await self.stream_chat(client, payload, on_partial)
                 try:
                     payload = exchange.send(data)
                 except StopIteration as done:
                     return done.value
+
+    async def stream_chat(self, client, payload, on_partial):
+        on_partial("")
+        headers = self.request_headers(payload)
+        message = {}
+        calls = {}
+        choice = {"message": message}
+        usage = None
+        try:
+            async with client.stream("POST", OPENROUTER_URL + "/chat/completions", headers=headers,
+                                     json={**payload, "stream": True}, timeout=120) as response:
+                if response.is_error or "text/event-stream" not in response.headers.get("content-type", ""):
+                    await response.aread()
+                    return self.response_json(response)
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    packet = json.loads(data)
+                    if packet.get("error"):
+                        raise ResponseError("OpenRouter interrumpió la respuesta.")
+                    usage = packet.get("usage") or usage
+                    for item in packet.get("choices", []):
+                        if item.get("index", 0) != 0:
+                            continue
+                        delta = item.get("delta") or {}
+                        for field in ("content", "reasoning"):
+                            if fragment := delta.get(field):
+                                message[field] = message.get(field, "") + fragment
+                        if details := delta.get("reasoning_details"):
+                            message.setdefault("reasoning_details", []).extend(details)
+                        for fragment in delta.get("tool_calls") or ():
+                            call = calls.setdefault(fragment["index"], {"type": "function", "function": {}})
+                            if fragment.get("id"):
+                                call["id"] = fragment["id"]
+                            for field, text in fragment.get("function", {}).items():
+                                if text is not None:
+                                    call["function"][field] = call["function"].get(field, "") + text
+                        if item.get("finish_reason"):
+                            choice["finish_reason"] = item["finish_reason"]
+                        on_partial("" if calls else message.get("content", ""))
+        except (httpx.RequestError, KeyError, TypeError, ValueError):
+            raise ResponseError("No se pudo leer la respuesta de OpenRouter.") from None
+        message["tool_calls"] = [calls[index] for index in sorted(calls)]
+        return {"choices": [choice], "usage": usage}
 
     def chat_exchange(self, *, model, messages, tools=(), options=None, think=None, format=None, recover_local_reads=False):
         rows = self.messages_for_api(messages)

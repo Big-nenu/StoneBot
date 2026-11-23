@@ -10,7 +10,7 @@ if ($LASTEXITCODE -ne 0 -or -not $python) {
 
 $pythonw = Join-Path (Split-Path -Parent $python) 'pythonw.exe'
 $app = Join-Path $PSScriptRoot 'app.py'
-$icono = Join-Path $PSScriptRoot 'assets\stonebot.ico'
+$icono = Join-Path $PSScriptRoot 'assets\stonebot-icon.ico'
 foreach ($archivo in @($pythonw, $app, $icono)) {
     if (-not (Test-Path -LiteralPath $archivo -PathType Leaf)) {
         throw "Falta un archivo necesario: $archivo"

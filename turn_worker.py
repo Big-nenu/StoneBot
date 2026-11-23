@@ -136,6 +136,8 @@ def model_context(prompt_chars, minimum=4096):
 class Worker(QObject):
     finished = Signal(str)
     cancelled = Signal()
+    partial = Signal(str)
+    interrupted_reply = Signal(str)
     error = Signal(str)
     mcp_notice = Signal(str)
     operation_error = Signal(str)
@@ -173,13 +175,15 @@ class Worker(QObject):
         self.turn_loop = None
         self.turn_task = None
         self.turn_clients = None
-        self.waiting_for_model = False
+        self.streaming_client = None
+        self.partial_text = ""
 
     @Slot()
     def run(self):
         try:
             answer = asyncio.run(self.run_chat())
             if self.stop_requested.is_set():
+                self.interrupted_reply.emit(self.partial_text.strip())
                 self.cancelled.emit()
                 return
             if self.capture_memory and self.memory is not None and self.messages:
@@ -187,8 +191,12 @@ class Worker(QObject):
             self.finished.emit(answer)
         except asyncio.CancelledError:
             if self.task is not None:
+                for step in self.task["steps"]:
+                    if step["status"] == "running":
+                        step.update(status="exception", result="Se interrumpió la espera. Resultado sin confirmar.")
                 self.finished.emit(self.task_reply("paused", "Tarea pausada. Usa /reanudar para continuar con los resultados guardados."))
             else:
+                self.interrupted_reply.emit(self.partial_text.strip())
                 self.cancelled.emit()
         except TaskPaused as exc:
             self.finished.emit(self.task_reply("paused", str(exc)))
@@ -217,25 +225,42 @@ class Worker(QObject):
             self.stop_requested.set()
         loop, task = self.turn_loop, self.turn_task
         if loop is not None and task is not None:
-            def cancel():
-                # Las operaciones de herramientas de una tarea conservan su punto de control.
-                if self.task is None or self.waiting_for_model:
-                    task.cancel()
-
             with suppress(RuntimeError):
-                loop.call_soon_threadsafe(cancel)
+                loop.call_soon_threadsafe(task.cancel)
 
     async def model_request(self, client, method, *args, **kwargs):
         handler = getattr(client, f"{method}_async", None) if self.turn_loop is not None else None
         if not inspect.iscoroutinefunction(handler):
             handler = getattr(client, method)
-        self.waiting_for_model = True
-        try:
-            if inspect.iscoroutinefunction(handler):
-                return await handler(*args, **kwargs)
+        if not inspect.iscoroutinefunction(handler):
             return await asyncio.to_thread(handler, *args, **kwargs)
-        finally:
-            self.waiting_for_model = False
+        if method == "chat" and self.task is None and not kwargs.get("format") and self.turn_loop is not None:
+            self.update_partial("")
+            if isinstance(client, OpenRouter):
+                return await handler(*args, on_partial=self.update_partial, **kwargs)
+            if client is self.streaming_client:
+                return await self.stream_ollama(handler, *args, **kwargs)
+        return await handler(*args, **kwargs)
+
+    def update_partial(self, text):
+        if text.lstrip().startswith(("<tool", "<function")):
+            text = ""
+        if text != self.partial_text:
+            self.partial_text = text
+            self.partial.emit(text)
+
+    async def stream_ollama(self, handler, *args, **kwargs):
+        stream = await handler(*args, stream=True, **kwargs)
+        content, thinking, calls = "", "", []
+        async for part in stream:
+            content += part.message.content or ""
+            thinking += part.message.thinking or ""
+            calls.extend(part.message.tool_calls or ())
+            self.update_partial("" if calls else content)
+            if part.done:
+                reply = part.message.model_copy(update={"content": content, "thinking": thinking, "tool_calls": calls})
+                return part.model_copy(update={"message": reply})
+        raise TurnError("Ollama interrumpió la respuesta.")
 
     def task_reply(self, status, text):
         self.task.update(status=status, message=text)
@@ -691,6 +716,7 @@ class Worker(QObject):
         client = OpenRouter() if self.ai.cloud else Client(host=OLLAMA_URL, timeout=180)
         if self.turn_clients is not None and isinstance(client, ollama.Client):
             client = await self.turn_clients.enter_async_context(ollama.AsyncClient(host=OLLAMA_URL, timeout=180))
+            self.streaming_client = client
         learn = current.get("role") == "user" and command[:1] == ["/aprender"]
         skills = {} if learn or self.task is not None else self.enabled_skills()
         project_files = [file for file in current.get("attachments", ()) if "project_document" in file]
@@ -1419,6 +1445,12 @@ class Worker(QObject):
                        "Usa la cobertura de PDF solo para saber qué datos recibiste. "
                        "Si alguna página no es legible, indícalo. "
                        "Puedes citar resúmenes previos como tales, sin afirmar que releíste esas páginas.")
+        if has_images and not save_request:
+            instruction += (
+                " Responde en el idioma del usuario. Si comparte una imagen con un comentario general, "
+                "responde al comentario y menciona uno o dos detalles visibles pertinentes. "
+                "Si comenta un cambio, describe el estado visible y compara versiones solo cuando ambas estén disponibles."
+            )
         if any(file.get("sections") for batch in batches for file, _ in batch):
             instruction += (" Para Office cita el archivo y la ubicación que respalda cada dato: párrafo, tabla, "
                             "hoja y celdas, o diapositiva. En Excel distingue fórmulas de resultados guardados. "
