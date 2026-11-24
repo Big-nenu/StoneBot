@@ -384,7 +384,11 @@ def test_context7_results_are_used_to_finish_after_empty_ollama_response():
                                    message=Message(role="assistant", content="", thinking="Revisando los ejemplos."))
         name = names[rounds - 1]
         tool, = [tool for tool in kwargs["tools"] if not callable(tool) and f" / {name}." in tool.function.description]
-        call = Message.ToolCall(function=Message.ToolCall.Function(name=tool.function.name, arguments={"query": "PySide6"}))
+        query = "PySide6"
+        if rounds == 2:
+            assert transcript[-1]["role"] == "tool"
+            query = json.loads(transcript[-1]["content"])["libraryId"]
+        call = Message.ToolCall(function=Message.ToolCall.Function(name=tool.function.name, arguments={"query": query}))
         return SimpleNamespace(message=Message(role="assistant", tool_calls=[call]))
 
     worker = app.Worker(messages)
@@ -401,7 +405,10 @@ def test_context7_results_are_used_to_finish_after_empty_ollama_response():
     assert not errors, errors
     assert outputs == ["Usa QVBoxLayout.addWidget()."] and rounds == 4
     assert [call.args[1] for call in confirm.await_args_list] == names
-    assert [call.args[0] for call in session.call_tool.await_args_list] == names
+    assert [call.args for call in session.call_tool.await_args_list] == [
+        ("resolve-library-id", {"query": "PySide6"}),
+        ("query-docs", {"query": "/qt/pyside6"}),
+    ]
 
 
 def test_empty_reply_retries_selection_across_active_servers():

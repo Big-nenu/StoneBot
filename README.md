@@ -359,6 +359,7 @@ StoneBot/
 ├── README-Hermes.md
 ├── app.py                # arranque y ventana principal
 ├── turn_worker.py        # ejecución del turno de chat
+├── tool_loop.py          # rondas del modelo y resultados de herramientas
 ├── request_routing.py    # elección de fuente para el turno
 ├── attachment_actions.py # guardado solicitado desde el chat
 ├── stonewave_memory.py   # cliente MCP de la memoria personal
@@ -382,7 +383,8 @@ StoneBot/
 | La lista de conversaciones o cómo se guardan | [`history_ui.py`](history_ui.py) para la lista y [`history.py`](history.py) para el almacenamiento. |
 | Cuándo SB interpreta que quieres abrir un enlace, leer una carpeta o usar herramientas externas | [`request_routing.py`](request_routing.py) |
 | Permisos, exclusiones y recorrido nativo de archivos | [`local_files.py`](local_files.py) y [`local_file_requests.py`](local_file_requests.py). El diálogo está en [`local_files_ui.py`](local_files_ui.py). |
-| Cómo SB procesa un mensaje, ejecuta herramientas o termina un turno | [`turn_worker.py`](turn_worker.py) |
+| Cómo SB prepara un turno y conecta el modelo, las herramientas y las autorizaciones con Qt | [`turn_worker.py`](turn_worker.py) |
+| Cómo SB encadena llamadas, devuelve resultados al modelo y limita las rondas | [`tool_loop.py`](tool_loop.py) |
 | Cómo se reciben adjuntos o se pide guardar su contenido | [`attachments.py`](attachments.py) para la lectura y [`attachment_actions.py`](attachment_actions.py) para el guardado. |
 | Ollama, OpenRouter o el selector de modelos | [`ai_provider.py`](ai_provider.py) para la conexión y [`ai_settings_ui.py`](ai_settings_ui.py) para el selector. |
 | Qué muestra SB sobre los sueños y las notas de SW | [`stonewave_activity.py`](stonewave_activity.py). La conexión MCP está en [`stonewave_memory.py`](stonewave_memory.py) y los ajustes en [`stonewave_settings_ui.py`](stonewave_settings_ui.py). |
