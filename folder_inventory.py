@@ -58,7 +58,7 @@ def is_ranking_request(text):
     return (ranking_count(text) is not None
             and not uses_mcp(text)
             and not re.match(r"\s*[¿¡]?\s*(?:c[oó]mo|qu[eé] significa|por qu[eé])\b", text, re.I)
-            and bool(re.search(r"\b(?:revisa|revisar|busca|buscar|encuentra|encontrar|dime|mu[eé]strame|"
+            and bool(re.search(r"\b(?:revisa|revisar|busca|buscar|encuentra|encontrar|dime|decirme|mu[eé]strame|"
                                r"lista|ordena|identifica|cu[aá]les son|quiero ver|saca|dame)\b", text, re.I)))
 
 

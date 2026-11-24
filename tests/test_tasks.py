@@ -187,11 +187,13 @@ def stage(root, phase, live):
 
 
 def inventory_stage(root, phase):
-    objective = "¿Puedes revisar Descargas y decirme cuáles son los cinco archivos más pesados? Solo archivos directos."
+    request = "me puedes ayudar a decirme los 3 archivos mas grandes en descargas"
+    objective = request + "? Solo archivos directos."
     largest = root / "archivos" / "subcarpeta" / "mayor.bin"
     if phase == "inventory":
         largest.parent.mkdir()
         largest.write_bytes(b"x" * 20_000)
+    assert app.is_ranking_request(request)
     assert not app.is_ranking_request("¿Cómo puedo encontrar los archivos más pesados?")
     assert not app.is_ranking_request("Busca los cinco archivos más pesados usando Desktop Commander.")
     with (patch.object(mcp_client, "default_root", return_value=root / "perfil-inventario"),
