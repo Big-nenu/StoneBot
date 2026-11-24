@@ -1,4 +1,4 @@
-"""Permisos y operaciones de metadatos para los archivos del chat."""
+"""Permisos y operaciones para los archivos del chat."""
 import ctypes
 import os
 import stat
@@ -15,7 +15,7 @@ from stonebot_engine import safety
 from stonebot_engine.safety import IsolationError
 
 OPERATIONS = {"list": "Listar carpetas", "search": "Buscar archivos", "info": "Consultar propiedades",
-              "rank": "Clasificar por tamaño"}
+              "rank": "Clasificar por tamaño", "read": "Leer contenido de archivos del proyecto"}
 MODES = {"allow": "Permitir", "ask": "Preguntar", "deny": "Denegar"}
 RESULT_HEADER = "**Archivos locales**\n\n"
 RESULT_LIMIT = 80
@@ -37,7 +37,8 @@ def settings_file():
 
 def load_settings():
     settings = settings_file()
-    modes = {key: settings.value(f"permissions/{key}", "allow", type=str) for key in OPERATIONS}
+    modes = {key: settings.value(f"permissions/{key}", "ask" if key == "read" else "allow", type=str)
+             for key in OPERATIONS}
     exclusions = settings.value("exclusions", [], type=list)
     if settings.status() != QSettings.Status.NoError:
         raise OSError("No se pudieron cargar los permisos de archivos locales.")
@@ -116,6 +117,23 @@ def pin_directory(path):
         close(handle)
 
 
+def open_readonly(path, flags):
+    if os.name != "nt":
+        return os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK)
+    import msvcrt
+
+    create, close = windows_handles()
+    # GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT.
+    handle = create(path, 0x80000000, 1, None, 3, 0x00200000, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return msvcrt.open_osfhandle(handle, flags)
+    except OSError:
+        close(handle)
+        raise
+
+
 class LocalFiles:
     def __init__(self, settings):
         self.settings = settings
@@ -153,6 +171,18 @@ class LocalFiles:
             if not stat.S_ISDIR(info.st_mode) and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
                 raise IsolationError("La ruta no corresponde a un archivo regular sin enlaces duros.")
             yield info
+
+    def read_text(self, path, offset, length):
+        with self.target(path) as expected:
+            if not stat.S_ISREG(expected.st_mode):
+                raise ValueError("Indica un archivo de texto del proyecto.")
+            with open(path, encoding="utf-8-sig", opener=open_readonly) as stream:
+                current = os.fstat(stream.fileno())
+                if (redirected(current) or not stat.S_ISREG(current.st_mode)
+                        or current.st_nlink != 1 or not os.path.samestat(expected, current)):
+                    raise IsolationError("El archivo cambió durante la apertura.")
+                stream.read(offset)
+                return stream.read(length)
 
     def scan(self, folder, recursive, check_pause, visit, *, exclude_hidden=False):
         pending = [folder]

@@ -29,6 +29,25 @@ TEXT_CALL = re.compile(r"<tool_call>\s*<function\s*=\s*(\w+)\s*>(.*?)</function>
 TEXT_PARAMETER = re.compile(r"\s*<parameter\s*=\s*(\w+)\s*>([^<>]*)</parameter>")
 
 
+def ollama_model_is_local(model):
+    if model.casefold().endswith((":cloud", "-cloud")):
+        return False
+    try:
+        response = httpx.post(f"{OLLAMA_URL}/api/show", json={"model": model}, timeout=5, trust_env=False)
+        response.raise_for_status()
+        info = response.json()
+    except (httpx.HTTPError, ValueError):
+        return False
+    return (isinstance(info, dict) and isinstance(info.get("details"), dict)
+            and not (info.get("remote_model") or info.get("remote_host")))
+
+
+def local_file_placeholder(message):
+    if message.get("role") == "assistant" and (message.get("content") or "").startswith(RESULT_HEADER):
+        return {**message, "content": "[Resultado de archivos locales disponible en StoneBot.]"}
+    return message
+
+
 def recover_text_call(content, tools):
     # shortcut: solo el formato observado de Nemotron; otros formatos siguen por el reintento.
     call = TEXT_CALL.fullmatch(content.strip())
@@ -212,11 +231,9 @@ class OpenRouter:
         pending = deque()
         result = []
         for raw in messages:
-            source = raw.model_dump(exclude_none=True) if isinstance(raw, Message) else raw
+            source = local_file_placeholder(raw.model_dump(exclude_none=True) if isinstance(raw, Message) else raw)
             role = source["role"]
             content = source.get("content") or ""
-            if role == "assistant" and content.startswith(RESULT_HEADER):
-                content = "[Resultado de archivos locales disponible en StoneBot.]"
             row = {"role": role, "content": content}
             if source.get("images"):
                 row["content"] = [{"type": "text", "text": content}]

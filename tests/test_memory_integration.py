@@ -49,7 +49,7 @@ with patch.object(mcp_client, 'default_root', return_value=Path(sys.argv[1])):
 
     def chat(**kwargs):
         definitions = kwargs["messages"][0]["content"].split(" (datos): ", 1)[1]
-        assert json.loads(definitions) == reopened
+        assert json.loads(definitions.splitlines()[0]) == reopened
         return SimpleNamespace(message=Message(role="assistant", content=f"Mi creador es {reopened['creador']}."))
 
     with patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=chat)):

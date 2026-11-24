@@ -237,7 +237,18 @@ Desde el chat puedes listar carpetas, buscar archivos por nombre o extensión, c
 
 En **Configuración → Archivos locales**, elige **Permitir**, **Preguntar** o **Denegar** para cada operación. Puedes usar cualquier carpeta de una unidad local accesible para tu cuenta. Agrega **Carpetas excluidas** para bloquearlas junto con sus subcarpetas. StoneBot también protege las rutas de memoria y credenciales conocidas. La configuración se guarda en `%USERPROFILE%\.stonebot\local_files.ini`.
 
-El recorrido respeta la carpeta solicitada y avisa si hay entradas omitidas o se alcanzan los límites. Para leer el contenido desde el chat puedes adjuntar el documento. Las integraciones MCP conservan sus propios permisos.
+El recorrido respeta la carpeta solicitada y avisa si hay entradas omitidas o se alcanzan los límites. Puedes adjuntar un documento para consultar su contenido. Las integraciones MCP conservan sus propios permisos.
+
+### Leer y contrastar información en un proyecto
+
+Vincula una carpeta a un proyecto y usa un modelo ejecutado en Ollama local. En un chat de ese proyecto, prueba «Lee el README del proyecto y dime si contradice alguna decisión que recuerdes». StoneBot puede leer archivos Markdown y de texto UTF-8 dentro de esa carpeta, y consultar StoneWave en el mismo turno. **Leer contenido de archivos del proyecto** pide autorización por defecto. También se aplican las exclusiones de **Archivos locales**. Si un archivo supera el tamaño de una lectura, el modelo puede pedir la siguiente parte.
+
+Para incluir una página web, proporciona el enlace en el chat de proyecto y habilita un servidor MCP que ofrezca `web_fetch_exa`. En el turno combinado, esa llamada recibe únicamente la URL indicada y conserva su permiso MCP. Los resultados derivados del lector de archivos o de StoneWave en este flujo se ocultan al enviar el historial a un proveedor en la nube.
+
+```powershell
+python -B tests/test_project_reads.py
+python -B tests/test_project_reads.py --live qwen3.5:4b
+```
 
 Con el ejemplo activado, pide en el chat «Usa echo del servidor ejemplo con el texto hola». Las pruebas usan configuraciones temporales.
 
@@ -385,6 +396,7 @@ StoneBot/
 | Permisos, exclusiones y recorrido nativo de archivos | [`local_files.py`](local_files.py) y [`local_file_requests.py`](local_file_requests.py). El diálogo está en [`local_files_ui.py`](local_files_ui.py). |
 | Cómo SB prepara un turno y conecta el modelo, las herramientas y las autorizaciones con Qt | [`turn_worker.py`](turn_worker.py) |
 | Cómo SB encadena llamadas, devuelve resultados al modelo y limita las rondas | [`tool_loop.py`](tool_loop.py) |
+| Qué lecturas puede combinar un chat de proyecto | [`read_tools.py`](read_tools.py) |
 | Cómo se reciben adjuntos o se pide guardar su contenido | [`attachments.py`](attachments.py) para la lectura y [`attachment_actions.py`](attachment_actions.py) para el guardado. |
 | Ollama, OpenRouter o el selector de modelos | [`ai_provider.py`](ai_provider.py) para la conexión y [`ai_settings_ui.py`](ai_settings_ui.py) para el selector. |
 | Qué muestra SB sobre los sueños y las notas de SW | [`stonewave_activity.py`](stonewave_activity.py). La conexión MCP está en [`stonewave_memory.py`](stonewave_memory.py) y los ajustes en [`stonewave_settings_ui.py`](stonewave_settings_ui.py). |
