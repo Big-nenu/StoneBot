@@ -75,6 +75,33 @@ def checkpoint_key(name, server, tool, arguments):
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def project_checkpoint_key(name, arguments):
+    payload = json.dumps(["project_read", name, arguments], sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def invalidate_project_reads(task, resources):
+    stale = {}
+    steps = []
+    for step in task["steps"]:
+        kind = step.get("project_read")
+        if kind == "memory":
+            continue
+        resource = step.get("resource")
+        if kind != "file" or resource not in resources:
+            steps.append(step)
+            continue
+        if resource not in stale or step["arguments"]["offset"] < stale[resource]["arguments"]["offset"]:
+            stale[resource] = step
+    for step in stale.values():
+        replacement = {key: step[key] for key in ("key", "tool", "resource", "project_read", "arguments")}
+        replacement.update(status="not_run", result="La lectura guardada dejó de ser válida. Vuelve a leer el archivo.")
+        steps.append(replacement)
+    task["steps"] = steps
+    task["message"] = ""
+    task["pending"] = ""
+
+
 def step_caption(step):
     resource = f" · {Path(step['resource']).name}" if step.get("resource") else ""
     status = "Resultado parcial" if step.get("partial") else STEP_LABELS[step["status"]]
@@ -95,6 +122,8 @@ def task_context(task):
             entry["cobertura"] = step.get("partial") or "El resultado se abrevió para este turno."
         if step.get("resource"):
             entry["recurso"] = step["resource"]
+        if step.get("project_read"):
+            entry["argumentos"] = step["arguments"]
         recent.append(entry)
         remaining -= len(json.dumps(entry, ensure_ascii=False))
     return json.dumps({"objetivo": task["objective"], "mensaje_anterior": task["message"],
@@ -109,13 +138,35 @@ def task_context(task):
 def completion_evidence(task):
     reasons = [note for note in task.get("coverage_notes", []) if note != LIMIT_REASON]
     latest = {step["key"]: step for step in task["steps"]}
+    pages = {(step["resource"], step["arguments"]["offset"], tuple(step["revision"])): step
+             for step in latest.values() if step.get("project_read") == "file" and step.get("revision")
+             and step["status"] == "response"}
+    complete_files = set()
+    for (resource, offset, revision), first in pages.items():
+        if offset != 0:
+            continue
+        page = first
+        while page and (next_offset := page.get("next_offset")) is not None:
+            page = pages.get((resource, next_offset, revision)) if next_offset > page["arguments"]["offset"] else None
+        if page and not page.get("partial"):
+            complete_files.add((resource, revision))
     evidence = []
     for step in latest.values():
-        if step.get("partial"):
+        next_page = step.get("next_offset")
+        continuation = (next_page is not None and
+                        (step["resource"], next_page, tuple(step["revision"])) in pages)
+        if step.get("partial") and not continuation:
             reasons.append(f"{step_caption(step)}. {step['partial']}")
         elif step["status"] != "response":
             reasons.append(f"{step_caption(step)}. Falta una lectura verificable.")
-        evidence.append({key: value for key, value in step.items() if key != "key"})
+        item = {key: value for key, value in step.items() if key != "key"}
+        if step.get("project_read") == "file" and step["status"] == "response":
+            version = (step["resource"], tuple(step["revision"]))
+            item["cobertura_archivo"] = "completo" if version in complete_files else "parcial"
+        if continuation:
+            item.pop("partial", None)
+            item["continuation_read"] = True
+        evidence.append(item)
     serialized = json.dumps({"objetivo": task["objective"], "aclaraciones": task.get("clarifications", []),
                              "lecturas": evidence}, ensure_ascii=False)
     if len(serialized) > 24_000:

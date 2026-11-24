@@ -134,6 +134,36 @@ def open_readonly(path, flags):
         raise
 
 
+class FileBasicInfo(ctypes.Structure):
+    _fields_ = [("creation_time", ctypes.c_int64), ("access_time", ctypes.c_int64),
+                ("write_time", ctypes.c_int64), ("change_time", ctypes.c_int64),
+                ("attributes", ctypes.c_uint32)]
+
+
+@lru_cache(maxsize=1)
+def windows_file_info():
+    from ctypes import wintypes
+
+    query = ctypes.WinDLL("kernel32", use_last_error=True).GetFileInformationByHandleEx
+    query.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.POINTER(FileBasicInfo), wintypes.DWORD)
+    query.restype = wintypes.BOOL
+    return query
+
+
+def file_revision(stream):
+    info = os.fstat(stream.fileno())
+    change_time = info.st_ctime_ns
+    if os.name == "nt":
+        import msvcrt
+
+        basic = FileBasicInfo()
+        handle = msvcrt.get_osfhandle(stream.fileno())
+        if not windows_file_info()(handle, 0, ctypes.byref(basic), ctypes.sizeof(basic)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        change_time = basic.change_time
+    return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, change_time]
+
+
 class LocalFiles:
     def __init__(self, settings):
         self.settings = settings
@@ -172,7 +202,8 @@ class LocalFiles:
                 raise IsolationError("La ruta no corresponde a un archivo regular sin enlaces duros.")
             yield info
 
-    def read_text(self, path, offset, length):
+    @contextmanager
+    def open_text(self, path):
         with self.target(path) as expected:
             if not stat.S_ISREG(expected.st_mode):
                 raise ValueError("Indica un archivo de texto del proyecto.")
@@ -181,8 +212,22 @@ class LocalFiles:
                 if (redirected(current) or not stat.S_ISREG(current.st_mode)
                         or current.st_nlink != 1 or not os.path.samestat(expected, current)):
                     raise IsolationError("El archivo cambió durante la apertura.")
-                stream.read(offset)
-                return stream.read(length)
+                yield stream
+
+    def read_text(self, path, offset, length):
+        with self.open_text(path) as stream:
+            revision = file_revision(stream)
+            stream.read(offset)
+            content = stream.read(length)
+            if file_revision(stream) != revision:
+                raise IsolationError("El archivo cambió durante la lectura.")
+            return content, revision
+
+    def read_revision(self, path):
+        if self.mode("read") not in {"allow", "ask"}:
+            raise IsolationError("La lectura está denegada en Archivos locales.")
+        with self.open_text(path) as stream:
+            return file_revision(stream)
 
     def scan(self, folder, recursive, check_pause, visit, *, exclude_hidden=False):
         pending = [folder]
