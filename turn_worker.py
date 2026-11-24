@@ -27,6 +27,8 @@ from experiences import (
 )
 from folder_inventory import hidden_filter, largest_files, ranking_request, uses_mcp
 from identity import INITIAL_IDENTITY, load_identity, update_identity
+from local_file_requests import continued_request, file_answer, parse_request
+from local_files import LocalFiles, OPERATIONS, RESULT_HEADER, load_settings as load_file_settings, local_path
 import local_skills
 from mcp_client import (
     call_external, connection_error, discover, is_desktop_commander, load_servers, ollama_tool,
@@ -37,7 +39,7 @@ from request_routing import (
     LOCAL_READ_TOOLS, SELECT_SOURCE, TURN_SOURCES, WEB_LINK_TOOLS, referenced_web_link, requested_web_link,
     requests_external_tools, requests_local_read, requests_memory,
 )
-from stonebot_engine.safety import IsolationError, check_path
+from stonebot_engine.safety import IsolationError
 from stonewave_activity import (
     ACTIVITY_TOOLS, dream_question, format_dream_activity, format_recent_notes, notes_content_question,
     private_activity_placeholder,
@@ -170,7 +172,6 @@ class Worker(QObject):
         self.share_memory = not self.ai.cloud or self.ai.cloud_memory
         self.ranking_scope = None
         self.ranking_hidden = None
-        self.learned_server = None
         self.stop_requested = Event()
         self.turn_loop = None
         self.turn_task = None
@@ -344,21 +345,14 @@ class Worker(QObject):
         else:
             self.activity.emit(f"Experiencia guardada · {method} · {outcome}")
 
-    def choose_ranking_server(self):
+    def show_ranking_evidence(self):
         try:
             evidence = ranking_evidence(self.ranking_scope)
             if evidence:
                 summary = ", ".join(f"#{item['id']} {item['method']} ({item['outcome']})" for item in evidence)
                 self.activity.emit(f"Experiencias recuperadas · {summary}")
-            if evidence and evidence[0]["outcome"] == "completo" and evidence[0]["method"].startswith("mcp:"):
-                observed_server = evidence[0]["method"].removeprefix("mcp:")
-                return next((name for name, server in load_servers().items()
-                             if name == observed_server and server["enabled"] and is_desktop_commander(server)
-                             and {"list_directory", "get_file_info"} <= set(server["read_tools"])
-                             and not {"list_directory", "get_file_info"} & set(server["disabled_tools"])), None)
         except (OSError, ValueError, RuntimeError, sqlite3.Error):
             self.mcp_notice.emit("No se pudo consultar la experiencia de clasificación. Usando el recorrido local.")
-        return None
 
     def ranking_hidden_filter(self, text):
         explicit = hidden_filter(text)
@@ -467,6 +461,8 @@ class Worker(QObject):
         return await self.finish_task_reply(client, status, text, repair_messages)
 
     def check_pause(self, thread=None):
+        if self.stop_requested.is_set():
+            raise asyncio.CancelledError
         if self.task is not None and (thread or QThread.currentThread()).isInterruptionRequested():
             raise TaskPaused("Tarea pausada. Usa /reanudar para continuar con los resultados guardados.")
 
@@ -541,34 +537,86 @@ class Worker(QObject):
             self.activity.emit(f"Plan · {step}")
         return context
 
+    async def authorize_local_files(self, operation, path, **scope):
+        path = local_path(path)
+        files = LocalFiles(load_file_settings())
+        files.check(path)
+        mode = files.mode(operation)
+        if mode == "ask":
+            with files.target(path, directory=operation != "info"):
+                pass
+            request = {"local_files": True, "operation": OPERATIONS[operation], "approved": False,
+                       "arguments": {"Ruta": str(path), **scope}}
+            self.activity.emit(f"Esperando autorización · {OPERATIONS[operation]}")
+            await asyncio.to_thread(self.mcp_confirmation.emit, request)
+            self.check_pause()
+            if not request["approved"]:
+                raise IsolationError("La operación fue denegada.")
+            files = LocalFiles(load_file_settings())
+            files.check(path)
+            mode = files.mode(operation)
+        if mode not in {"allow", "ask"}:
+            raise IsolationError(f"La operación «{OPERATIONS[operation]}» está denegada en Archivos locales.")
+        return files
+
+    async def run_local_files(self, request):
+        self.used_external_source = True
+        if request.operation == "content":
+            return RESULT_HEADER + "La exploración nativa consulta nombres y propiedades. Puedes adjuntar el archivo para leer su contenido."
+        if request.path is None:
+            return RESULT_HEADER + "¿En qué carpeta quieres buscar o consultar archivos? Indica su ruta completa o un nombre como Descargas."
+        scope = {}
+        if request.operation != "info":
+            scope["Subcarpetas"] = "Sí" if request.recursive else "No"
+        if request.query:
+            scope["Nombre"] = request.query
+        if request.extension:
+            scope["Extensión"] = request.extension
+        try:
+            files = await self.authorize_local_files(request.operation, request.path, **scope)
+            self.activity.emit(f"Archivos locales · {OPERATIONS[request.operation]}")
+            thread = QThread.currentThread()
+            result = await asyncio.to_thread(file_answer, files, request, lambda: self.check_pause(thread))
+            self.check_pause()
+        except (ValueError, IsolationError) as exc:
+            result = str(exc)
+        except OSError:
+            result = "No pude consultar la ruta. Comprueba que exista y que tu cuenta tenga acceso."
+        return RESULT_HEADER + result
+
     async def run_local_ranking(self, folder, count, recursive):
         self.persist_task()
+        self.used_external_source = True
         self.activity.emit("Método elegido · recorrido local. Revisando los tamaños…")
         worker_thread = QThread.currentThread()
         try:
-            root, top, files, folders, missing, skipped = await asyncio.to_thread(
-                largest_files, folder, count, recursive, lambda: self.check_pause(worker_thread),
+            service = await self.authorize_local_files("rank", folder, Subcarpetas="Sí" if recursive else "No",
+                                                       Resultados=count)
+            root, top, files, folders, missing, limited = await asyncio.to_thread(
+                largest_files, service, folder, count, recursive, lambda: self.check_pause(worker_thread),
                 exclude_hidden=self.ranking_hidden is True,
             )
         except (ValueError, OSError, IsolationError) as exc:
             self.observe_ranking("local", "fallido")
-            return self.task_reply("waiting", str(exc))
+            message = str(exc) if not isinstance(exc, OSError) else "No pude consultar la carpeta indicada."
+            return self.task_reply("waiting", RESULT_HEADER + message)
         self.check_pause()
-        self.observe_ranking("local", "parcial" if missing else "completo", missing)
+        partial = bool(missing or limited)
+        self.observe_ranking("local", "parcial" if partial else "completo", missing)
         scope = "con subcarpetas" if recursive else "solo archivos directos"
         if self.ranking_hidden is not None:
             scope += ", sin ocultos" if self.ranking_hidden else ", incluidos los ocultos"
         lines = [f"Revisé **{files} archivos** en **{folders} carpetas** ({scope}) bajo `{root}`."]
-        if missing:
-            lines.append(f"**Revisión parcial.** No pude revisar {missing} entradas. "
-                         "Primeras rutas omitidas:\n\n" + "\n".join(f"- `{path}`" for path in skipped))
+        if partial:
+            reason = " Se alcanzó el límite de recorrido." if limited else ""
+            lines.append(f"**Revisión parcial.** Entradas omitidas: {missing}.{reason}")
         if top:
             rows = ["| Nombre | Ruta completa | Tamaño (MB) | Tipo |", "|---|---|---:|---|"]
             for size, path in top:
                 file = Path(path)
                 rows.append(f"| {file.name} | `{path}` | {size / 1_000_000:.6f} | {file.suffix or 'Sin extensión'} |")
             lines.append("\n".join(rows))
-        return self.task_reply("paused" if missing else "completed", "\n\n".join(lines))
+        return self.task_reply("paused" if partial else "completed", RESULT_HEADER + "\n\n".join(lines))
 
     async def chat(self):
         try:
@@ -590,6 +638,15 @@ class Worker(QObject):
         latest = folder = ""
         current = messages[-1] if messages else {}
         command = current.get("content", "").split(maxsplit=1)
+        if self.task is None and current.get("role") == "user" and not current.get("attachments"):
+            try:
+                native = (parse_request(current["content"], project=self.project)
+                          or continued_request(messages, project=self.project))
+            except ValueError as exc:
+                self.used_external_source = True
+                return RESULT_HEADER + str(exc)
+            if native:
+                return await self.run_local_files(native)
         local_read = self.task is None and requests_local_read(messages)
         web_read = self.task is None and requested_web_link(messages) is not None
         if self.task is None and not local_read and not web_read and (count := notes_content_question(messages)):
@@ -643,10 +700,8 @@ class Worker(QObject):
                     self.ranking_hidden = self.ranking_hidden_filter(current["content"])
                     self.ranking_scope = ranking_scope(folder, count, recursive, exclude_hidden=self.ranking_hidden is True)
                     if not explicit_mcp and self.ranking_hidden is None:
-                        self.learned_server = self.choose_ranking_server()
-                        if self.learned_server:
-                            self.activity.emit(f"Método elegido por experiencia · MCP {self.learned_server}")
-            if ranking is not None and not explicit_mcp and not self.learned_server:
+                        self.show_ranking_evidence()
+            if ranking is not None and not explicit_mcp:
                 return await self.run_local_ranking(folder, count, recursive)
             messages[0] = {**messages[0], "content": messages[0]["content"] + (
                 "\nEstás ejecutando una tarea guardada de solo lectura. Conserva el objetivo. Usa los pasos guardados "
@@ -676,8 +731,6 @@ class Worker(QObject):
                 if not entries or entries[-1] != clarification:
                     entries.append(clarification)
                     self.persist_task()
-            if self.learned_server:
-                latest += "\nCarpeta de este encargo: " + json.dumps(folder, ensure_ascii=False)
             if self.ranking_hidden is not None:
                 latest += ("\nEl alcance excluye archivos y carpetas ocultos." if self.ranking_hidden else
                            "\nEl alcance incluye archivos y carpetas ocultos.")
@@ -788,7 +841,17 @@ class Worker(QObject):
                               source=None):
         routing_messages = list(messages)
         ordinary_turn = self.task is None and not learn and not save_request
-        local_read = ordinary_turn and (source == "archivos" or (source is None and requests_local_read(messages)))
+        user_text = messages[-1]["content"]
+        if ordinary_turn and source == "archivos" and not uses_mcp(user_text):
+            try:
+                native = parse_request(user_text, project=self.project, selected=True)
+            except ValueError as exc:
+                self.used_external_source = True
+                return RESULT_HEADER + str(exc)
+            if native:
+                return await self.run_local_files(native)
+        local_read = ordinary_turn and uses_mcp(user_text) and (
+            source == "archivos" or requests_local_read(messages))
         web_link = None
         if source == "enlace":
             web_link = referenced_web_link(messages) or ""
@@ -887,9 +950,10 @@ class Worker(QObject):
         elif web_tools_only:
             servers = {name: server for name, server in servers.items()
                        if server.get("transport") != "stdio" or not is_desktop_commander(server)}
+        elif ordinary_turn and not uses_mcp(user_text):
+            servers = {name: server for name, server in servers.items()
+                       if server.get("transport") != "stdio" or not is_desktop_commander(server)}
         short_local_names = local_read and self.ai.cloud and len(servers) == 1
-        if self.learned_server:
-            servers = {name: server for name, server in servers.items() if name == self.learned_server}
         cached = {}
         if any(server["enabled"] for server in servers.values()):
             self.activity.emit("Preparando herramientas MCP disponibles…")
@@ -925,8 +989,6 @@ class Worker(QObject):
                             if web_tools_only and entry[2].name not in WEB_LINK_TOOLS:
                                 continue
                             if save_request and entry[2].name != "write_file":
-                                continue
-                            if self.learned_server and (not entry[3] or entry[2].name not in {"list_directory", "get_file_info"}):
                                 continue
                             if self.task is not None and not safe_read(entry[2]):
                                 continue
@@ -973,9 +1035,6 @@ class Worker(QObject):
             elif source in ("web", "mcp") and not external:
                 return "No encontré una herramienta activa para esa solicitud. Revisa Configuración → Extensiones… → MCP."
 
-            if self.learned_server and {entry[2].name for entry in external.values()} != {"list_directory", "get_file_info"}:
-                self.activity.emit("El método recordado no está disponible. Continuando con el recorrido local.")
-                return await self.run_local_ranking(folder, count, recursive)
             local_markdown = False
             if save_request:
                 if external:
@@ -1185,16 +1244,6 @@ class Worker(QObject):
                                 messages.append({"role": "tool", "tool_name": name,
                                                  "content": "La tarea solo admite herramientas de lectura."})
                                 continue
-                            if self.learned_server:
-                                target = Path(arguments.get("path", "") if isinstance(arguments.get("path"), str) else "")
-                                try:
-                                    if not target.is_absolute():
-                                        raise ValueError("Ruta relativa.")
-                                    check_path(target, folder)
-                                except (OSError, ValueError, IsolationError):
-                                    messages.append({"role": "tool", "tool_name": name,
-                                                     "content": "La ruta debe estar dentro de la carpeta del encargo."})
-                                    continue
                             key = checkpoint_key(server_name, servers[server_name], tool, arguments)
                             cached_read = next((item for item in reversed(self.task["steps"])
                                                 if item["key"] == key and item["status"] == "response"), None)

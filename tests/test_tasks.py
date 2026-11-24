@@ -194,7 +194,7 @@ def inventory_stage(root, phase):
         largest.write_bytes(b"x" * 20_000)
     assert not app.is_ranking_request("¿Cómo puedo encontrar los archivos más pesados?")
     assert not app.is_ranking_request("Busca los cinco archivos más pesados usando Desktop Commander.")
-    with (patch.object(mcp_client, "default_root", return_value=root),
+    with (patch.object(mcp_client, "default_root", return_value=root / "perfil-inventario"),
           patch("folder_inventory.downloads_folder", return_value=root / "archivos"),
           patch.object(turn_worker, "automatic_memory_enabled", return_value=False),
           patch.object(turn_worker, "Client", side_effect=AssertionError("La clasificación local no necesita Ollama."))):

@@ -3,11 +3,10 @@ import ctypes
 import heapq
 import os
 import re
-import stat
 from pathlib import Path
 from uuid import UUID
 
-from stonebot_engine.safety import check_path
+from local_files import local_path
 
 NUMBER_WORDS = dict(zip("uno dos tres cuatro cinco seis siete ocho nueve diez".split(), range(1, 11)))
 RANKING = re.compile(
@@ -28,10 +27,10 @@ HIDDEN_MISTAKE = re.compile(
 DOWNLOADS_REPLY = re.compile(r"^\s*(?:(?:en|es)\s+)?(?:(?:mi|la)\s+)?(?:carpeta\s+)?(?:Descargas|Downloads)[.!]?\s*$", re.I)
 
 
-def downloads_folder():
+def known_folder(identifier, fallback):
     if os.name == "nt":
         identifier = (ctypes.c_byte * 16).from_buffer_copy(
-            UUID("374DE290-123F-4565-9164-39C4925E467B").bytes_le
+            UUID(identifier).bytes_le
         )
         result = ctypes.c_wchar_p()
         if ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(identifier), 0, None, ctypes.byref(result)) == 0:
@@ -39,7 +38,11 @@ def downloads_folder():
                 return Path(result.value)
             finally:
                 ctypes.windll.ole32.CoTaskMemFree(result)
-    return Path.home() / "Downloads"
+    return Path.home() / fallback
+
+
+def downloads_folder():
+    return known_folder("374DE290-123F-4565-9164-39C4925E467B", "Downloads")
 
 
 def ranking_count(objective):
@@ -96,50 +99,21 @@ def ranking_request(objective, user_input, previous_folder="", previous_recursiv
     return folder, count, recursive
 
 
-def largest_files(folder, count, recursive, check_pause, *, exclude_hidden=False):
-    root = Path(folder)
-    if not root.is_absolute() or str(root).startswith(("\\\\", "//")):
-        raise ValueError("Indica una ruta absoluta de una carpeta local.")
-    root = Path(check_path(root))
-    if str(root).startswith(("\\\\", "//")) or not root.is_dir():
-        raise ValueError(f"No pude abrir la carpeta {root}. Indícame la ruta correcta.")
-    pending, top, skipped = [root], [], []
-    files = folders = missing = 0
+def largest_files(service, folder, count, recursive, check_pause, *, exclude_hidden=False):
+    root = local_path(folder)
+    top = []
+    files = 0
 
-    def omit(path):
-        nonlocal missing
-        missing += 1
-        if len(skipped) < 10:
-            skipped.append(str(path))
+    def collect(path, info, directory):
+        nonlocal files
+        if not directory:
+            files += 1
+            item = (info.st_size, str(path))
+            if len(top) < count:
+                heapq.heappush(top, item)
+            else:
+                heapq.heappushpop(top, item)
+        return False
 
-    while pending:
-        check_pause()
-        folder = pending.pop()
-        try:
-            with os.scandir(folder) as entries:
-                for entry in entries:
-                    check_pause()
-                    try:
-                        info = entry.stat(follow_symlinks=False)
-                        if exclude_hidden and (entry.name.startswith(".") or
-                                               getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_HIDDEN):
-                            continue
-                        redirected = getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
-                        if redirected or stat.S_ISLNK(info.st_mode):
-                            omit(entry.path)
-                        elif stat.S_ISDIR(info.st_mode) and recursive:
-                            pending.append(check_path(entry.path, root))
-                        elif stat.S_ISREG(info.st_mode):
-                            check_path(entry.path, root, reject_hard_links=False)
-                            files += 1
-                            item = (info.st_size, entry.path)
-                            if len(top) < count:
-                                heapq.heappush(top, item)
-                            else:
-                                heapq.heappushpop(top, item)
-                    except (OSError, RuntimeError, ValueError):
-                        omit(entry.path)
-            folders += 1
-        except OSError:
-            omit(folder)
-    return root, sorted(top, reverse=True), files, folders, missing, skipped
+    folders, skipped, partial = service.scan(root, recursive, check_pause, collect, exclude_hidden=exclude_hidden)
+    return root, sorted(top, reverse=True), files, folders, skipped, partial

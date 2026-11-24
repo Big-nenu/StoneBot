@@ -229,7 +229,15 @@ Cuando se solicita confirmación, **Permitir una vez** autoriza esa llamada y **
 
 Para revisar un repositorio en GitHub, comparte su enlace y pide «Abre el repositorio y dime qué funciones mejorarías». También puedes decir «Que entres al repositorio» después de compartir el enlace en el mismo chat. Esta consulta necesita una herramienta web habilitada en **Configuración → Extensiones… → MCP**.
 
-Con Desktop Commander habilitado, escribe en el mismo mensaje la ruta completa y qué quieres revisar. Por ejemplo, «Revisa los archivos de `C:\Proyectos\MiProyecto` y explica cómo se inicia». SB prioriza la lectura de la carpeta aunque el chat venía hablando de memoria y aplica los permisos de MCP. Si usas OpenRouter, el modelo recibe los resultados de las lecturas para redactar. Si falla el resumen después de que MCP obtuvo resultados, SB puede mostrar una revisión parcial con las rutas consultadas.
+Si quieres usar Desktop Commander para leer contenido, pídelo explícitamente. Por ejemplo, «Usa Desktop Commander para leer el README de `C:\Proyectos\MiProyecto`». Se aplican sus permisos MCP y, si usas OpenRouter, el proveedor recibe los resultados de esas lecturas.
+
+## Archivos locales
+
+Desde el chat puedes listar carpetas, buscar archivos por nombre o extensión, consultar propiedades y clasificar archivos por tamaño. Prueba «Lista Descargas», «Busca archivos PDF en Documentos», «Busca contrato en `D:\Trabajo`» o «Dime las propiedades de `D:\Trabajo\contrato.pdf`». En un chat de proyecto, «busca contrato en este proyecto» usa la carpeta vinculada. Los resultados de la exploración nativa se preparan en el equipo, incluso cuando el chat usa OpenRouter.
+
+En **Configuración → Archivos locales**, elige **Permitir**, **Preguntar** o **Denegar** para cada operación. Puedes usar cualquier carpeta de una unidad local accesible para tu cuenta. Agrega **Carpetas excluidas** para bloquearlas junto con sus subcarpetas. StoneBot también protege las rutas de memoria y credenciales conocidas. La configuración se guarda en `%USERPROFILE%\.stonebot\local_files.ini`.
+
+El recorrido respeta la carpeta solicitada y avisa si hay entradas omitidas o se alcanzan los límites. Para leer el contenido desde el chat puedes adjuntar el documento. Las integraciones MCP conservan sus propios permisos.
 
 Con el ejemplo activado, pide en el chat «Usa echo del servidor ejemplo con el texto hola». Las pruebas usan configuraciones temporales.
 
@@ -280,7 +288,7 @@ En un chat sin adjuntos, pide un encargo de lectura con varios pasos en lenguaje
 - Si la revisión final detecta evidencia faltante y queda presupuesto, StoneBot hace hasta dos intentos de resolverla en el mismo turno antes de entregar el resultado o explicar qué falta.
 - Al planificar una tarea, StoneBot consulta recuerdos pertinentes de su memoria y resultados del mismo encargo. También recupera métodos y resultados generales de revisiones de proyectos parecidas. Cada revisión comprueba por separado los archivos y el estado del proyecto actual. StoneBot conserva las aclaraciones, las lecturas y lo que falta al pausar. Si quieres conservar la respuesta de una tarea completada, di «Guarda el resumen» en el mismo chat.
 - Para clasificar una carpeta por tamaño en un chat sin adjuntos, escribe «Revisa Descargas y dime cuáles son los cinco archivos más pesados». StoneBot guarda el encargo, usa la carpeta Descargas configurada en Windows y calcula la clasificación con tamaños reales. Puedes volver al mismo chat y responder «incluye las subcarpetas» o «sin subcarpetas». También puedes indicar otra carpeta con una ruta absoluta entre comillas o enviarla como respuesta. StoneBot devuelve los recuentos y avisa si omitió rutas inaccesibles o redirigidas.
-- StoneBot guarda automáticamente el resultado de estas clasificaciones en su base de experiencias y busca ejecuciones de la misma carpeta, alcance y cantidad de resultados antes de elegir el método. **Actividad** muestra las experiencias recuperadas y el método elegido. Si la última ejecución verificada usó Desktop Commander, StoneBot puede repetir ese método cuando estén autorizadas sus lecturas. Ante resultados parciales, errores o falta de evidencia, usa el recorrido local. La experiencia guarda una huella del alcance y el número de entradas omitidas cuando se conoce.
+- StoneBot guarda el resultado de estas clasificaciones en su base de experiencias. **Actividad** muestra las experiencias recuperadas. El recorrido nativo aplica el permiso **Clasificar por tamaño** y las exclusiones de **Archivos locales**. Si la solicitud menciona Desktop Commander de forma explícita, se aplican las autorizaciones de ese servidor. La experiencia guarda una huella del alcance y el número de entradas omitidas cuando se conoce.
 - Si la tarea espera un dato, reabre el mismo chat y responde con el dato, por ejemplo la ruta absoluta. La tarea recupera su objetivo y los resultados guardados.
 - **Actividad** muestra el estado y los pasos registrados. **Pausar** deja terminar la operación actual y detiene el siguiente paso. Usa `/reanudar` para retomar una tarea pausada o interrumpida, o `/cancelar` para cerrarla. Tras un cierre inesperado, un paso sin resultado queda marcado como incierto.
 - Junto a **Actividad**, usa **Guardar corrección…** después de recibir el resultado de una tarea. Anota qué salió mal, qué prefieres y cómo corregirlo. StoneBot consulta la corrección al preparar otro encargo con el mismo objetivo o una revisión parecida dentro del mismo proyecto.
@@ -373,6 +381,7 @@ StoneBot/
 | El cuadro de mensaje, las burbujas o el panel de actividad | [`chat_ui.py`](chat_ui.py). Para colores y temas, [`appearance.py`](appearance.py). |
 | La lista de conversaciones o cómo se guardan | [`history_ui.py`](history_ui.py) para la lista y [`history.py`](history.py) para el almacenamiento. |
 | Cuándo SB interpreta que quieres abrir un enlace, leer una carpeta o usar herramientas externas | [`request_routing.py`](request_routing.py) |
+| Permisos, exclusiones y recorrido nativo de archivos | [`local_files.py`](local_files.py) y [`local_file_requests.py`](local_file_requests.py). El diálogo está en [`local_files_ui.py`](local_files_ui.py). |
 | Cómo SB procesa un mensaje, ejecuta herramientas o termina un turno | [`turn_worker.py`](turn_worker.py) |
 | Cómo se reciben adjuntos o se pide guardar su contenido | [`attachments.py`](attachments.py) para la lectura y [`attachment_actions.py`](attachment_actions.py) para el guardado. |
 | Ollama, OpenRouter o el selector de modelos | [`ai_provider.py`](ai_provider.py) para la conexión y [`ai_settings_ui.py`](ai_settings_ui.py) para el selector. |

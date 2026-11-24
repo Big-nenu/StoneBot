@@ -13,6 +13,7 @@ import httpx
 from ollama import Client, Message, ResponseError
 from PySide6.QtCore import QSettings
 
+from local_files import RESULT_HEADER
 from mcp_client import data_path
 from mcp_credentials import read_key, store_key
 from request_routing import SELECT_SOURCE
@@ -214,6 +215,8 @@ class OpenRouter:
             source = raw.model_dump(exclude_none=True) if isinstance(raw, Message) else raw
             role = source["role"]
             content = source.get("content") or ""
+            if role == "assistant" and content.startswith(RESULT_HEADER):
+                content = "[Resultado de archivos locales disponible en StoneBot.]"
             row = {"role": role, "content": content}
             if source.get("images"):
                 row["content"] = [{"type": "text", "text": content}]

@@ -180,7 +180,7 @@ async def check(root, desktop):
 
     with patch("stonebot_engine.safety.protected_paths", return_value=[nested]):
         answer = await run_inventory(inventory, "/reanudar", history, chat_id)
-    assert inventory["status"] == "paused" and "Revisión parcial" in answer and str(nested) in answer
+    assert inventory["status"] == "paused" and "Revisión parcial" in answer and str(nested) not in answer
     assert ranking_evidence(scope)[0]["omitted"] == 1
 
     inventory["status"] = "paused"
@@ -196,10 +196,10 @@ async def check(root, desktop):
         # Las comillas delimitan la ruta cuando la petición termina con puntuación.
         learned = new_task(natural)
         events = []
-        with patch.object(turn_worker, "is_desktop_commander", return_value=True):
+        with patch.object(turn_worker, "load_servers", side_effect=AssertionError("El ranking nativo no usa MCP")):
             await run_turn(learned, natural, [nested, biggest], audit=True, verified=True, events=events)
-        assert learned["status"] == "completed" and len(learned["steps"]) == 2
-        assert any("Método elegido por experiencia · MCP" in event for event in events)
+        assert learned["status"] == "completed" and not learned["steps"]
+        assert any("Método elegido · recorrido local" in event for event in events)
 
     legacy = dict(status="completed", steps=[{}])
     assert upgrade_task(legacy) and legacy["status"] == "paused" and legacy["coverage_notes"]
@@ -228,6 +228,6 @@ async def run_inventory(task, text, history, chat_id, events=None):
 if __name__ == "__main__":
     with TemporaryDirectory() as directory:
         root = Path(directory).resolve()
-        with patch.object(mcp_client, "default_root", return_value=root):
+        with patch.object(mcp_client, "default_root", return_value=root / "perfil"):
             asyncio.run(check(root, sys.argv[1:]))
     print("PASS: cobertura, pausas, recortes y páginas pendientes.")

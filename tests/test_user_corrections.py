@@ -121,7 +121,7 @@ if __name__ == "__main__":
     qt = QApplication([])
     with TemporaryDirectory() as directory:
         root = Path(directory).resolve()
-        with patch.object(mcp_client, "default_root", return_value=root):
+        with patch.object(mcp_client, "default_root", return_value=root / "perfil"):
             test_memory_editor(root)
             asyncio.run(test_inventory_correction(root))
             asyncio.run(test_planner_uses_correction())

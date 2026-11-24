@@ -146,7 +146,8 @@ def test_preferences_and_history():
             assert "OpenRouter" in window.sidebar_rail.provider_badge.text()
             assert "fake/model" in window.sidebar_rail.provider_badge.toolTip()
             assert [action.text() for action in window.settings_menu.actions()] == [
-                "Modelo y proveedor de IA…", "Apariencia…", "Instrucciones generales…", "Extensiones…", "Memoria",
+        "Modelo y proveedor de IA…", "Apariencia…", "Instrucciones generales…", "Archivos locales…",
+        "Extensiones…", "Memoria",
             ]
             save_key.assert_called_once_with(ai_provider.KEY_TARGET, "test-key")
             assert "test-key" not in (Path(folder) / "chat.ini").read_text(encoding="utf-8")

@@ -163,12 +163,9 @@ def test_cloud_chat_keeps_mcp_out_of_conversation_and_stops_repeated_calls():
 def test_contextual_source_selection_without_opening_memory_first():
     web = Tool(name="web_search_exa", inputSchema={"type": "object"})
     calendar = Tool(name="list_events", inputSchema={"type": "object"})
-    directory = Tool(name="list_directory", inputSchema={"type": "object"})
-    folder = str(Path(tempfile.gettempdir()) / "Proyecto de prueba")
     memory = SimpleNamespace(entries=AsyncMock(), call=AsyncMock())
     routes = {"web": ("¿Hay algún anuncio más reciente de eso?", web),
-              "mcp": ("¿Y cómo pinta el viernes con lo que tengo agendado?", calendar),
-              "archivos": (f"Me serviría saber qué hay dentro de {folder} para etiquetar el respaldo.", directory)}
+              "mcp": ("¿Y cómo pinta el viernes con lo que tengo agendado?", calendar)}
     sessions = {name: SimpleNamespace(list_tools=AsyncMock(return_value=ListToolsResult(tools=[tool])),
                                      call_tool=AsyncMock(return_value=CallToolResult(content=[
                                          TextContent(type="text", text="Resultado de la fuente elegida"),
@@ -184,16 +181,16 @@ def test_contextual_source_selection_without_opening_memory_first():
         ]))
 
     config = {name: {"enabled": True, "read_tools": [], "transport": "http"} for name in routes}
-    config["archivos"].update(transport="stdio", command="npx", args=["@wonderwhy-er/desktop-commander"])
     with (patch.object(turn_worker, "load_servers", return_value=config) as load,
           patch.object(turn_worker, "session_for", connected),
           patch.object(turn_worker, "OpenRouter") as provider,
+          tempfile.TemporaryDirectory() as directory,
           patch.object(app.Worker, "enabled_skills", return_value={})):
         client = provider.return_value
         for route, (question, expected_tool) in routes.items():
             messages = [{"role": "system", "content": app.SYSTEM}, {"role": "user", "content": question}]
             assert not request_routing.requests_external_tools(messages)
-            arguments = {"path": folder} if route == "archivos" else {"consulta": "prueba"}
+            arguments = {"consulta": "prueba"}
 
             def chat(**kwargs):
                 names = {tool.function.name: tool.function.description for tool in kwargs["tools"]}
@@ -215,6 +212,23 @@ def test_contextual_source_selection_without_opening_memory_first():
             sessions[route].call_tool.assert_awaited_once_with(expected_tool.name, arguments)
             worker.confirm_external.assert_awaited_once_with(route, expected_tool.name, arguments)
 
+        from local_files import FileSettings
+
+        folder = Path(directory)
+        (folder / "respaldo.txt").touch()
+        question = f'Me serviría saber qué hay dentro de "{folder}" para etiquetar el respaldo.'
+        messages = [{"role": "system", "content": app.SYSTEM}, {"role": "user", "content": question}]
+        assert not request_routing.requests_external_tools(messages)
+        client.chat.reset_mock()
+        client.chat.side_effect = None
+        client.chat.return_value = call("elegir_fuente", fuente="archivos")
+        load.reset_mock()
+        worker = app.Worker(messages, ai=AISettings("openrouter", "fake/model"), memory=memory)
+        with patch.object(turn_worker, "load_file_settings", return_value=FileSettings({"list": "allow"})):
+            assert "respaldo.txt" in asyncio.run(worker.chat())
+        client.chat.assert_called_once()
+        load.assert_not_called()
+
         client.chat.side_effect = None
         client.chat.return_value = SimpleNamespace(message=Message(role="assistant", content="Sigamos conversando."))
         load.reset_mock()
@@ -232,7 +246,7 @@ def test_switch_from_memory_to_local_project():
                 {"role": "user", "content": "¿Cómo funcionan las hipótesis de StoneWave?"},
                 {"role": "assistant", "content": "¿Quieres que revisemos los recuerdos de tu memoria?"},
                 {"role": "user", "content": f'No, ahorita así lo dejamos.\nOtra duda, esta es la ruta de un proyecto:\n'
-                                            f'"{path}"\n¿Puedes entrar y revisar de qué era ese proyecto?'}]
+                                            f'"{path}"\n¿Puedes entrar y revisar de qué era ese proyecto con Desktop Commander?'}]
     assert request_routing.requests_external_tools(messages)
     assert not request_routing.requests_local_read([{"role": "user", "content": f'Mi proyecto está en "{path}".'}])
     assert not request_routing.requests_local_read([{"role": "user", "content": f'No abras "{path}".'}])

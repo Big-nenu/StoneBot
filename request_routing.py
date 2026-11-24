@@ -8,7 +8,7 @@ from ollama import Tool
 TURN_SOURCES = {
     "enlace": "abrir una URL que el usuario señaló en el chat",
     "web": "buscar o verificar información en internet",
-    "archivos": "inspeccionar archivos o carpetas del equipo",
+    "archivos": "listar carpetas del equipo, buscar archivos por nombre o extensión, o consultar sus propiedades",
     "mcp": "usar una aplicación, servicio o servidor MCP solicitado",
     "memoria": "consultar o corregir recuerdos, o leer notas y actividad de StoneWave",
 }

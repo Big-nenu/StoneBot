@@ -11,6 +11,8 @@ from threading import Thread
 
 from ai_provider import AISettings, DEFAULT_MODEL, PROVIDERS, load_ai
 from ai_settings_ui import AISettingsDialog
+from local_files import RESULT_HEADER
+from local_files_ui import LocalFilesDialog
 from appearance import (
     AppearanceDialog, apply_palette, dialog_style, load_appearance, readable_text, save_appearance,
     secondary_button, settings_style,
@@ -173,6 +175,7 @@ class StoneBot(QMainWindow):
         self.settings_menu.addAction("Modelo y proveedor de IA…", self.open_ai_settings)
         self.settings_menu.addAction("Apariencia…", self.open_appearance)
         self.settings_menu.addAction("Instrucciones generales…", self.open_instructions)
+        self.settings_menu.addAction("Archivos locales…", self.open_local_files)
         self.chat_options = secondary_button(PopupButton(right=True))
         self.chat_options.setProperty("quiet", True)
         self.chat_options.setAccessibleName("Opciones de conversación")
@@ -840,7 +843,7 @@ class StoneBot(QMainWindow):
         answer = next((item["content"] for item in messages if item["role"] == "assistant"
                        and item["content"].strip() not in {"", "(Sin respuesta)"}), None)
         key = (chat_id, first["created"])
-        if answer is None or key in self.pending_titles:
+        if answer is None or answer.startswith(RESULT_HEADER) or key in self.pending_titles:
             return
         try:
             if not self.history.title_pending(chat_id):
@@ -926,6 +929,19 @@ class StoneBot(QMainWindow):
             self.ai = dialog.config
             self.refresh_provider()
         dialog.deleteLater()
+
+    def open_local_files(self):
+        if self.thread is not None:
+            return
+        try:
+            dialog = LocalFilesDialog(self, self.appearance)
+        except (OSError, ValueError, RuntimeError) as exc:
+            self.show_problem(str(exc))
+            return
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
 
     def update_typing_expression(self):
         if self.message.toPlainText():
@@ -1662,20 +1678,27 @@ class StoneBot(QMainWindow):
     def confirmar_mcp(self, request):
         dialog = QMessageBox(self)
         local = request.get("local", False)
-        dialog.setWindowTitle("Guardar archivo Markdown" if local else "Confirmar operación MCP")
+        files = request.get("local_files", False)
+        dialog.setWindowTitle("Archivos locales" if files else
+                              ("Guardar archivo Markdown" if local else "Confirmar operación MCP"))
         dialog.setStyleSheet(dialog_style(self.appearance))
         dialog.setIcon(QMessageBox.Icon.Question)
         dialog.setTextFormat(Qt.TextFormat.PlainText)
-        dialog.setText("¿Guardar este archivo?" if local else f"¿Autorizar {request['tool']} en {request['server']}?")
         arguments = json.dumps(request["arguments"], indent=2, ensure_ascii=True)
-        if local:
+        if files:
+            dialog.setText(f"¿Autorizar «{request['operation']}»?")
+            dialog.setInformativeText("\n".join(f"{key}: {value}" for key, value in request["arguments"].items()))
+        elif local:
+            dialog.setText("¿Guardar este archivo?")
             dialog.setInformativeText(request["arguments"]["path"])
             dialog.setDetailedText(request["arguments"]["content"])
-        elif len(arguments) <= 500:
-            dialog.setInformativeText(arguments)
         else:
-            dialog.setInformativeText("Revisa los argumentos en «Mostrar detalles» antes de autorizar.")
-            dialog.setDetailedText(arguments)
+            dialog.setText(f"¿Autorizar {request['tool']} en {request['server']}?")
+            if len(arguments) <= 500:
+                dialog.setInformativeText(arguments)
+            else:
+                dialog.setInformativeText("Revisa los argumentos en «Mostrar detalles» antes de autorizar.")
+                dialog.setDetailedText(arguments)
         roles = QMessageBox.ButtonRole
         once = dialog.addButton("Permitir una vez", roles.AcceptRole)
         always = dialog.addButton("Permitir siempre", roles.ActionRole) if request.get("can_remember") else None
