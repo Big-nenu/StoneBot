@@ -1636,6 +1636,7 @@ class StoneBot(QMainWindow):
                              self.project["folder"] if self.project else None]
                     execution = ChatExecution(origin, pending, history.save_execution,
                                               turn_messages[-1]["content"], scope)
+                    execution.chat_id = chat_id
                     execution.summary = history.summary(chat_id)
                     execution.save_summary = lambda value: history.save_summary(chat_id, value)
                 except (OSError, ValueError, RuntimeError, sqlite3.Error):
@@ -1696,9 +1697,10 @@ class StoneBot(QMainWindow):
     @Slot(object)
     def confirmar_mcp(self, request):
         dialog = QMessageBox(self)
-        local = request.get("local", False)
+        terminal = request.get("local") and request["server"] == "Terminal de Windows"
+        local = request.get("local", False) and not terminal
         files = request.get("local_files", False)
-        dialog.setWindowTitle("Archivos locales" if files else
+        dialog.setWindowTitle("Terminal de Windows" if terminal else "Archivos locales" if files else
                               ("Guardar archivo Markdown" if local else "Confirmar operación MCP"))
         dialog.setStyleSheet(dialog_style(self.appearance))
         dialog.setIcon(QMessageBox.Icon.Question)

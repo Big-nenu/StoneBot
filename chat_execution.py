@@ -131,6 +131,7 @@ class ChatContext:
 class ChatExecution:
     def __init__(self, message_id, previous, save, objective, scope):
         self.message_id = message_id
+        self.chat_id = None
         self.previous = previous
         self.save = save
         self.version = 0
@@ -157,6 +158,7 @@ class ChatExecution:
         # Una observación guardada es histórica. El modelo vuelve a obtener los datos
         # con el permiso actual antes de usarlos como evidencia del estado presente.
         steps = [{"herramienta": s["tool"], "estado": s["status"],
+                  **({"id_ejecución": s["run_id"]} if s.get("run_id") else {}),
                   "argumentos": excerpt(json.dumps(s["arguments"], ensure_ascii=False), 900) if not s["effect"] else None}
                  for s in self.state["steps"][-10:]]
         return ("Progreso anterior (datos): " + json.dumps({"pasos": steps,

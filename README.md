@@ -22,6 +22,8 @@ StoneBot es un asistente personal local. Mantiene continuidad entre sesiones con
 
 ## Hoja de ruta
 
+La [hoja de ruta de mejora arquitectónica](docs/03-hoja-de-ruta-arquitectura.md) recoge las seis fases del agente, su estado y los criterios de aceptación.
+
 Las primeras etapas documentan el prototipo original. La configuración vigente está en **Memoria personal en StoneWave**.
 
 | Etapa | Objetivo | Entregable comprobable | Estado |
@@ -300,6 +302,10 @@ En un mensaje del usuario, **Editar → Regenerar** vuelve a usar el historial a
 El chat normal guarda el objetivo y los pasos que ejecuta el agente en la base local del historial. Si se interrumpe después de usar una herramienta, abre el mismo chat y escribe «continúa». Con el mismo proyecto, proveedor, modelo y ajustes de memoria, el agente puede retomar el encargo. Para un ranking o una exploración de archivos vuelve a comprobar la lectura inicial con los permisos actuales y usa el resultado actualizado en los pasos siguientes. Las acciones con posibles cambios quedan registradas antes de ejecutarse. Una interrupción sin respuesta deja su resultado sin confirmar.
 
 Cuando una herramienta del chat modifica datos, el registro distingue la intención, el envío tras la autorización y el resultado. Si se pierde la conexión al guardar Markdown o al escribir un archivo de texto completo con Desktop Commander, StoneBot comprueba el contenido del destino autorizado. Puede repetir esa comprobación al reabrir el chat. Para los cambios en StoneWave reconoce las confirmaciones de cada operación. Para otras herramientas MCP registra si el servidor reconoció la ejecución. Si la conexión se interrumpe después del envío y falta una comprobación independiente, el chat muestra la acción pendiente y conserva el registro para evitar repetirla al continuar.
+
+En Windows 11, el chat ordinario con historial y Ollama local puede iniciar y supervisar programas. Instala `pywin32` en el entorno de StoneBot con `python -m pip install pywin32`. Pide, por ejemplo, ejecutar las pruebas de un proyecto indicando su carpeta y la ruta de su Python. Revisa el ejecutable, sus argumentos y el directorio antes de autorizar. El programa se ejecuta con los permisos de tu cuenta. Para una orden interna de PowerShell, el ejecutable y los argumentos de PowerShell deben figurar en la autorización.
+
+Puedes pedir «consulta la salida» o «cancela esa ejecución» en el mismo chat. SB conserva el ID y permite paginar la salida combinada del programa hasta cuatro millones de caracteres. El programa debe vaciar sus búferes para que la salida se vea durante la ejecución. Detener un turno interrumpe la conversación. Para terminar el programa y su árbol de procesos, pide su cancelación y comprueba el estado final. La [guía de validación de Windows](docs/03-hoja-de-ruta-arquitectura.md#validación) describe el recorrido completo.
 
 Cuando el texto del turno supera un presupuesto estimado de 48 000 caracteres, StoneBot resume por lotes los mensajes anteriores y conserva los intercambios recientes y la petición actual. El agente puede buscar un fragmento literal o pedir por referencia el texto que se abrevió. Al reabrir el chat reutiliza el resumen si coinciden el contenido de origen y el ámbito del modelo. Los mensajes originales siguen en el historial. Editar y regenerar una conversación invalida el resumen guardado.
 
