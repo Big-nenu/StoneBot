@@ -17,6 +17,7 @@ from PySide6.QtCore import Qt
 
 import mcp_client
 import turn_worker
+from attachments import read_attachment
 from ai_provider import AISettings, OpenRouter
 from local_files import OPERATIONS, RESULT_HEADER, load_settings, save_settings
 from read_tools import PAGE_CHARS
@@ -188,6 +189,48 @@ async def check_live_project(folder, model):
     print(f"PASS: Ollama ({model}) leyó el README y contrastó la decisión con StoneWave simulado.")
 
 
+async def check_attachment_and_notes(folder, live_model=None):
+    manifest = folder / "encargo.txt"
+    manifest.write_text("Archivo que hay que consultar en el proyecto: entrega.md", encoding="utf-8")
+    (folder / "entrega.md").write_text("Código de entrega: PINO-348.", encoding="utf-8")
+    report = {"status": "ok", "notes": [{"path": "recuerdos/entrega.md", "folder": "recuerdos",
+              "modified": "2026-11-25T08:00:00Z", "content": "Código de entrega aprobado: PINO-917."}]}
+    memory = SimpleNamespace(call=AsyncMock(return_value=json.dumps(report)))
+    worker = worker_for(folder, memory)
+    worker.messages[-1].update(content="Lee el adjunto para identificar el archivo del proyecto. Lee ese archivo "
+                               "y la nota más reciente de StoneWave. Compara los dos códigos de entrega.",
+                               attachments=[read_attachment(manifest)])
+    worker.mcp_confirmation.connect(lambda request: request.update(approved=True), Qt.ConnectionType.DirectConnection)
+
+    async def decide(**request):
+        available = {tool.function.name for tool in request["tools"]}
+        assert {"read_project_file", "recent_notes"} <= available
+        assert "elegir_fuente" not in available and "inject_memory" not in available
+        last = request["messages"][-1]
+        if last["role"] != "tool":
+            assert "entrega.md" in last["content"]
+            return reply("read_project_file", path="entrega.md")
+        if last["tool_name"] == "read_project_file":
+            assert "PINO-348" in last["content"]
+            return reply("recent_notes", limit=1)
+        assert "PINO-917" in last["content"]
+        return SimpleNamespace(message=Message(role="assistant", content="PINO-348 difiere de PINO-917."))
+
+    with patch.object(worker, "read_project_file", wraps=worker.read_project_file) as read:
+        if live_model:
+            worker.ai = AISettings("ollama", live_model)
+            worker.local_ollama = None
+            worker.think = False
+            answer = await worker.run_chat()
+        else:
+            with patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=decide)):
+                answer = await worker.chat()
+        assert any(call.args[0].get("path") == "entrega.md" for call in read.await_args_list), answer
+    memory.call.assert_awaited()
+    assert answer.startswith(RESULT_HEADER) and "PINO-348" in answer and "PINO-917" in answer, answer
+    print(f"PASS: {live_model or 'modelo simulado'} comparó el archivo identificado por el adjunto con StoneWave.")
+
+
 if __name__ == "__main__":
     with TemporaryDirectory() as directory:
         root = Path(directory).resolve()
@@ -208,6 +251,8 @@ if __name__ == "__main__":
             asyncio.run(check_project_read(project, mention_stonewave=True))
             asyncio.run(check_project_web(project))
             asyncio.run(check_read_failures(project))
+            asyncio.run(check_attachment_and_notes(project))
             if sys.argv[1:2] == ["--live"]:
+                asyncio.run(check_attachment_and_notes(project, sys.argv[2] if len(sys.argv) > 2 else "nemotron-3.5-bolt:e4b"))
                 asyncio.run(check_live_project(project, sys.argv[2] if len(sys.argv) > 2 else "qwen3.5:4b"))
     print("PASS: proyecto, StoneWave, enlace MCP, permisos, privacidad y paginación.")

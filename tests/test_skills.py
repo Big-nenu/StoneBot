@@ -1,5 +1,6 @@
 """Discovery, instalación y activación selectiva de Skills. Usa --live para Ollama."""
 import asyncio
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -85,8 +86,10 @@ def test_progressive():
     def chat(**request):
         calls.append(request)
         messages = request["messages"]
-        if SEAL in messages[0]["content"]:
-            assert not request["tools"]
+        if messages[-1]["role"] == "tool":
+            assert any(SEAL in item["content"] for item in messages if isinstance(item, dict) and item["role"] == "tool")
+            names = {tool.function.name for tool in request["tools"]}
+            assert "inspect_local_files" in names and "inject_memory" not in names
             return SimpleNamespace(message=Message(role="assistant", content=SEAL))
         assert SEAL not in repr(messages) and SEAL not in repr(request["tools"])
         if "Faro SB" in messages[-1]["content"]:
@@ -124,6 +127,32 @@ def test_live():
         print(f"Ollama ({app.MODEL}): {regular!r}; {sample!r}; Skill inactiva sin lectura del cuerpo.")
 
 
+def test_skill_then_read(folder):
+    file = folder / "prueba.bin"
+    file.write_bytes(b"x" * 137)
+    local_skills.set_enabled(EXAMPLE, True)
+
+    def decide(**request):
+        last = request["messages"][-1]
+        if last["role"] != "tool":
+            name, args = "load_skill", {"name": EXAMPLE}
+        elif last["tool_name"] == "load_skill":
+            assert SEAL in json.loads(last["content"])["instrucciones"]
+            name, args = "inspect_local_files", {"operation": "info", "target": str(file)}
+        else:
+            size = json.loads(last["content"])["tamaño_bytes"]
+            return SimpleNamespace(message=Message(role="assistant", content=f"{SEAL}: {size} bytes."))
+        return SimpleNamespace(message=Message(role="assistant", tool_calls=[
+            {"function": {"name": name, "arguments": args}}]))
+
+    worker = app.Worker([{"role": "system", "content": app.SYSTEM}, {"role": "user", "content":
+                        f"Usa la ficha Faro SB e indica cuánto pesa {file}."}])
+    worker.local_ollama = True
+    with patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=decide)):
+        result = asyncio.run(worker.chat())
+    assert SEAL in result and "137 bytes" in result
+
+
 if __name__ == "__main__":
     qt = QApplication([])
     with tempfile.TemporaryDirectory() as directory, patch.object(
@@ -133,4 +162,6 @@ if __name__ == "__main__":
         else:
             install_from_ui(Path(directory).resolve())
             test_progressive()
+            with tempfile.TemporaryDirectory() as files:
+                test_skill_then_read(Path(files))
     print("PASS: Skills locales con carga progresiva.")

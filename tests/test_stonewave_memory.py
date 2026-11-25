@@ -153,7 +153,7 @@ def test_model_routes_contextual_stonewave_reads_locally():
         assert "recent_notes" not in {tool.function.name for tool in first["tools"]}
         request = client.chat.call_args.kwargs
         assert "Texto privado de una nota" not in str(request["messages"])
-        assert "Obsidian" in request["messages"][-2]["content"]
+        assert any("Obsidian" in row["content"] for row in request["messages"] if isinstance(row, dict))
         tools = {tool.function.name for tool in request["tools"]}
         assert {"recent_notes", "dream_activity"} <= tools and "force_dream" not in tools
         assert turn.read_sw_activity

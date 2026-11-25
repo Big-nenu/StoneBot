@@ -39,6 +39,7 @@ ACTIVITY_TOOLS = {
     }),
 }
 
+ACTIVITY_HEADER = "**Actividad de StoneWave**\n\n"
 DREAM_REPORT = "El último sueño de StoneWave terminó el "
 NOTES_REPORT = re.compile(r"^Estas son las \d+ notas más recientes de StoneWave en Obsidian:")
 
@@ -46,6 +47,8 @@ NOTES_REPORT = re.compile(r"^Estas son las \d+ notas más recientes de StoneWave
 def private_activity_placeholder(message):
     if message["role"] == "assistant":
         content = message.get("content", "")
+        if content.startswith(ACTIVITY_HEADER):
+            return {**message, "content": "Consulté actividad personal de StoneWave."}
         if content.startswith(DREAM_REPORT):
             return {**message, "content": "Mostré la actividad del último sueño de StoneWave."}
         if NOTES_REPORT.match(content):

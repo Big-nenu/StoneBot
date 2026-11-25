@@ -67,8 +67,13 @@ def test_reads_link_referenced_in_chat():
         yield session
 
     def summarize(**kwargs):
-        assert kwargs["tools"] == []
+        assert {item.function.name for item in kwargs["tools"]} == {"read_project_link"}
+        if kwargs["messages"][-1]["role"] != "tool":
+            return SimpleNamespace(message=Message(role="assistant", tool_calls=[
+                {"function": {"name": "read_project_link", "arguments": {}}}]))
         evidence = kwargs["messages"][-1]["content"]
+        if "no autorizó" in evidence:
+            return SimpleNamespace(message=Message(role="assistant", content="El usuario no autorizó la lectura."))
         assert (url in evidence or git_page in evidence) and "README: descripción sintética" in evidence
         return SimpleNamespace(message=Message(role="assistant", content="Resumen del README."))
 
@@ -85,7 +90,7 @@ def test_reads_link_referenced_in_chat():
         worker.confirm_external.return_value = False
         assert "no autorizó" in asyncio.run(worker.chat())
         session.call_tool.assert_awaited_once()
-        client.return_value.chat.assert_called_once()
+        assert client.return_value.chat.call_count == 4
         memory = SimpleNamespace(entries=AsyncMock(), call=AsyncMock())
         for messages in ([repository], [repository, {"role": "assistant", "content": "Vi tu enlace."}, followup]):
             session.call_tool.reset_mock()

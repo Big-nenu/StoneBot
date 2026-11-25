@@ -122,7 +122,7 @@ def task_context(task):
             entry["cobertura"] = step.get("partial") or "El resultado se abrevió para este turno."
         if step.get("resource"):
             entry["recurso"] = step["resource"]
-        if step.get("project_read"):
+        if step.get("project_read") or step.get("inventory_read"):
             entry["argumentos"] = step["arguments"]
         recent.append(entry)
         remaining -= len(json.dumps(entry, ensure_ascii=False))

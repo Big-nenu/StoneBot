@@ -278,7 +278,10 @@ def test_window(root):
             saved = History().messages(chat_id)
             assert len(saved[0]["attachments"]) == 3 and not window.attachments.files
             request = calls[0]
-            assert request["model"] == app.MODEL and not request.get("tools")
+            assert request["model"] == app.MODEL
+            names = {tool.function.name for tool in request["tools"]}
+            assert {"inspect_local_files", "rank_local_files"} <= names
+            assert not ({"inject_memory", "elegir_fuente", "save_markdown"} & names)
             assert request["think"] is True
             assert request["messages"][-1]["content"].startswith("Resume los puntos principales de los adjuntos")
             assert isinstance(request["messages"][-1]["images"][0], bytes)

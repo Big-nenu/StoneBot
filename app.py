@@ -1370,7 +1370,7 @@ class StoneBot(QMainWindow):
             if self.correct_task(mistake=texto[:600]):
                 self.message.clear()
             return
-        inventory_task = (task is not None and ranking_count(task["objective"]) is not None
+        inventory_task = (task is not None and (self.ai.cloud or "inventory_recursive" in task) and ranking_count(task["objective"]) is not None
                           and not uses_mcp(task["objective"]))
         setup_request = is_setup_request(texto)
         ordinary = command not in (TASK_COMMANDS | COMMANDS) and not setup_request

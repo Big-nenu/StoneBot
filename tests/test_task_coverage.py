@@ -167,6 +167,7 @@ async def check(root, desktop):
     biggest = nested / "mayor.bin"
     biggest.write_bytes(b"a" * 60_000)
     inventory = new_task("Revisa mi carpeta Descargas y encuentra los 5 archivos más grandes con subcarpetas.")
+    inventory["inventory_recursive"] = True  # Inventario guardado por la versión anterior.
     inventory_chat = history.append(None, "user", inventory["objective"], task=inventory)
     activity = []
     with (patch("folder_inventory.downloads_folder", return_value=folder),
@@ -195,6 +196,7 @@ async def check(root, desktop):
         natural = f'Encuentra los cinco archivos más pesados de "{nested}".'
         # Las comillas delimitan la ruta cuando la petición termina con puntuación.
         learned = new_task(natural)
+        learned["inventory_recursive"] = True  # Inventario guardado por la versión anterior.
         events = []
         with patch.object(turn_worker, "load_servers", side_effect=AssertionError("El ranking nativo no usa MCP")):
             await run_turn(learned, natural, [nested, biggest], audit=True, verified=True, events=events)

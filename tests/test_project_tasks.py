@@ -139,6 +139,45 @@ def check_resume(folder, *, changed, live_model=None):
         memory.call.assert_awaited_once_with("query_memory", text=f"Formato de informes: {expected}.")
 
 
+def check_inventory_resume(folder):
+    folder.mkdir()
+    (folder / "primero.bin").write_bytes(b"abc")
+    objective = f'Encuentra los archivos más pesados de "{folder}" y comprueba las propiedades del primero.'
+    history = History()
+    task = new_task(objective)
+    chat_id = history.append(None, "user", "/tarea " + objective, task=task)
+
+    def decide(request, *, pause):
+        if request.get("format") == PLAN_STATUS:
+            return answer('{"pasos":["Clasificar","Comprobar propiedades"]}')
+        if request.get("format") == COVERAGE_STATUS:
+            data = json.loads(request["messages"][-1]["content"])
+            assert [step["tool"] for step in data["lecturas"]] == ["rank_local_files", "inspect_local_files"]
+            assert "nuevo.bin" in data["lecturas"][0]["result"]
+            return answer('{"verificada":true,"faltante":""}')
+        last = request["messages"][-1]
+        if last["role"] != "tool":
+            return reply("rank_local_files", target=str(folder), limit=1)
+        data = json.loads(last["content"])
+        if last["tool_name"] == "rank_local_files":
+            if pause:
+                raise asyncio.CancelledError
+            return reply("inspect_local_files", operation="info", target=data["entradas"][0]["ruta"])
+        return reply("informar_estado_tarea", estado="completada", mensaje=f"{data['ruta']} pesa {data['tamaño_bytes']} bytes.")
+
+    run_turn(chat_id, history, None, task, None, lambda **kw: decide(kw, pause=True), [])
+    task = history.task(chat_id)
+    assert task["status"] == "paused" and task["local_inventory_reads"]
+    (folder / "nuevo.bin").write_bytes(b"x" * 91)
+    history.append(chat_id, "user", "/reanudar")
+    cloud = AsyncMock(side_effect=AssertionError("El inventario debe quedarse en el equipo."))
+    assert "Ollama local" in run_turn(chat_id, history, None, task, None, cloud, [], provider="openrouter")
+    cloud.assert_not_called()
+    history.append(chat_id, "user", "/reanudar")
+    final = run_turn(chat_id, history, None, task, None, lambda **kw: decide(kw, pause=False), [])
+    assert history.task(chat_id)["status"] == "completed" and "nuevo.bin" in final and "91 bytes" in final, final
+
+
 def check_pages():
     task = new_task(OBJECTIVE)
     first = {"key": "first", "tool": "Archivo del proyecto", "project_read": "file", "resource": "README.md",
@@ -157,6 +196,7 @@ if __name__ == "__main__":
     with TemporaryDirectory() as directory:
         root = Path(directory).resolve()
         with patch.object(mcp_client, "default_root", return_value=root / "perfil"):
+            check_inventory_resume(root / "inventario")
             check_resume(root / "vigente", changed=False)
             check_resume(root / "modificado", changed=True)
             check_pages()
