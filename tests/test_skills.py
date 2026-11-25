@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from ollama import Message
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFileDialog
 
@@ -75,6 +75,8 @@ def install_from_ui(root):
         raise AssertionError("El cuerpo inválido debe fallar en la carga, después del descubrimiento.")
     local_skills.set_enabled("cuerpo-danado", False)
     panel.close()
+    panel.deleteLater()
+    QApplication.sendPostedEvents(panel, QEvent.Type.DeferredDelete)
 
 
 def test_progressive():

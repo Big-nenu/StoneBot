@@ -15,17 +15,48 @@ class EndTurn:
     answer: str
 
 
+class TurnTools:
+    """Catálogo de la ronda, compartido por el proveedor y el ejecutor."""
+
+    def __init__(self, specs, restricted_specs, aliases):
+        self.specs = list(specs)
+        self.restricted_specs = list(restricted_specs)
+        self.aliases = aliases
+        self.available = set()
+        self.handlers = {}
+
+    def register(self, names, handler):
+        for name in names:
+            if name in self.handlers:
+                raise ValueError(f"Herramienta duplicada: {name}")
+            self.handlers[name] = handler
+
+    def restrict(self):
+        self.available.intersection_update(spec.function.name for spec in self.restricted_specs)
+
+    def offer(self, *, restricted, finishing):
+        specs = self.restricted_specs if restricted else self.specs
+        return self.select([] if finishing else specs)
+
+    def select(self, specs):
+        self.available = {spec.__name__ if callable(spec) else spec.function.name for spec in specs}
+        return specs
+
+    def permits(self, name):
+        return self.aliases.get(name, name) in self.available
+
+
 class ToolLoop:
-    def __init__(self, messages, *, context_chars, final_round, aliases,
+    def __init__(self, messages, *, context_chars, final_round, tools,
                  max_distinct_calls, count_tool_context):
         self.messages = messages
         self.context_chars = context_chars
         self.final_round = final_round
-        self.aliases = aliases
+        self.tools = tools
         self.max_distinct_calls = max_distinct_calls
         self.count_tool_context = count_tool_context
 
-    async def run(self, request_round, execute_tool, *, check_pause, on_repeat, after_batch):
+    async def run(self, request_round, execute_tool, *, check_pause, on_repeat, after_batch, activity):
         """Ejecuta rondas hasta obtener una respuesta o alcanzar el límite.
 
         request_round devuelve un mensaje con llamadas, texto final o None para
@@ -41,13 +72,14 @@ class ToolLoop:
             if reply is None:
                 continue
             if isinstance(reply, str):
+                activity("Respuesta preparada con los resultados disponibles." if results else "Respuesta preparada.")
                 return reply
 
             calls = []
             for call in reply.tool_calls:
                 name = call.function.name
                 arguments = call.function.arguments
-                resolved = self.aliases.get(name, name)
+                resolved = self.tools.aliases.get(name, name)
                 key = (resolved, json.dumps(arguments, sort_keys=True)) if self.max_distinct_calls else None
                 calls.append((name, arguments, resolved, key))
             if self.max_distinct_calls and all(key in results for _, _, _, key in calls):
@@ -60,13 +92,19 @@ class ToolLoop:
                 self.context_chars += len(reply.thinking or "") + len(reply.content or "")
             for name, arguments, resolved, key in calls:
                 check_pause()
-                if key in results:
+                if not self.tools.permits(name):
+                    offered = ", ".join(sorted(self.tools.available))
+                    result = ToolResult(f"Herramienta desconocida o no disponible. Usa un nombre exacto de esta lista: {offered}.",
+                                        reuse=False)
+                elif key in results:
                     result = results[key]
                 elif self.max_distinct_calls and len(results) >= self.max_distinct_calls:
                     result = ToolResult("StoneBot terminó la fase de herramientas de este turno.", reuse=False)
                     finish_without_tools = True
                 else:
-                    result = await execute_tool(name, arguments, resolved)
+                    handler = self.tools.handlers.get(resolved, execute_tool)
+                    activity(f"El modelo solicitó {resolved}.")
+                    result = await handler(resolved, arguments)
                 if isinstance(result, EndTurn):
                     return result.answer
                 if key is not None and result.reuse:

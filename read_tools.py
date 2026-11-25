@@ -46,6 +46,9 @@ PROJECT_LINK = read_tool(
     {},
     [],
 )
+LOCAL_TARGET = {"type": "string", "description": "Ruta local absoluta o un nombre de carpeta conocido: "
+                "perfil (raíz de la carpeta del usuario de Windows), Descargas, Documentos, Escritorio "
+                "o proyecto si hay un proyecto abierto."}
 LOCAL_FILES = read_tool(
     "inspect_local_files",
     "Explora archivos y carpetas del equipo. Elige count para obtener un total, list para mostrar entradas, "
@@ -55,15 +58,24 @@ LOCAL_FILES = read_tool(
     "Para totales elige qué tipo de entradas contar y si hay que recorrer las subcarpetas. "
     "El resultado indica si el recorrido fue parcial.",
     {"operation": {"type": "string", "enum": ["count", "list", "search", "info"]},
-     "target": {"type": "string", "description": "Ruta local absoluta o un nombre de carpeta conocido: "
-               "perfil (raíz de la carpeta del usuario de Windows), Descargas, Documentos, Escritorio "
-               "o proyecto si hay un proyecto abierto."},
+     "target": LOCAL_TARGET,
      "entry_type": {"type": "string", "enum": ["folders", "files", "all"],
                     "description": "Tipo de entradas. Por defecto incluye archivos y carpetas."},
      "recursive": {"type": "boolean", "description": "Incluye entradas anidadas. Por defecto, false."},
      "name_contains": {"type": "string", "description": "Texto opcional para filtrar por nombre."},
      "extension": {"type": "string", "description": "Extensión opcional, por ejemplo pdf."}},
     ["operation", "target"],
+)
+
+RANK_FILES = read_tool(
+    "rank_local_files",
+    "Encuentra los archivos de mayor tamaño en una carpeta. Devuelve nombres, rutas y tamaños en bytes "
+    "que puedes usar para continuar el encargo con otras herramientas.",
+    {"target": LOCAL_TARGET,
+     "limit": {"type": "integer", "minimum": 1, "maximum": 999, "description": "Por defecto 5."},
+     "recursive": {"type": "boolean", "description": "Incluye subcarpetas por defecto."},
+     "exclude_hidden": {"type": "boolean", "description": "Indicar solo si se especifica el trato de los ocultos."}},
+    ["target"],
 )
 
 
@@ -94,6 +106,17 @@ def local_file_request(arguments, project):
         raise ValueError("Indica una operación y un tipo de entrada válidos.")
     if type(recursive) is not bool or not all(isinstance(value, str) for value in (target, query, extension)):
         raise ValueError("Indica una carpeta o ruta local y argumentos válidos.")
+    path = resolve_target(target, project)
+    if operation == "info" and (recursive or query or extension):
+        raise ValueError("Para consultar propiedades, indica únicamente la ruta.")
+    if extension and entry_type == "folders":
+        raise ValueError("El filtro por extensión se aplica a archivos.")
+    return FileRequest(operation, path, query.strip(), extension.strip().lstrip(".").casefold(), recursive, entry_type)
+
+
+def resolve_target(target, project):
+    if not isinstance(target, str) or not target.strip():
+        raise ValueError("Indica una carpeta o ruta local.")
     target = target.strip()
     alias = target.casefold()
     if alias in FOLDER_NAMES:
@@ -104,12 +127,7 @@ def local_file_request(arguments, project):
         if not project or not project.get("folder"):
             raise ValueError("El chat necesita un proyecto con carpeta vinculada.")
         target = project["folder"]
-    if operation == "info" and (recursive or query or extension):
-        raise ValueError("Para consultar propiedades, indica únicamente la ruta.")
-    if extension and entry_type == "folders":
-        raise ValueError("El filtro por extensión se aplica a archivos.")
-    return FileRequest(operation, local_path(target), query.strip(), extension.strip().lstrip(".").casefold(),
-                       recursive, entry_type)
+    return local_path(target)
 
 
 def project_file_path(folder, value):

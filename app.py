@@ -29,7 +29,7 @@ from diagnostics import record
 from diagnostics_ui import DiagnosticsDialog
 from extension_ui import Toggle
 from experiences import save_task_correction, task_correction
-from folder_inventory import HIDDEN_MISTAKE, inventory_followup, is_ranking_request, ranking_count, uses_mcp
+from folder_inventory import HIDDEN_MISTAKE, inventory_followup, ranking_count, uses_mcp
 from greetings import choose_greeting, format_greeting, greeting_settings
 from history import History
 from history_ui import SEARCH_SHORTCUT, HistoryPanel, SidebarPreview, SidebarRail, load_sidebar_pinned, save_sidebar_pinned, sidebar_icon
@@ -1374,14 +1374,12 @@ class StoneBot(QMainWindow):
                           and not uses_mcp(task["objective"]))
         setup_request = is_setup_request(texto)
         ordinary = command not in (TASK_COMMANDS | COMMANDS) and not setup_request
-        new_inventory = (
-            ordinary and not has_attachments and (not active_task or inventory_task) and is_ranking_request(texto)
-        )
         continue_inventory = (
             ordinary and not has_attachments and inventory_task and task["status"] != "cancelled"
+            and (active_task or self.ai.cloud)
             and inventory_followup(texto)
         )
-        task_turn = (command in TASK_COMMANDS or new_inventory or continue_inventory
+        task_turn = (command in TASK_COMMANDS or continue_inventory
                      or (active_task and not inventory_task and ordinary and not document_query))
         if task_turn:
             if has_attachments:
@@ -1390,9 +1388,7 @@ class StoneBot(QMainWindow):
             if self.history is None:
                 self.show_problem("El historial debe estar disponible para guardar la tarea.")
                 return
-            if new_inventory:
-                task = new_task(texto)
-            elif command == "/tarea":
+            if command == "/tarea":
                 if len(words) < 2 or active_task:
                     self.show_problem("Escribe /tarea y el objetivo. Si ya hay una tarea pendiente, usa /cancelar primero.")
                     return

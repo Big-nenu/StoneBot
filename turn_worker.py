@@ -28,7 +28,7 @@ from experiences import (
     query_experiences, ranking_evidence, ranking_scope, record_experience, record_ranking,
     record_task_result, task_correction, task_results,
 )
-from folder_inventory import hidden_filter, largest_files, ranking_request, uses_mcp
+from folder_inventory import hidden_filter, is_ranking_request, largest_files, ranking_request, uses_mcp
 from identity import INITIAL_IDENTITY, load_identity, update_identity
 from local_file_requests import continued_request, file_answer, inspect_path, parse_request
 from local_files import LocalFiles, OPERATIONS, RESULT_HEADER, load_settings as load_file_settings, local_path
@@ -39,8 +39,8 @@ from mcp_client import (
 )
 from mcp_permissions import allowed, permission_signature, remember, safe_read
 from read_tools import (
-    LOCAL_FILES, MAX_OFFSET, PAGE_CHARS, PROJECT_FILE, ReadTool, local_file_request, project_file_path,
-    project_read_tools, read_result,
+    LOCAL_FILES, MAX_OFFSET, PAGE_CHARS, PROJECT_FILE, RANK_FILES, ReadTool, local_file_request, project_file_path,
+    project_read_tools, read_result, resolve_target,
 )
 from request_routing import (
     LOCAL_READ_TOOLS, SELECT_SOURCE, TURN_SOURCES, WEB_LINK_TOOLS, referenced_web_link, requested_web_link,
@@ -57,7 +57,7 @@ from tasks import (
     checkpoint_key, completion_evidence, invalidate_project_reads, new_task, project_checkpoint_key,
     step_caption, task_context, upgrade_task,
 )
-from tool_loop import EndTurn, ToolLoop, ToolResult
+from tool_loop import EndTurn, ToolLoop, ToolResult, TurnTools
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 
@@ -345,7 +345,7 @@ class Worker(QObject):
                                    f"Guardé {saved} recuerdos automáticamente.")
 
     def observe_ranking(self, method, outcome, omitted=None):
-        if self.ranking_scope is None or (method == "mcp" and not self.task["steps"]):
+        if self.ranking_scope is None or (method == "mcp" and (not self.task or not self.task["steps"])):
             return
         if method == "mcp":
             sources = {step["tool"].split(" / ", 1)[0] for step in self.task["steps"]}
@@ -379,8 +379,11 @@ class Worker(QObject):
         if explicit is not None:
             self.task["inventory_hidden"] = explicit
             return explicit
+        return self.saved_hidden_filter(self.task)
+
+    def saved_hidden_filter(self, scope):
         try:
-            correction = task_correction(self.task)
+            correction = task_correction(scope)
         except (OSError, ValueError, RuntimeError, sqlite3.Error):
             self.mcp_notice.emit("No se pudo consultar la corrección guardada para esta carpeta.")
             return None
@@ -697,8 +700,6 @@ class Worker(QObject):
         return read_result(estado="ok", contenido=content[:PAGE_CHARS], parcial=len(content) > PAGE_CHARS)
 
     async def inspect_local_files(self, arguments):
-        if self.ai.cloud or not await self.verify_local_ollama():
-            return read_result(estado="error", mensaje="Esta consulta requiere un modelo ejecutado en Ollama local.")
         try:
             request = local_file_request(arguments, self.project)
             files = await self.authorize_file_request(request)
@@ -715,6 +716,41 @@ class Worker(QObject):
         if self.local_ollama is None:
             self.local_ollama = await asyncio.to_thread(ollama_model_is_local, self.ai.model)
         return self.local_ollama
+
+    async def ranked_inventory(self, folder, count, recursive, exclude_hidden):
+        service = await self.authorize_local_files("rank", folder, Subcarpetas="Sí" if recursive else "No",
+                                                   Resultados=count)
+        thread = QThread.currentThread()
+        return await asyncio.to_thread(largest_files, service, folder, count, recursive,
+                                       lambda: self.check_pause(thread), exclude_hidden=exclude_hidden)
+
+    async def rank_local_files(self, arguments):
+        try:
+            folder = resolve_target(arguments.get("target"), self.project)
+            count = arguments.get("limit", 5)
+            recursive = arguments.get("recursive", True)
+            hidden = arguments.get("exclude_hidden")
+            if type(count) is not int or not 1 <= count <= 999 or type(recursive) is not bool:
+                raise ValueError("Indica un límite de 1 a 999 y una opción de subcarpetas válida.")
+            if hidden is None:
+                hidden = self.saved_hidden_filter({"inventory_folder": str(folder),
+                                                   "project_id": (self.project or {}).get("id")}) is True
+            if type(hidden) is not bool:
+                raise ValueError("Indica una opción válida para las entradas ocultas.")
+            self.ranking_scope = ranking_scope(folder, count, recursive, exclude_hidden=hidden)
+            self.show_ranking_evidence()
+            self.activity.emit("Archivos locales · Clasificar por tamaño")
+            root, top, files, folders, skipped, limited = await self.ranked_inventory(folder, count, recursive, hidden)
+            self.check_pause()
+        except (ValueError, IsolationError) as exc:
+            return read_result(estado="error", mensaje=str(exc))
+        except OSError:
+            return read_result(estado="error", mensaje="No pude consultar la carpeta indicada.")
+        partial = bool(skipped or limited)
+        self.observe_ranking("local", "parcial" if partial else "completo", skipped)
+        return read_result(estado="ok", ruta=str(root), archivos=files, carpetas=folders, parcial=partial,
+                           omitidas=skipped, límite_alcanzado=limited, sin_ocultos=hidden,
+                           entradas=[{"ruta": path, "tamaño_bytes": size} for size, path in top])
 
     async def read_project_link(self, link, entry, config, arguments):
         if arguments:
@@ -765,14 +801,9 @@ class Worker(QObject):
         self.persist_task()
         self.used_external_source = True
         self.activity.emit("Método elegido · recorrido local. Revisando los tamaños…")
-        worker_thread = QThread.currentThread()
         try:
-            service = await self.authorize_local_files("rank", folder, Subcarpetas="Sí" if recursive else "No",
-                                                       Resultados=count)
-            root, top, files, folders, missing, limited = await asyncio.to_thread(
-                largest_files, service, folder, count, recursive, lambda: self.check_pause(worker_thread),
-                exclude_hidden=self.ranking_hidden is True,
-            )
+            root, top, files, folders, missing, limited = await self.ranked_inventory(
+                folder, count, recursive, self.ranking_hidden is True)
         except (ValueError, OSError, IsolationError) as exc:
             self.observe_ranking("local", "fallido")
             message = str(exc) if not isinstance(exc, OSError) else "No pude consultar la carpeta indicada."
@@ -816,6 +847,8 @@ class Worker(QObject):
         current = messages[-1] if messages else {}
         command = current.get("content", "").split(maxsplit=1)
         if self.ai.cloud and self.task is None and current.get("role") == "user" and not current.get("attachments"):
+            if self.save_task and not has_chat_attachments(messages) and is_ranking_request(current["content"]):
+                raise StartSavedTask(current["content"])
             try:
                 native = (parse_request(current["content"], project=self.project)
                           or continued_request(messages, project=self.project))
@@ -1275,9 +1308,11 @@ class Worker(QObject):
             registered_reads = dict(project_reads)
             if offer_local_files:
                 registered_reads[LOCAL_FILES.function.name] = ReadTool(LOCAL_FILES, self.inspect_local_files)
+                registered_reads[RANK_FILES.function.name] = ReadTool(RANK_FILES, self.rank_local_files)
                 directive = (
-                    "Para consultar los archivos o carpetas del equipo, usa inspect_local_files directamente. "
-                    "Elige la operación que entregue lo que pidió el usuario. En la respuesta utiliza los datos "
+                    "Para explorar el equipo usa inspect_local_files; para clasificar por tamaño usa rank_local_files. "
+                    "Si quedan pasos del encargo, utiliza los resultados para elegir la siguiente herramienta. "
+                    "En la respuesta utiliza los datos "
                     "obtenidos y explica cualquier error u omisión que afecte al resultado."
                 )
                 if messages[0]["role"] == "system":
@@ -1307,7 +1342,6 @@ class Worker(QObject):
             final_round = rounds if cloud_read_options else rounds - 1
             local_evidence = []
             registered_read_started = saved_project_reads
-            reading_registered = False
             if self.task is not None:
                 self.check_pause()
                 memory_context = await self.plan_task(client, {**external, **project_reads}, query_memories=not project_reads)
@@ -1319,12 +1353,16 @@ class Worker(QObject):
                 for _, _, tool, _ in external.values()
             )
             context_chars += sum(len(tool.spec.model_dump_json()) for tool in registered_reads.values())
+            restricted_specs = [tool.spec for tool in registered_reads.values()]
+            if self.task is not None:
+                restricted_specs.append(REPORT)
+            catalog = TurnTools(specs, restricted_specs, local_aliases)
             loop = ToolLoop(messages, context_chars=context_chars, final_round=final_round,
-                            aliases=local_aliases, max_distinct_calls=rounds if ordinary_turn else 0,
+                            tools=catalog, max_distinct_calls=rounds if ordinary_turn else 0,
                             count_tool_context=bool(external or registered_reads))
 
             async def request_round(round_index, finishing):
-                nonlocal planning_retried, reading_registered, repairs
+                nonlocal planning_retried, repairs
                 if finishing and local_evidence:
                     return await self.summarize_local_reads(client, messages, local_evidence)
                 request_messages = messages
@@ -1341,14 +1379,10 @@ class Worker(QObject):
                 if self.task is not None or project_reads or registered_read_started:
                     options["temperature"] = 0
                 self.activity.emit(f"Esperando la respuesta de {PROVIDERS[self.ai.provider]}…")
-                round_tools = specs
-                if registered_read_started:
-                    round_tools = [tool.spec for tool in registered_reads.values()]
-                    if self.task is not None:
-                        round_tools.append(REPORT)
+                round_tools = catalog.offer(restricted=registered_read_started, finishing=finishing)
                 try:
                     response = await self.model_request(client, "chat", model=self.ai.model, messages=request_messages,
-                                                       tools=[] if finishing else round_tools, options=options, think=self.think,
+                                                       tools=round_tools, options=options, think=self.think,
                                                        **cloud_read_options)
                 except TextToolCallError:
                     if not local_evidence:
@@ -1387,7 +1421,7 @@ class Worker(QObject):
                                                  f"tokens={getattr(response, 'prompt_eval_count', None)}). Reintentando.")
                         retry_tools = ([REPORT] if self.task is not None else []) if used_mcp else round_tools
                         retry = await self.model_request(client, "chat", model=self.ai.model, messages=messages,
-                                                        tools=retry_tools, think=False,
+                                                        tools=catalog.select(retry_tools), think=False,
                                                         options={**options, "num_ctx": model_context(loop.context_chars, 8192)},
                                                         **cloud_read_options)
                         reply = retry.message
@@ -1402,7 +1436,8 @@ class Worker(QObject):
                         raise TurnError(f"{PROVIDERS[self.ai.provider]} no respondió y ningún servidor MCP aportó herramientas. Consulta el diagnóstico.")
                 if self.task is not None:
                     calls = reply.tool_calls or []
-                    reporting = len(calls) == 1 and calls[0].function.name == REPORT.function.name
+                    reporting = (len(calls) == 1 and calls[0].function.name == REPORT.function.name
+                                 and catalog.permits(REPORT.function.name))
                     if reporting or not calls:
                         can_repair = repairs < 2 and task_calls < 12 and round_index + 1 < rounds
                         repair_messages = messages if can_repair else None
@@ -1433,14 +1468,17 @@ class Worker(QObject):
                 reading_registered = registered_read_started or any(
                     call.function.name in registered_reads for call in reply.tool_calls
                 )
-                if can_select_source and not reading_registered:
+                if reading_registered:
+                    catalog.restrict()
+                if can_select_source and catalog.permits(SELECT_SOURCE.function.name) and not reading_registered:
                     for call in reply.tool_calls:
                         if call.function.name == SELECT_SOURCE.function.name:
                             selected = call.function.arguments.get("fuente")
                             if isinstance(selected, str) and selected in TURN_SOURCES:
                                 self.activity.emit(f"Fuente seleccionada · {TURN_SOURCES[selected]}.")
                                 return await self.chat_with_tools(client, routing_messages, skills, source=selected)
-                if not reading_registered and all(call.function.name in activity_tools for call in reply.tool_calls):
+                if not reading_registered and all(call.function.name in activity_tools and catalog.permits(call.function.name)
+                                                  for call in reply.tool_calls):
                     answers = {}
                     for call in reply.tool_calls:
                         name = call.function.name
@@ -1459,137 +1497,163 @@ class Worker(QObject):
                             answers[name] = await self.show_sw_activity(
                                 name, focus={focus} if focus in ("date", "links", "conclusions", "notes") else None)
                     return "\n\n".join(answers.values())
-                if can_start_task and not used_mcp and not reading_registered:
+                if can_start_task and catalog.permits(START_TASK.function.name) and not used_mcp and not reading_registered:
                     for call in reply.tool_calls:
                         if call.function.name == START_TASK.function.name:
                             objective = call.function.arguments.get("objetivo")
                             if isinstance(objective, str) and 0 < len(objective.strip()) <= 4000:
                                 raise StartSavedTask(objective.strip())
-                if not reading_registered:
+                if not reading_registered and catalog.permits(local_skills.LOAD_SKILL):
                     if skill_answer := await self.use_skill(client, messages, reply, skills):
                         return skill_answer
                 return reply
 
-            async def execute_tool(name, arguments, external_name):
-                nonlocal registered_read_started, task_calls, used_mcp
-                if name in registered_reads:
-                    registered_read_started = True
-                    tool = registered_reads[name]
-                    self.private_read |= tool.private
-                    self.used_external_source = True
-                    if self.task is not None:
-                        if task_calls >= 12:
-                            return EndTurn(self.task_limit())
-                        task_calls += 1
-                        result = await self.run_project_task_read(name, tool, arguments)
-                    else:
-                        result = await tool.execute(arguments)
-                elif reading_registered:
-                    result = "Usa las herramientas de lectura disponibles para este encargo."
-                elif external_name in external:
-                    used_mcp = True
-                    _, server_name, tool, _ = external[external_name]
-                    self.mcp_notice.emit(f"MCP {server_name}. Nemotron solicitó {tool.name}.")
-                    self.activity.emit(f"Solicitando {tool.name} en {server_name}…")
-                    started = False
-                    outcome = None
-                    step = None
-                    destination = None
-                    if save_request:
-                        try:
-                            if "markdown" not in pending:
-                                raise ValueError("La escritura ya se resolvió en este turno.")
-                            destination = markdown_destination(save_request["target"], arguments)
-                        except (OSError, ValueError, RuntimeError, TypeError) as exc:
-                            if "markdown" in pending:
-                                status["markdown"] = f"**Archivo.** {exc}"
-                            return ToolResult(str(exc), reuse=False, context_chars=0)
-                    if self.task is not None:
-                        if not safe_read(tool, arguments):
-                            return ToolResult("La tarea solo admite herramientas de lectura.",
-                                              reuse=False, context_chars=0)
-                        key = checkpoint_key(server_name, servers[server_name], tool, arguments)
-                        cached_read = next((item for item in reversed(self.task["steps"])
-                                            if item["key"] == key and item["status"] == "response"), None)
-                        if cached_read is not None and not cached_read.get("partial"):
-                            self.activity.emit(f"Recuperé el resultado guardado de {server_name} / {tool.name}.")
-                            saved_result = cached_read["result"]
-                            return ToolResult(saved_result, reuse=False, context_chars=len(saved_result))
-                        if task_calls >= 12:
-                            return EndTurn(self.task_limit())
-                        task_calls += 1
-                        step = {"key": key, "tool": f"{server_name} / {tool.name}"}
-                        path = arguments.get("path")
-                        if isinstance(path, str) and Path(path).is_absolute():
-                            step["resource"] = path
+            async def execute_read(name, arguments):
+                nonlocal registered_read_started, task_calls
+                registered_read_started = True
+                tool = registered_reads[name]
+                self.private_read |= tool.private
+                self.used_external_source = True
+                if tool.private and (self.ai.cloud or not await self.verify_local_ollama()):
+                    return ToolResult(read_result(estado="error", mensaje="Esta consulta requiere Ollama local."))
+                if self.task is not None:
+                    if task_calls >= 12:
+                        return EndTurn(self.task_limit())
+                    task_calls += 1
+                    result = await self.run_project_task_read(name, tool, arguments)
+                else:
+                    result = await tool.execute(arguments)
+                return ToolResult(result)
 
-                    def on_start():
-                        nonlocal started
-                        self.check_pause()
-                        if destination is not None:
-                            markdown_destination(save_request["target"], arguments)
-                        if step is not None:
-                            self.task["steps"].append(step)
-                            self.checkpoint(step, "running")
-                        started = True
-                        self.activity.emit(f"En ejecución · {server_name} / {tool.name}…")
-
-                    def on_result(value):
-                        nonlocal outcome
-                        outcome = value
-
+            async def execute_external(external_name, arguments):
+                nonlocal used_mcp, task_calls
+                used_mcp = True
+                _, server_name, tool, _ = external[external_name]
+                self.mcp_notice.emit(f"MCP {server_name}. El modelo solicitó {tool.name}.")
+                self.activity.emit(f"Solicitando {tool.name} en {server_name}…")
+                started = False
+                outcome = None
+                step = None
+                destination = None
+                if save_request:
                     try:
-                        self.permission = (permission_signature(servers[server_name], tool)
-                                           if safe_read(tool, arguments) else None)
-                        result = await call_external(external[external_name], arguments, self.confirm_external,
-                                                     on_start=on_start,
-                                                     on_result=on_result if (cloud_read_options or learn or
-                                                                             step is not None or destination is not None) else None,
-                                                     on_partial=(lambda reason: step.update(partial=reason)) if step is not None else None)
-                    except TaskPaused:
-                        raise
-                    except Exception as exc:
-                        if started:
-                            outcome = "timeout" if isinstance(exc, TimeoutError) else "exception"
-                        result = f"Falló la llamada MCP. {connection_error(exc)}"
-                        self.mcp_notice.emit(f"MCP {server_name}. {result}")
-                        self.activity.emit(f"Error · {server_name} / {tool.name}. {connection_error(exc)}")
-                        self.operation_error.emit(f"No se pudo completar una operación en {server_name}. Consulta el diagnóstico.")
-                    else:
-                        if result.startswith("Error MCP:"):
-                            self.mcp_notice.emit(f"MCP {server_name}. La herramienta devolvió un error.")
-                            self.activity.emit(f"Terminó con error · {server_name} / {tool.name}.")
-                            self.operation_error.emit(f"Una herramienta de {server_name} devolvió un error.")
-                        elif started:
-                            self.activity.emit(f"Finalizó {tool.name}; procesando el resultado…")
-                        else:
-                            self.activity.emit(f"No se ejecutó {tool.name}.")
-                    if cloud_read_options and outcome == "response":
-                        local_evidence.append({"tool": tool.name, "arguments": arguments, "result": result})
+                        if "markdown" not in pending:
+                            raise ValueError("La escritura ya se resolvió en este turno.")
+                        destination = markdown_destination(save_request["target"], arguments)
+                    except (OSError, ValueError, RuntimeError, TypeError) as exc:
+                        if "markdown" in pending:
+                            status["markdown"] = f"**Archivo.** {exc}"
+                        return ToolResult(str(exc), reuse=False, context_chars=0)
+                if self.task is not None:
+                    if not safe_read(tool, arguments):
+                        return ToolResult("La tarea solo admite herramientas de lectura.",
+                                          reuse=False, context_chars=0)
+                    key = checkpoint_key(server_name, servers[server_name], tool, arguments)
+                    cached_read = next((item for item in reversed(self.task["steps"])
+                                        if item["key"] == key and item["status"] == "response"), None)
+                    if cached_read is not None and not cached_read.get("partial"):
+                        self.activity.emit(f"Recuperé el resultado guardado de {server_name} / {tool.name}.")
+                        saved_result = cached_read["result"]
+                        return ToolResult(saved_result, reuse=False, context_chars=len(saved_result))
+                    if task_calls >= 12:
+                        return EndTurn(self.task_limit())
+                    task_calls += 1
+                    step = {"key": key, "tool": f"{server_name} / {tool.name}"}
+                    path = arguments.get("path")
+                    if isinstance(path, str) and Path(path).is_absolute():
+                        step["resource"] = path
+
+                def on_start():
+                    nonlocal started
+                    self.check_pause()
                     if destination is not None:
-                        status["markdown"] = "**Archivo.** La herramienta no confirmó una escritura verificable."
-                        if started:
-                            pending.discard("markdown")
-                        if not started and "no autorizó" in result:
-                            status["markdown"] = "**Archivo.** La escritura no fue autorizada."
-                            pending.discard("markdown")
-                        if outcome in {"response", "no_text"} and markdown_verified(destination, arguments["content"]):
-                            status["markdown"] = f"**Archivo.** Guardado y verificado en `{destination}`."
-                            pending.discard("markdown")
-                            self.activity.emit("Markdown guardado y verificado en disco.")
+                        markdown_destination(save_request["target"], arguments)
                     if step is not None:
-                        if not started:
-                            self.task["steps"].append(step)
-                        self.checkpoint(step, (outcome or "exception") if started else "not_run", result)
-                    if learn and outcome is not None:
-                        try:
-                            observation = record_experience(server_name, tool.name, outcome)
-                        except (ValueError, OSError, RuntimeError, sqlite3.Error):
-                            self.mcp_notice.emit("No se pudo guardar una experiencia MCP.")
-                            result += "\n[StoneBot: no se pudo guardar la experiencia.]"
-                        else:
-                            result += f"\n[StoneBot: observación guardada con ID {observation}.]"
-                elif local_markdown and name == LOCAL_MARKDOWN.function.name and "markdown" in pending:
+                        self.task["steps"].append(step)
+                        self.checkpoint(step, "running")
+                    started = True
+                    self.activity.emit(f"En ejecución · {server_name} / {tool.name}…")
+
+                def on_result(value):
+                    nonlocal outcome
+                    outcome = value
+
+                try:
+                    self.permission = (permission_signature(servers[server_name], tool)
+                                       if safe_read(tool, arguments) else None)
+                    result = await call_external(external[external_name], arguments, self.confirm_external,
+                                                 on_start=on_start,
+                                                 on_result=on_result if (cloud_read_options or learn or
+                                                                         step is not None or destination is not None) else None,
+                                                 on_partial=(lambda reason: step.update(partial=reason)) if step is not None else None)
+                except TaskPaused:
+                    raise
+                except Exception as exc:
+                    if started:
+                        outcome = "timeout" if isinstance(exc, TimeoutError) else "exception"
+                    result = f"Falló la llamada MCP. {connection_error(exc)}"
+                    self.mcp_notice.emit(f"MCP {server_name}. {result}")
+                    self.activity.emit(f"Error · {server_name} / {tool.name}. {connection_error(exc)}")
+                    self.operation_error.emit(f"No se pudo completar una operación en {server_name}. Consulta el diagnóstico.")
+                else:
+                    if result.startswith("Error MCP:"):
+                        self.mcp_notice.emit(f"MCP {server_name}. La herramienta devolvió un error.")
+                        self.activity.emit(f"Terminó con error · {server_name} / {tool.name}.")
+                        self.operation_error.emit(f"Una herramienta de {server_name} devolvió un error.")
+                    elif started:
+                        self.activity.emit(f"Finalizó {tool.name}; procesando el resultado…")
+                    else:
+                        self.activity.emit(f"No se ejecutó {tool.name}.")
+                if cloud_read_options and outcome == "response":
+                    local_evidence.append({"tool": tool.name, "arguments": arguments, "result": result})
+                if destination is not None:
+                    status["markdown"] = "**Archivo.** La herramienta no confirmó una escritura verificable."
+                    if started:
+                        pending.discard("markdown")
+                    if not started and "no autorizó" in result:
+                        status["markdown"] = "**Archivo.** La escritura no fue autorizada."
+                        pending.discard("markdown")
+                    if outcome in {"response", "no_text"} and markdown_verified(destination, arguments["content"]):
+                        status["markdown"] = f"**Archivo.** Guardado y verificado en `{destination}`."
+                        pending.discard("markdown")
+                        self.activity.emit("Markdown guardado y verificado en disco.")
+                if step is not None:
+                    if not started:
+                        self.task["steps"].append(step)
+                    self.checkpoint(step, (outcome or "exception") if started else "not_run", result)
+                if learn and outcome is not None:
+                    try:
+                        observation = record_experience(server_name, tool.name, outcome)
+                    except (ValueError, OSError, RuntimeError, sqlite3.Error):
+                        self.mcp_notice.emit("No se pudo guardar una experiencia MCP.")
+                        result += "\n[StoneBot: no se pudo guardar la experiencia.]"
+                    else:
+                        result += f"\n[StoneBot: observación guardada con ID {observation}.]"
+                return ToolResult(result)
+
+            async def execute_memory(name, arguments):
+                if save_request and "memory" not in pending:
+                    return ToolResult("El guardado ya se resolvió.", reuse=False)
+                self.permission = None
+                try:
+                    confirm = self.confirm_memory
+                    if used_mcp and name in {"inject_memory", "update_memory"}:
+                        confirm = self.confirm_external
+                    result = await call_external(memory_tools[name], arguments, confirm)
+                except Exception as exc:
+                    result = f"No se pudo usar StoneWave. {connection_error(exc)}"
+                if save_request:
+                    if result.startswith(SAVED):
+                        status["memory"] = ("**Memoria.** La información ya estaba guardada." if result.startswith("=")
+                                            else "**Memoria.** Guardada en StoneWave.")
+                        self.activity.emit("Guardado en memoria confirmado.")
+                        pending.discard("memory")
+                    else:
+                        status["memory"] = "**Memoria.** StoneWave no confirmó el guardado."
+                return ToolResult(result)
+
+            async def execute_control(name, arguments):
+                if local_markdown and name == LOCAL_MARKDOWN.function.name and "markdown" in pending:
                     result, finished = await self.save_local_markdown(save_request["target"], arguments)
                     status["markdown"] = f"**Archivo.** {result}"
                     if finished:
@@ -1601,29 +1665,16 @@ class Worker(QObject):
                         result = query_experiences(**arguments)
                     except (TypeError, ValueError, OSError, RuntimeError, sqlite3.Error):
                         result = "No se pudieron consultar las experiencias de StoneBot."
-                elif name in memory_tools and (not save_request or "memory" in pending):
-                    self.permission = None
-                    try:
-                        confirm = self.confirm_memory
-                        if used_mcp and name in {"inject_memory", "update_memory"}:
-                            confirm = self.confirm_external
-                        result = await call_external(memory_tools[name], arguments, confirm)
-                    except Exception as exc:
-                        result = f"No se pudo usar StoneWave. {connection_error(exc)}"
-                    if save_request:
-                        if result.startswith(SAVED):
-                            status["memory"] = ("**Memoria.** La información ya estaba guardada." if result.startswith("=")
-                                                else "**Memoria.** Guardada en StoneWave.")
-                            self.activity.emit("Guardado en memoria confirmado.")
-                            pending.discard("memory")
-                        else:
-                            status["memory"] = "**Memoria.** StoneWave no confirmó el guardado."
                 else:
                     result = "Herramienta desconocida o no disponible."
                     if local_read:
                         self.mcp_notice.emit(f"MCP lectura local. Herramienta solicitada no disponible: {name!r:.100}.")
                         result += " Usa un nombre exacto de esta lista: " + ", ".join(external) + "."
                 return ToolResult(result)
+
+            catalog.register(registered_reads, execute_read)
+            catalog.register(external, execute_external)
+            catalog.register(memory_tools, execute_memory)
 
             def on_repeat():
                 self.activity.emit("El modelo repitió solicitudes de herramientas. Concluyendo el turno.")
@@ -1634,8 +1685,8 @@ class Worker(QObject):
                     return "\n\n".join(status.values())
                 return None
 
-            answer = await loop.run(request_round, execute_tool, check_pause=self.check_pause,
-                                    on_repeat=on_repeat, after_batch=after_batch)
+            answer = await loop.run(request_round, execute_control, check_pause=self.check_pause,
+                                    on_repeat=on_repeat, after_batch=after_batch, activity=self.activity.emit)
             if answer is not None:
                 return answer
             if save_request:

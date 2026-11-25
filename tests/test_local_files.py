@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEventLoop, Qt, QTimer
 from PySide6.QtWidgets import QApplication
 from ollama import Message
 
@@ -282,11 +283,89 @@ async def check_agent_files(root, live_model=None):
 
         await turn("¿Qué hay en Descargas?", unavailable, local_model=False)
         settings = load_settings()
-        save_settings({**settings.modes, "list": "deny"}, settings.exclusions)
+        save_settings({**settings.modes, "list": "deny", "rank": "deny"}, settings.exclusions)
         try:
             await turn("¿Qué hay en Descargas?", unavailable)
+            async def denied_rank(**kwargs):
+                last = kwargs["messages"][-1]
+                if last["role"] != "tool":
+                    return SimpleNamespace(message=Message(role="assistant", tool_calls=[
+                        {"function": {"name": "rank_local_files", "arguments": {"target": "Descargas"}}}
+                    ]))
+                assert json.loads(last["content"])["estado"] == "error"
+                assert "entradas" not in json.loads(last["content"])
+                return model_answer("No pude realizar la clasificación.")
+
+            with patch.object(turn_worker, "largest_files", side_effect=connection_not_expected):
+                await turn("¿Qué ocupa más espacio?", denied_rank)
+                await turn("¿Qué ocupa más espacio?", denied_rank, local_model=False)
         finally:
             save_settings(settings.modes, settings.exclusions)
+
+
+def check_ranking_chat(root, live_model=None):
+    incoming = root / "entrada"
+    archive = root / "archivo"
+    nested = archive / "expedientes"
+    incoming.mkdir()
+    nested.mkdir(parents=True)
+    name = "informe-7231.txt"
+    (incoming / name).write_bytes(b"x" * 123)
+    (incoming / "otro.txt").touch()
+    (nested / name).touch()
+    question = (f'Encuentra el archivo más pesado de "{incoming}". Después busca ese nombre en '
+                f'"{archive}" incluyendo subcarpetas y dime en qué subcarpeta aparece.')
+    calls = []
+
+    def observe(method):
+        async def tracked(worker, arguments):
+            evidence = await method(worker, arguments)
+            calls.append((method.__name__, arguments, json.loads(evidence)))
+            return evidence
+        return tracked
+
+    async def model(**kwargs):
+        last = kwargs["messages"][-1]
+        if last["role"] != "tool":
+            return SimpleNamespace(message=Message(role="assistant", tool_calls=[
+                {"function": {"name": "rank_local_files", "arguments": {"target": str(incoming), "limit": 1}}}
+            ]))
+        data = json.loads(last["content"])
+        if last["tool_name"] == "rank_local_files":
+            found, = data["entradas"]
+            return tool_call(operation="search", target=str(archive), recursive=True,
+                             name_contains=Path(found["ruta"]).name)
+        return model_answer(data["entradas"][0]["ruta"])
+
+    with ExitStack() as stack:
+        for method in ("rank_local_files", "inspect_local_files"):
+            stack.enter_context(patch.object(app.Worker, method, observe(getattr(app.Worker, method))))
+        stack.enter_context(patch.object(turn_worker, "automatic_memory_enabled", return_value=False))
+        stack.enter_context(patch.object(app, "generate_title", return_value="Clasificación"))
+        if not live_model:
+            stack.enter_context(patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=model)))
+            stack.enter_context(patch.object(turn_worker, "ollama_model_is_local", return_value=True))
+        window = app.StoneBot()
+        try:
+            window.ai = AISettings("ollama", live_model or "simulado")
+            window.message.setPlainText(question)
+            window.send.click()
+            loop = QEventLoop()
+            window.thread.finished.connect(loop.quit)
+            QTimer.singleShot(180_000, loop, loop.quit)
+            loop.exec()
+            assert window.thread is None, calls
+            result = window.history.messages(window.chat_id)[-1]["content"]
+            assert window.history.task(window.chat_id) is None
+            assert name in result and "expedientes" in result, (result, calls)
+            first = next(i for i, (tool, _, data) in enumerate(calls)
+                         if tool == "rank_local_files" and data["entradas"][0]["ruta"] == str(incoming / name))
+            assert any(tool == "inspect_local_files" and name in json.dumps(args)
+                       and "expedientes" in json.dumps(data) for tool, args, data in calls[first + 1:]), calls
+        finally:
+            window.pool.close()
+            window.close()
+    print(f"PASS: chat normal ({live_model or 'simulado'}), ranking seguido de búsqueda en otra carpeta.")
 
 
 if __name__ == "__main__":
@@ -297,7 +376,10 @@ if __name__ == "__main__":
             asyncio.run(check_chat(root))
             check_dialog(root)
             asyncio.run(check_agent_files(root))
+            check_ranking_chat(root)
             if sys.argv[1:2] == ["--live"]:
                 with TemporaryDirectory() as live:
-                    asyncio.run(check_agent_files(Path(live).resolve(), sys.argv[2] if len(sys.argv) > 2 else app.MODEL))
+                    model = sys.argv[2] if len(sys.argv) > 2 else app.MODEL
+                    check_ranking_chat(Path(live).resolve(), model)
+                    asyncio.run(check_agent_files(Path(live).resolve(), model))
     print("PASS: exploración nativa, exclusiones, confirmaciones, privacidad y ajustes.")
