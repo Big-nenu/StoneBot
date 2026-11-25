@@ -18,7 +18,7 @@ from ai_provider import (
     AISettings, OLLAMA_URL, PROVIDERS, OpenRouter, TextToolCallError, local_file_placeholder,
     ollama_model_is_local,
 )
-from attachment_actions import attachment_save_request, markdown_destination, markdown_verified, parse_attachment_save
+from attachment_actions import attachment_save_request, markdown_destination, text_file_verified, parse_attachment_save
 import automatic_memory
 from attachments import (
     attach_batch, attachment_batches, attachment_parts, attachment_scope, has_chat_attachments,
@@ -53,7 +53,7 @@ from stonewave_activity import (
     ACTIVITY_TOOLS, dream_question, format_dream_activity, format_recent_notes, notes_content_question,
     private_activity_placeholder,
 )
-from stonewave_memory import MemoryUnavailable, REVIEWED_WRITES, SAVED, TOOLS
+from stonewave_memory import MemoryUnavailable, REVIEWED_WRITES, SAVED, TOOLS, confirmed_change
 from tasks import (
     COVERAGE_STATUS, LIMIT_REASON, PLAN_STATUS, REPORT, REPORT_STATES, REPORT_STATUS, START_TASK,
     checkpoint_key, completion_evidence, invalidate_project_reads, new_task, project_checkpoint_key,
@@ -1119,6 +1119,14 @@ class Worker(QObject):
         status = {}
         if save_request:
             status.update(save_request["resolved"])
+            if self.execution and self.execution.resumed:
+                for step in self.execution.state["steps"]:
+                    if save_request["memory"] and step["tool"] == "inject_memory" and step["status"] == "confirmada por StoneWave":
+                        status["memory"] = "**Memoria.** Guardada en StoneWave."
+                    if save_request["markdown"] and step.get("verified_path") and step["status"] == "verificada en disco":
+                        status["markdown"] = f"**Archivo.** Guardado y verificado en `{step['verified_path']}`."
+            if all(key in status for key in ("memory", "markdown") if save_request[key]):
+                return "\n\n".join(status.values())
             if save_request["memory"] and "memory" not in status:
                 pending.add("memory")
                 status["memory"] = "**Memoria.** El guardado sigue sin confirmarse."
@@ -1388,7 +1396,7 @@ class Worker(QObject):
             local_evidence = []
             registered_read_started = saved_project_reads or attachment_context or bool(self.task and self.task.get("local_inventory_reads"))
             journal = self.execution if self.task is None and not learn else None
-            if journal and journal.previous and not save_request:
+            if journal and journal.previous:
                 _, _, saved = journal.previous
                 if saved["scope"] == journal.state["scope"] and (self.ai.cloud or await self.verify_local_ollama()):
                     specs.append(RESUME)
@@ -1649,6 +1657,7 @@ class Worker(QObject):
                 outcome = None
                 step = None
                 destination = None
+                verify_path = None
                 if save_request:
                     try:
                         if "markdown" not in pending:
@@ -1678,10 +1687,18 @@ class Worker(QObject):
                         step["resource"] = path
 
                 def on_start():
-                    nonlocal started
+                    nonlocal started, verify_path
                     self.check_pause()
                     if destination is not None:
                         markdown_destination(save_request["target"], arguments)
+                    if journal:
+                        verify_path = destination
+                        if (verify_path is None and tool.name == "write_file" and arguments.get("mode", "rewrite") == "rewrite"
+                                and isinstance(arguments.get("content"), str) and isinstance(arguments.get("path"), str)
+                                and Path(arguments["path"]).is_absolute() and servers[server_name].get("transport") == "stdio"
+                                and is_desktop_commander(servers[server_name])):
+                            verify_path = Path(arguments["path"])
+                        journal.dispatched(verify_path)
                     if step is not None:
                         self.task["steps"].append(step)
                         self.checkpoint(step, "running")
@@ -1720,6 +1737,8 @@ class Worker(QObject):
                         self.activity.emit(f"No se ejecutó {tool.name}.")
                 if cloud_read_options and outcome == "response":
                     local_evidence.append({"tool": tool.name, "arguments": arguments, "result": result})
+                verify_path = verify_path or destination
+                verified = started and verify_path is not None and text_file_verified(verify_path, arguments["content"])
                 if destination is not None:
                     status["markdown"] = "**Archivo.** La herramienta no confirmó una escritura verificable."
                     if started:
@@ -1727,7 +1746,7 @@ class Worker(QObject):
                     if not started and "no autorizó" in result:
                         status["markdown"] = "**Archivo.** La escritura no fue autorizada."
                         pending.discard("markdown")
-                    if outcome in {"response", "no_text"} and markdown_verified(destination, arguments["content"]):
+                    if verified:
                         status["markdown"] = f"**Archivo.** Guardado y verificado en `{destination}`."
                         pending.discard("markdown")
                         self.activity.emit("Markdown guardado y verificado en disco.")
@@ -1750,6 +1769,15 @@ class Worker(QObject):
                     status_label = "sin confirmar"
                 elif outcome == "tool_error":
                     status_label = "error de herramienta"
+                if journal and started and not safe_read(tool, arguments):
+                    if verified:
+                        status_label = "verificada en disco"
+                        result += "\n[StoneBot: contenido comprobado en el archivo autorizado.]"
+                    elif verify_path is None and outcome in {"response", "no_text"}:
+                        status_label = "ejecución reconocida por MCP, efecto sin comprobación independiente"
+                    else:
+                        status_label = "sin confirmar"
+                        result += "\n[StoneBot: el efecto de esta operación sigue sin verificación.]"
                 return ToolResult(result, status=status_label)
 
             async def execute_memory(name, arguments):
@@ -1761,10 +1789,20 @@ class Worker(QObject):
                     confirm = self.confirm_memory
                     if used_mcp and name in {"inject_memory", "update_memory"}:
                         confirm = self.confirm_external
-                    result = await call_external(memory_tools[name], arguments, confirm)
+                    if journal:
+                        transport = []
+                        result = await call_external(memory_tools[name], arguments, confirm,
+                                                     on_start=journal.dispatched, on_result=transport.append)
+                        step = journal.state["steps"][-1]
+                        if step["effect"]:
+                            outcome = step["status"]
+                            if transport == ["response"] and confirmed_change(name, arguments, result):
+                                outcome = "confirmada por StoneWave"
+                    else:
+                        result = await call_external(memory_tools[name], arguments, confirm)
                 except Exception as exc:
                     result = f"No se pudo usar StoneWave. {connection_error(exc)}"
-                    outcome = "sin confirmar"
+                    outcome = journal.state["steps"][-1]["status"] if journal else "sin confirmar"
                 if save_request:
                     if result.startswith(SAVED):
                         status["memory"] = ("**Memoria.** La información ya estaba guardada." if result.startswith("=")
@@ -1777,10 +1815,14 @@ class Worker(QObject):
 
             async def execute_control(name, arguments):
                 if local_markdown and name == LOCAL_MARKDOWN.function.name and "markdown" in pending:
-                    result, finished = await self.save_local_markdown(save_request["target"], arguments)
+                    result, finished = await self.save_local_markdown(save_request["target"], arguments,
+                                                                      journal.dispatched if journal else None)
                     status["markdown"] = f"**Archivo.** {result}"
                     if finished:
                         pending.discard("markdown")
+                    if journal:
+                        state = journal.state["steps"][-1]["status"]
+                        return ToolResult(result, status="verificada en disco" if result.startswith("Guardado y verificado") else state)
                 elif self.task is not None:
                     result = "Herramienta no disponible en la tarea. Para informar el estado, haz una llamada separada."
                 elif not save_request and name == query_experiences.__name__:
@@ -1820,8 +1862,8 @@ class Worker(QObject):
                         (name in external and safe_read(external[name][2], arguments)) or
                         (name in memory_tools and name in {"get_context", "query_memory", "list_memories",
                                                            "bridge_memory", "conclusion_history"}))
-                if not read and journal.repeated_effect(name, arguments):
-                    return ToolResult("Una acción anterior pudo producir cambios. Comprueba su efecto antes de repetirla.",
+                if not read and (previous := journal.repeated_effect(name, arguments)):
+                    return ToolResult(f"Acción omitida para evitar duplicados. Estado guardado: {previous['status']}.",
                                       reuse=False)
                 if (name in registered_reads and registered_reads[name].private) or name in activity_tools:
                     journal.state["protected"] = True
@@ -2048,7 +2090,7 @@ class Worker(QObject):
             notes += f"\n[{PROVIDERS[self.ai.provider]} agotó la salida de este lote. Sus hallazgos pueden estar incompletos.]"
         return notes
 
-    async def save_local_markdown(self, target, arguments):
+    async def save_local_markdown(self, target, arguments, on_start=None):
         try:
             destination = markdown_destination(target, arguments)
         except (OSError, ValueError, RuntimeError, TypeError) as exc:
@@ -2060,6 +2102,8 @@ class Worker(QObject):
         staged = None
         try:
             destination = markdown_destination(target, arguments)
+            if on_start:
+                on_start(destination)
             with NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", dir=destination.parent,
                                     prefix=".stonebot-", suffix=".tmp", delete=False) as output:
                 staged = Path(output.name)
@@ -2076,7 +2120,7 @@ class Worker(QObject):
             if staged is not None:
                 with suppress(OSError):
                     staged.unlink(missing_ok=True)
-        if not markdown_verified(destination, arguments["content"]):
+        if not text_file_verified(destination, arguments["content"]):
             return "No pude verificar el contenido del archivo.", True
         self.activity.emit("Markdown guardado y verificado en disco.")
         return f"Guardado y verificado en `{destination}`.", True

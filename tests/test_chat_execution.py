@@ -119,8 +119,11 @@ async def check_saved_state():
     origin, previous = history.execution_context(cid)
     execution = chat_execution.ChatExecution(origin, previous, history.save_execution, "Encargo", ["local"])
     step = execution.start("guardar", {"nombre": "a"}, True, ["leer"])
+    assert not execution.repeated_effect("guardar", {"nombre": "a"})
+    execution.dispatched()
     _, pending = History().execution_context(cid)
     resumed = chat_execution.ChatExecution(origin, pending, history.save_execution, "", ["local"])
+    assert resumed.repeated_effect("guardar", {"nombre": "a"})
     resumed.resume("continúa")
     assert resumed.repeated_effect("guardar", {"nombre": "a"}) and not resumed.repeated_effect("leer", {})
     try:
@@ -129,6 +132,25 @@ async def check_saved_state():
         pass
     else:
         raise AssertionError("Un escritor antiguo sobrescribió un encargo reanudado.")
+
+    with TemporaryDirectory() as folder:
+        target = Path(folder).resolve() / "prueba.md"
+        args = {"path": str(target), "content": "Prueba de recuperación"}
+        resumed.start("save_markdown", args, True, [])
+        resumed.dispatched(target)
+        target.write_text("contenido diferente", encoding="utf-8")
+        _, saved = History().execution_context(cid)
+        recovered = chat_execution.ChatExecution(origin, saved, history.save_execution, "", ["local"])
+        recovered.resume("continúa")
+        assert recovered.state["steps"][-1]["status"] == "sin confirmar"
+        assert target.read_text(encoding="utf-8") == "contenido diferente"
+        target.write_text(args["content"], encoding="utf-8")
+        _, saved = History().execution_context(cid)
+        recovered = chat_execution.ChatExecution(origin, saved, history.save_execution, "", ["local"])
+        recovered.resume("comprueba otra vez")
+        assert recovered.state["steps"][-1]["status"] == "verificada en disco"
+        assert recovered.repeated_effect("save_markdown", args)
+        assert [s["tool"] for s in recovered.unconfirmed()] == ["guardar"]
 
     scope = ["ollama", "modelo", True, None]
     messages = [{"role": "user", "content": "Primera decisión. " * 4000}, {"role": "user", "content": "Sigue."}]

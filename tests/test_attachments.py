@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMessageBox, QP
 
 from test_chat_presentation import wait_for_turn
 import turn_worker
+from chat_execution import ChatExecution
 from attachment_actions import attachment_save_request
 import app
 import attachments
@@ -425,7 +426,8 @@ async def test_save_from_capture(root):
         saver.name: (SimpleNamespace(call_tool=inject_memory), "stonewave", saver, False),
     }))
 
-    async def run(filename, *, approve=True, write=True, followup=False, split=False, confirmations=(), local=False):
+    async def run(filename, *, approve=True, write=True, followup=False, split=False, confirmations=(), local=False,
+                  disconnect=False):
         path = root / filename
         calls = []
 
@@ -434,6 +436,8 @@ async def test_save_from_capture(root):
             calls.append(arguments)
             if write:
                 path.write_text(arguments["content"], encoding="utf-8")
+            if disconnect:
+                raise ConnectionError("Desconexión después del envío")
             return CallToolResult(content=[TextContent(type="text", text="Se escribió el archivo.")])
 
         @asynccontextmanager
@@ -478,7 +482,8 @@ async def test_save_from_capture(root):
             messages.extend([{"role": "assistant", "content": "**Memoria.** Guardada en StoneBot.\n\n"
                                                             "**Archivo.** No encontré una herramienta activa."},
                              {"role": "user", "content": "Intenta guardar el archivo de nuevo"}])
-        worker = app.Worker(messages, memory=provider)
+        journal = ChatExecution(1, None, lambda _, version, state: version + 1, original["content"], ["local"])
+        worker = app.Worker(messages, memory=provider, execution=journal)
         worker.confirm_external = AsyncMock(return_value=approve)
         client = SimpleNamespace(chat=chat, show=lambda _: SimpleNamespace(capabilities=["vision"]))
         memory_count = len(memory)
@@ -492,6 +497,11 @@ async def test_save_from_capture(root):
                 assert await app.Worker(repeated).chat() == response
                 assert len(memory) == memory_count
         assert worker.confirm_external.await_count == 1
+        effects = [step for step in journal.state["steps"] if step["effect"]]
+        assert effects[-1]["status"] == ("sin ejecutar" if not approve else
+                                         "verificada en disco" if write else "sin confirmar")
+        if not local:
+            assert effects[0]["status"] == "confirmada por StoneWave"
         if local:
             assert worker.confirm_external.await_args.kwargs == {"local": True}
             assert len(memory) == memory_count
@@ -506,6 +516,7 @@ async def test_save_from_capture(root):
         return response
 
     await run("Comandos.md")
+    await run("Desconexión.md", disconnect=True)
     assert "no fue autorizada" in await run("Denegado.md", approve=False, followup=True)
     assert "no confirmó" in await run("Sin escritura real.md", write=False)
     await run("Captura posterior.md", split=True)

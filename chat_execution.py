@@ -4,6 +4,7 @@ import json
 
 from read_tools import read_result, read_tool
 from tool_loop import ToolResult
+from attachment_actions import text_file_verified
 
 
 CONTEXT_CHARS = 48_000
@@ -144,6 +145,9 @@ class ChatExecution:
         self.previous = None
         self.resumed = True
         self.state.setdefault("continuations", []).append(clarification)
+        for step in self.unconfirmed():
+            if step.get("verified_path") and text_file_verified(step["verified_path"], step["arguments"]["content"]):
+                step["status"] = "verificada en disco"
         self.persist()
         first = self.state["steps"][0]
         if refresh_first and first["tool"] in {"rank_local_files", "inspect_local_files", "read_project_file"}:
@@ -161,20 +165,39 @@ class ChatExecution:
                 "Si una operación de cambio quedó sin confirmar, verifica su efecto antes de proponer otra acción.")
 
     def repeated_effect(self, name, arguments):
-        return self.resumed and any(s["effect"] and s["tool"] == name and s["status"] != "sin ejecutar"
-                                    and (s["status"] == "sin confirmar" or s["arguments"] == arguments)
-                                    for s in self.state["steps"])
+        if self.previous and self.previous[2]["scope"] == self.state["scope"]:
+            for step in reversed(self.previous[2]["steps"]):
+                if (step["effect"] and step["tool"] == name and step["arguments"] == arguments
+                        and step["status"] != "sin ejecutar"):
+                    return step
+        return next((s for s in reversed(self.state["steps"])
+                     if s["effect"] and s["tool"] == name and s["status"] != "sin ejecutar"
+                     and (s["status"] == "sin confirmar" or s["arguments"] == arguments)), None)
+
+    def unconfirmed(self):
+        return [s for s in self.state["steps"] if s["effect"] and s["status"] == "sin confirmar"]
+
+    def dispatched(self, file_path=None):
+        step = self.state["steps"][-1]
+        if step["effect"]:
+            step["status"] = "sin confirmar"
+            if file_path is not None:
+                step["verified_path"] = str(file_path)
+            self.persist()
 
     def persist(self):
         self.version = self.save(self.message_id, self.version, self.state)
 
     def start(self, name, arguments, effect, remaining):
-        step = {"tool": name, "arguments": arguments, "effect": effect, "status": "sin confirmar"}
+        step = {"tool": name, "arguments": arguments, "effect": effect,
+                "status": "sin ejecutar" if effect else "sin confirmar"}
         self.state["steps"].append(step)
         self.state["pending"] = remaining
         self.persist()
         return step
 
     def observe(self, step, result, status):
+        if step["effect"] and step["status"] == "sin ejecutar":
+            status = "sin ejecutar"
         step.update(status=status, result=result)
         self.persist()

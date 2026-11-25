@@ -20,6 +20,19 @@ TOOLS = {
 REVIEWED_WRITES = {"forget_memory", "restore_memory", "forget_conclusion"}
 SERVER_SCRIPT = Path(__file__).resolve().parent.parent / "StoneWave" / "mcp_server.py"
 SAVED = ("📍 NUEVA", "= YA EXISTE")
+
+
+def confirmed_change(name, arguments, receipt):
+    if name == "inject_memory":
+        return receipt.startswith(SAVED)
+    if name == "update_memory":
+        return receipt.startswith(f"Recuerdo [ID {arguments.get('fact_id')}] actualizado.\n")
+    if name == "forget_conclusion":
+        return receipt.startswith(f"Conclusión olvidada: [C {arguments.get('conclusion_id')}] ")
+    if name == "forget_memory":
+        return receipt.startswith(("Olvidado: ", "Olvidado (estaba en el sótano): "))
+    return name == "restore_memory" and receipt.startswith("Restaurado [ID ")
+
 SETTINGS = {"AUTO_DREAM": "true", "DREAM_HOURS": "12", "DREAM_IDLE_MIN": "10", "CONCLUSIONS": "true",
             "CONCLUSION_MODEL": "qwen2.5:0.5b", "NOTES": "", "SYNC": ""}
 MANUAL_TIMEOUTS = {"force_dream": 900, "export_notes": 300, "sync_memory": 300}

@@ -85,10 +85,16 @@ def markdown_destination(target, arguments):
     return destination
 
 
-def markdown_verified(destination, content):
+def text_file_verified(destination, content):
     expected = content.replace("\r\n", "\n").replace("\r", "\n")
     try:
-        with Path(check_path(destination)).open(encoding="utf-8-sig") as saved:
+        path = Path(check_path(destination))
+        if path != Path(destination) or not path.is_file():
+            return False
+        with path.open(encoding="utf-8-sig") as saved:
             return saved.read(len(expected) + 1) == expected
     except (OSError, ValueError, RuntimeError):
         return False
+
+
+markdown_verified = text_file_verified

@@ -1787,7 +1787,11 @@ class StoneBot(QMainWindow):
         if self.pending_edit is None:
             task = self.worker.task if self.worker is not None else None
             execution = getattr(self.worker, "execution", None)
-            finish = (execution.message_id, execution.version) if execution and execution.version and not interrupted and not self.turn_failed else None
+            unresolved = execution.unconfirmed() if execution else []
+            if unresolved and not interrupted:
+                names = ", ".join(dict.fromkeys(step["tool"] for step in unresolved))
+                texto += f"\n\nStoneBot dejó pendiente comprobar el efecto de {names}. Al reanudar conservará el registro para evitar repetir la acción."
+            finish = (execution.message_id, execution.version) if execution and execution.version and not unresolved and not interrupted and not self.turn_failed else None
             self.save_message("assistant", texto, created, task=task, finish_execution=finish)
             if task is not None and not self.history_write_ok:
                 task["status"] = "interrupted"
