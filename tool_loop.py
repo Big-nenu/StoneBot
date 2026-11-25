@@ -8,6 +8,7 @@ class ToolResult:
     content: str
     reuse: bool = True
     context_chars: int | None = None
+    status: str = "respuesta recibida"
 
 
 @dataclass(frozen=True)
@@ -31,8 +32,9 @@ class TurnTools:
                 raise ValueError(f"Herramienta duplicada: {name}")
             self.handlers[name] = handler
 
-    def restrict(self):
-        self.available.intersection_update(spec.function.name for spec in self.restricted_specs)
+    def restrict(self, extra=()):
+        permitted = {spec.function.name for spec in self.restricted_specs}
+        self.available.intersection_update(permitted.union(extra))
 
     def offer(self, *, restricted, finishing):
         specs = self.restricted_specs if restricted else self.specs
@@ -56,7 +58,8 @@ class ToolLoop:
         self.max_distinct_calls = max_distinct_calls
         self.count_tool_context = count_tool_context
 
-    async def run(self, request_round, execute_tool, *, check_pause, on_repeat, after_batch, activity):
+    async def run(self, request_round, execute_tool, *, check_pause, on_repeat, after_batch, activity,
+                  before_call=None, after_call=None):
         """Ejecuta rondas hasta obtener una respuesta o alcanzar el límite.
 
         request_round devuelve un mensaje con llamadas, texto final o None para
@@ -90,7 +93,7 @@ class ToolLoop:
             self.messages.append(reply)
             if self.count_tool_context:
                 self.context_chars += len(reply.thinking or "") + len(reply.content or "")
-            for name, arguments, resolved, key in calls:
+            for position, (name, arguments, resolved, key) in enumerate(calls):
                 check_pause()
                 if not self.tools.permits(name):
                     offered = ", ".join(sorted(self.tools.available))
@@ -104,7 +107,17 @@ class ToolLoop:
                 else:
                     handler = self.tools.handlers.get(resolved, execute_tool)
                     activity(f"El modelo solicitó {resolved}.")
-                    result = await handler(resolved, arguments)
+                    step = None
+                    if before_call:
+                        remaining = [item[2] for item in calls[position + 1:] if self.tools.permits(item[0])]
+                        step = before_call(resolved, arguments, remaining)
+                    if isinstance(step, ToolResult):
+                        result = step
+                    else:
+                        result = await handler(resolved, arguments)
+                        if step is not None:
+                            after_call(step, result.answer if isinstance(result, EndTurn) else result.content,
+                                       result.status if isinstance(result, ToolResult) else "respuesta recibida")
                 if isinstance(result, EndTurn):
                     return result.answer
                 if key is not None and result.reuse:

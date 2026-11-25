@@ -297,6 +297,10 @@ En un mensaje del usuario, **Editar → Regenerar** vuelve a usar el historial a
 
 ### Tareas reanudables
 
+El chat normal guarda el objetivo y los pasos que ejecuta el agente en la base local del historial. Si se interrumpe después de usar una herramienta, abre el mismo chat y escribe «continúa». Con el mismo proyecto, proveedor, modelo y ajustes de memoria, el agente puede retomar el encargo. Para un ranking o una exploración de archivos vuelve a comprobar la lectura inicial con los permisos actuales y usa el resultado actualizado en los pasos siguientes. Las acciones con posibles cambios quedan registradas antes de ejecutarse. Una interrupción sin respuesta deja su resultado sin confirmar.
+
+Cuando el texto del turno supera un presupuesto estimado de 48 000 caracteres, StoneBot resume por lotes los mensajes anteriores y conserva los intercambios recientes y la petición actual. El agente puede buscar un fragmento literal o pedir por referencia el texto que se abrevió. Al reabrir el chat reutiliza el resumen si coinciden el contenido de origen y el ámbito del modelo. Los mensajes originales siguen en el historial. Editar y regenerar una conversación invalida el resumen guardado.
+
 En un chat sin adjuntos, pide un encargo de lectura con varios pasos en lenguaje natural. StoneBot puede abrir una tarea y guardarla antes de empezar a leer. Usa `/tarea` seguido del objetivo para abrirla explícitamente. Los permisos MCP se aplican a cada lectura nueva.
 
 - StoneBot divide el objetivo en un plan, lo guarda y ejecuta sus pasos en el mismo turno. Puedes verlo en **Actividad**. Para ejecutar sin confirmaciones por lectura, usa **Permitir siempre** en las herramientas de lectura que quieras autorizar. StoneBot pregunta si le falta un dato indispensable que no puede obtener.
@@ -403,6 +407,7 @@ StoneBot/
 | Permisos, exclusiones y recorrido nativo de archivos | [`local_files.py`](local_files.py) y [`local_file_requests.py`](local_file_requests.py). El diálogo está en [`local_files_ui.py`](local_files_ui.py). |
 | Cómo SB prepara un turno y conecta el modelo, las herramientas y las autorizaciones con Qt | [`turn_worker.py`](turn_worker.py) |
 | Cómo SB registra los ejecutores, comprueba las herramientas ofrecidas en cada ronda y devuelve los resultados al modelo | [`tool_loop.py`](tool_loop.py), clases `TurnTools` y `ToolLoop` |
+| Cómo se retoma un encargo interrumpido o se abrevia un chat largo | [`chat_execution.py`](chat_execution.py) y el almacenamiento en [`history.py`](history.py) |
 | Qué herramientas de exploración y lectura recibe el agente | [`read_tools.py`](read_tools.py) |
 | Cómo se reciben adjuntos o se pide guardar su contenido | [`attachments.py`](attachments.py) para la lectura y [`attachment_actions.py`](attachment_actions.py) para el guardado. |
 | Ollama, OpenRouter o el selector de modelos | [`ai_provider.py`](ai_provider.py) para la conexión y [`ai_settings_ui.py`](ai_settings_ui.py) para el selector. |

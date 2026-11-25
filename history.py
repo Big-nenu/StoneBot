@@ -23,6 +23,13 @@ class History:
                     created INTEGER, attachments TEXT
                 );
                 CREATE INDEX IF NOT EXISTS messages_by_chat ON message(chat_id, id);
+                CREATE TABLE IF NOT EXISTS chat_execution (
+                    message_id INTEGER PRIMARY KEY REFERENCES message(id) ON DELETE CASCADE,
+                    version INTEGER NOT NULL, finished INTEGER NOT NULL DEFAULT 0, snapshot TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS chat_summary (
+                    chat_id INTEGER PRIMARY KEY REFERENCES chat(id) ON DELETE CASCADE, snapshot TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS chat_task (
                     chat_id INTEGER PRIMARY KEY REFERENCES chat(id) ON DELETE CASCADE, snapshot TEXT NOT NULL
                 );
@@ -68,7 +75,7 @@ class History:
             yield conn
 
     def append(self, chat_id, role, content, *, created=None, attachments=None, task=None, project_id=None,
-               automatic_title=False):
+               automatic_title=False, finish_execution=None):
         now = time.time_ns() if created is None else created
         with self.connect() as conn:
             if chat_id is None:
@@ -77,10 +84,48 @@ class History:
                 chat_id = conn.execute("INSERT INTO chat(title, updated, project_id, title_pending) VALUES (?, ?, ?, ?)",
                                        (title, now, project_id, automatic_title)).lastrowid
             self.insert_message(conn, chat_id, role, content, now, attachments)
+            if finish_execution is not None:
+                origin, version = finish_execution
+                updated = conn.execute("""UPDATE chat_execution SET finished=1 WHERE message_id=? AND version=?
+                    AND finished=0 AND message_id IN (SELECT id FROM message WHERE chat_id=?)""",
+                                       (origin, version, chat_id))
+                if updated.rowcount != 1:
+                    raise ValueError("El estado del encargo cambió antes de guardar la respuesta.")
             if task is not None:
                 self.write_task(conn, chat_id, task)
             conn.execute("UPDATE chat SET updated=? WHERE id=?", (now, chat_id))
         return chat_id
+
+    def execution_context(self, chat_id, created=None):
+        with self.connect() as conn:
+            current = conn.execute("""SELECT MAX(id) FROM message WHERE chat_id=? AND role='user'
+                AND (? IS NULL OR created=?)""", (chat_id, created, created)).fetchone()[0]
+            row = conn.execute("""SELECT e.message_id,e.version,e.snapshot FROM chat_execution e
+                JOIN message m ON m.id=e.message_id WHERE m.chat_id=? AND e.finished=0
+                ORDER BY e.message_id DESC LIMIT 1""", (chat_id,)).fetchone()
+        return current, (row[0], row[1], json.loads(row[2])) if row else None
+
+    def save_execution(self, message_id, version, snapshot):
+        data = json.dumps(snapshot, ensure_ascii=False)
+        with self.connect() as conn:
+            if not version:
+                conn.execute("INSERT INTO chat_execution(message_id,version,snapshot) VALUES (?,1,?)", (message_id, data))
+            else:
+                change = conn.execute("""UPDATE chat_execution SET version=version+1,snapshot=?
+                    WHERE message_id=? AND version=? AND finished=0""", (data, message_id, version))
+                if change.rowcount != 1:
+                    raise ValueError("Este encargo fue actualizado en otra sesión.")
+        return version + 1
+
+    def summary(self, chat_id):
+        with self.connect() as conn:
+            row = conn.execute("SELECT snapshot FROM chat_summary WHERE chat_id=?", (chat_id,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_summary(self, chat_id, snapshot):
+        with self.connect() as conn:
+            conn.execute("""INSERT INTO chat_summary VALUES (?,?) ON CONFLICT(chat_id)
+                DO UPDATE SET snapshot=excluded.snapshot""", (chat_id, json.dumps(snapshot, ensure_ascii=False)))
 
     def task(self, chat_id):
         with self.connect() as conn:
@@ -218,6 +263,7 @@ class History:
             current = [message for _, message in rows]
             if current != expected or not 0 <= index < len(rows) or current[index]["role"] != "user":
                 raise ValueError("La conversación cambió durante la regeneración.")
+            conn.execute("DELETE FROM chat_summary WHERE chat_id=?", (chat_id,))
             conn.execute("DELETE FROM message WHERE chat_id=? AND id>=?", (chat_id, rows[index][0]))
             for item in (edited, answer, *following):
                 self.insert_message(conn, chat_id, item["role"], item["content"], item["created"], item.get("attachments"))

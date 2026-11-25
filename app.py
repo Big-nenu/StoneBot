@@ -21,6 +21,7 @@ from attachments import FILE_FILTER, attachment_path, has_chat_attachments
 from chat_markdown import CopyButton, MarkdownText
 from chat_preferences import automatic_memory_enabled, load_instructions, save_automatic_memory, save_instructions
 from chat_titles import generate_title
+from chat_execution import ChatExecution
 from chat_ui import (
     ActivityPanel, AttachmentCard, AttachmentTray, ChatBottomFade, ChatText, ChatTranscript, Composer, ComposerPanel,
     MessageCard, PopupButton, chat_style, style_chat_menu,
@@ -817,6 +818,11 @@ class StoneBot(QMainWindow):
                     self.transcript.insertWidget(self.transcript.count() - 1, panel)
                     self.show_task_progress(panel, self.task)
                     self.update_task_correction(panel, self.task)
+                _, pending = self.history.execution_context(chat_id)
+                if pending and (not self.task or self.task["status"] in {"completed", "cancelled"}):
+                    panel = ActivityPanel()
+                    self.transcript.insertWidget(self.transcript.count() - 1, panel)
+                    panel.add_event("Hay un encargo interrumpido. Puedes pedir que continúe.")
             except (OSError, ValueError, RuntimeError, sqlite3.Error):
                 self.show_problem("No se pudo recuperar el estado de la tarea.")
         self.refresh_history()
@@ -880,7 +886,7 @@ class StoneBot(QMainWindow):
         except (OSError, ValueError, RuntimeError, sqlite3.Error):
             self.show_problem("No se pudo eliminar la conversación.")
 
-    def save_message(self, role, text, created, attachments=None, *, task=None):
+    def save_message(self, role, text, created, attachments=None, *, task=None, finish_execution=None):
         message = {"role": role, "content": text, "created": created}
         if attachments:
             message["attachments"] = attachments
@@ -892,7 +898,8 @@ class StoneBot(QMainWindow):
                 self.chat_id = self.history.append(self.chat_id, role, text, created=created,
                                                    attachments=attachments, task=task,
                                                    project_id=self.project["id"] if self.project else None,
-                                                   automatic_title=self.chat_id is None and role == "user")
+                                                   automatic_title=self.chat_id is None and role == "user",
+                                                   finish_execution=finish_execution)
                 self.chat_options.show()
                 self.refresh_history()
             except (OSError, ValueError, RuntimeError, sqlite3.Error):
@@ -1616,12 +1623,28 @@ class StoneBot(QMainWindow):
             )
         history, chat_id = self.history, self.chat_id
         save_task = None
+        execution = None
         if history is not None and chat_id is not None and self.history_write_ok and self.pending_edit is None:
             save_task = lambda snapshot: history.save_task(chat_id, snapshot)
+            if task is None:
+                try:
+                    origin, pending = history.execution_context(chat_id, self.messages[-1].get("created"))
+                    if origin is None:
+                        raise ValueError("El mensaje de origen ya no está en el historial.")
+                    scope = [self.ai.provider, self.ai.model, self.ai.cloud_memory,
+                             self.project["id"] if self.project else None,
+                             self.project["folder"] if self.project else None]
+                    execution = ChatExecution(origin, pending, history.save_execution,
+                                              turn_messages[-1]["content"], scope)
+                    execution.summary = history.summary(chat_id)
+                    execution.save_summary = lambda value: history.save_summary(chat_id, value)
+                except (OSError, ValueError, RuntimeError, sqlite3.Error):
+                    self.show_problem("No pude abrir el registro del encargo.")
         completed_task = (self.task if self.pending_edit is None and self.task is not None
                           and self.task["status"] == "completed" else None)
         self.worker = Worker(turn_messages, self.pool, identity_enabled=True, memory=self.memory,
                              task=task, save_task=save_task, completed_task=completed_task, project=project_context,
+                             execution=execution,
                              save_continuity=history.save_continuity if history is not None else None,
                              project_document_path=history.project_document_path if history is not None else None,
                              capture_memory=self.pending_edit is None, ai=self.ai,
@@ -1763,7 +1786,9 @@ class StoneBot(QMainWindow):
         created = time.time_ns()
         if self.pending_edit is None:
             task = self.worker.task if self.worker is not None else None
-            self.save_message("assistant", texto, created, task=task)
+            execution = getattr(self.worker, "execution", None)
+            finish = (execution.message_id, execution.version) if execution and execution.version and not interrupted and not self.turn_failed else None
+            self.save_message("assistant", texto, created, task=task, finish_execution=finish)
             if task is not None and not self.history_write_ok:
                 task["status"] = "interrupted"
         else:
