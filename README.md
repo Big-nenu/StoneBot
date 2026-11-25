@@ -237,6 +237,8 @@ Desde el chat puedes listar carpetas, buscar archivos por nombre o extensión, c
 
 Con un modelo ejecutado en Ollama local, el agente elige si necesita listar, buscar, contar o consultar propiedades. Recibe datos de la exploración y los usa para responder o decidir otra consulta. Por ejemplo, puede encontrar un PDF y después consultar su tamaño. Los recuentos sin filtro usan el permiso **Listar carpetas** y la herramienta indica si omitió entradas o alcanzó el límite de recorrido.
 
+El agente puede explorar la raíz del perfil de Windows para localizar carpetas por nombre. Una solicitud como «Encuentra Projects en mi carpeta de usuario y dime cuántas carpetas tiene» puede encadenar la búsqueda con el recuento en la ruta encontrada. Se aplican los permisos y las exclusiones de **Archivos locales**.
+
 En **Configuración → Archivos locales**, elige **Permitir**, **Preguntar** o **Denegar** para cada operación. Puedes usar cualquier carpeta de una unidad local accesible para tu cuenta. Agrega **Carpetas excluidas** para bloquearlas junto con sus subcarpetas. StoneBot también protege las rutas de memoria y credenciales conocidas. La configuración se guarda en `%USERPROFILE%\.stonebot\local_files.ini`.
 
 El recorrido respeta la carpeta solicitada y avisa si hay entradas omitidas o se alcanzan los límites. Puedes adjuntar un documento para consultar su contenido. Las integraciones MCP conservan sus propios permisos.

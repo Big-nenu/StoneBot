@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -174,6 +175,10 @@ async def check_agent_files(root, live_model=None):
         (downloads / f"Carpeta {number}").mkdir()
     (downloads / "Carpeta 0" / "Anidada").mkdir()
     (downloads / "informe.pdf").write_bytes(b"abc")
+    home = root / "Perfil de prueba"
+    for name in ("Uno", "Dos", "Tres", "Cuatro", "Cinco"):
+        (home / "Projects" / name).mkdir(parents=True)
+    (home / ".aws").mkdir()
 
     def worker(text, name):
         return app.Worker([{"role": "system", "content": app.SYSTEM}, user(text)],
@@ -186,23 +191,29 @@ async def check_agent_files(root, live_model=None):
             return await active.chat()
 
     with (patch.dict(FOLDER_NAMES, {"descargas": lambda: downloads}),
+          patch.object(Path, "home", return_value=home),
           patch.object(turn_worker, "parse_request", side_effect=connection_not_expected),
           patch.object(turn_worker, "load_servers", side_effect=connection_not_expected),
           patch.object(app.Worker, "enabled_skills", return_value={})):
         if live_model:
             questions = (
-                ("¿Cuántas carpetas tengo en Descargas?", ("82",), 1),
-                ("¿Qué PDF hay directamente en Descargas y cuánto pesa en bytes?", ("informe.pdf", "3 bytes"), 2),
+                ("¿Cuántas carpetas tengo en Descargas?", (r"\b82\b",), 1),
+                ("¿Qué PDF hay directamente en Descargas y cuánto pesa en bytes?", (r"informe\.pdf", r"3\s+bytes"), 2),
+                ("¿Dónde está Projects en mi carpeta de usuario y cuántas carpetas tiene en su primer nivel?",
+                 (r"Projects", r"\b(?:5|cinco)\b"), 2),
             )
             for question, expected, operations in questions:
                 active = worker(question, live_model)
                 active.think = None
                 events = []
                 active.activity.connect(events.append)
-                result = await active.run_chat()
-                assert result.startswith(RESULT_HEADER) and all(value in result for value in expected), (result, events)
+                with patch.object(active, "inspect_local_files", wraps=active.inspect_local_files) as reads:
+                    result = await active.run_chat()
+                assert result.startswith(RESULT_HEADER) and all(re.search(pattern, result, re.I) for pattern in expected), (
+                    result, events, reads.await_args_list
+                )
                 assert sum(event.startswith("Archivos locales · ") for event in events) >= operations, events
-            print(f"PASS: {live_model} eligió el recuento y encadenó búsqueda con propiedades.")
+            print(f"PASS: {live_model} encadenó búsquedas, propiedades y recuentos en un perfil temporal.")
             return
 
         for question, recursive, total in (
@@ -233,6 +244,22 @@ async def check_agent_files(root, live_model=None):
             return model_answer("El PDF pesa 3 bytes.")
 
         assert await turn("¿Qué PDF hay en Descargas y cuánto pesa?", search_then_info) == RESULT_HEADER + "El PDF pesa 3 bytes."
+
+        async def find_from_home(**kwargs):
+            last = kwargs["messages"][-1]
+            if last["role"] != "tool":
+                return tool_call(operation="search", target="perfil", name_contains="Projects")
+            result = json.loads(last["content"])
+            if "entradas" in result:
+                found, = result["entradas"]
+                assert found["ruta"] == "Projects"
+                assert result["parcial"] and result["omitidas"] == 1
+                return tool_call(operation="count", target=str(Path(result["ruta"]) / found["ruta"]), entry_type="folders")
+            assert result["total"] == 5 and not result["parcial"]
+            return model_answer("Projects contiene cinco carpetas directamente.")
+
+        located = await turn("¿Dónde está Projects en mi carpeta de usuario y cuántas carpetas tiene?", find_from_home)
+        assert located == RESULT_HEADER + "Projects contiene cinco carpetas directamente."
 
         async def count_with_limit(**kwargs):
             last = kwargs["messages"][-1]

@@ -50,12 +50,16 @@ LOCAL_FILES = read_tool(
     "inspect_local_files",
     "Explora archivos y carpetas del equipo. Elige count para obtener un total, list para mostrar entradas, "
     "search para filtrar por nombre o extensión e info para consultar propiedades de una ruta. "
+    "Para ubicar una carpeta en el perfil de Windows, usa search con target perfil y entry_type folders. "
+    "El resultado incluye la ruta base y las entradas relativas para continuar la exploración. "
     "Para totales elige qué tipo de entradas contar y si hay que recorrer las subcarpetas. "
     "El resultado indica si el recorrido fue parcial.",
     {"operation": {"type": "string", "enum": ["count", "list", "search", "info"]},
      "target": {"type": "string", "description": "Ruta local absoluta o un nombre de carpeta conocido: "
-               "Descargas, Documentos, Escritorio o proyecto si hay un proyecto abierto."},
-     "entry_type": {"type": "string", "enum": ["folders", "files", "all"]},
+               "perfil (raíz de la carpeta del usuario de Windows), Descargas, Documentos, Escritorio "
+               "o proyecto si hay un proyecto abierto."},
+     "entry_type": {"type": "string", "enum": ["folders", "files", "all"],
+                    "description": "Tipo de entradas. Por defecto incluye archivos y carpetas."},
      "recursive": {"type": "boolean", "description": "Incluye entradas anidadas. Por defecto, false."},
      "name_contains": {"type": "string", "description": "Texto opcional para filtrar por nombre."},
      "extension": {"type": "string", "description": "Extensión opcional, por ejemplo pdf."}},
@@ -82,7 +86,7 @@ def project_read_tools(read_file, query_memory, read_link):
 def local_file_request(arguments, project):
     operation = arguments.get("operation")
     target = arguments.get("target")
-    entry_type = arguments.get("entry_type", "files" if operation == "search" else "all")
+    entry_type = arguments.get("entry_type", "all")
     recursive = arguments.get("recursive", False)
     query = arguments.get("name_contains", "")
     extension = arguments.get("extension", "")
@@ -94,6 +98,8 @@ def local_file_request(arguments, project):
     alias = target.casefold()
     if alias in FOLDER_NAMES:
         target = FOLDER_NAMES[alias]()
+    elif alias == "perfil":
+        target = Path.home()
     elif alias == "proyecto":
         if not project or not project.get("folder"):
             raise ValueError("El chat necesita un proyecto con carpeta vinculada.")
