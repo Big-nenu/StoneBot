@@ -30,7 +30,7 @@ from experiences import (
 )
 from folder_inventory import hidden_filter, largest_files, ranking_request, uses_mcp
 from identity import INITIAL_IDENTITY, load_identity, update_identity
-from local_file_requests import continued_request, file_answer, parse_request
+from local_file_requests import continued_request, file_answer, inspect_path, parse_request
 from local_files import LocalFiles, OPERATIONS, RESULT_HEADER, load_settings as load_file_settings, local_path
 import local_skills
 from mcp_client import (
@@ -38,7 +38,10 @@ from mcp_client import (
     session_for,
 )
 from mcp_permissions import allowed, permission_signature, remember, safe_read
-from read_tools import MAX_OFFSET, PAGE_CHARS, PROJECT_FILE, project_file_path, project_read_tools, read_result
+from read_tools import (
+    LOCAL_FILES, MAX_OFFSET, PAGE_CHARS, PROJECT_FILE, ReadTool, local_file_request, project_file_path,
+    project_read_tools, read_result,
+)
 from request_routing import (
     LOCAL_READ_TOOLS, SELECT_SOURCE, TURN_SOURCES, WEB_LINK_TOOLS, referenced_web_link, requested_web_link,
     requests_external_tools, requests_local_read, requests_memory,
@@ -174,7 +177,7 @@ class Worker(QObject):
         self.capture_memory = capture_memory
         self.read_sw_activity = False
         self.used_external_source = False
-        self.private_project_read = False
+        self.private_read = False
         self.local_ollama = None
         self.ai = ai or AISettings()
         self.share_memory = not self.ai.cloud or self.ai.cloud_memory
@@ -254,13 +257,13 @@ class Worker(QObject):
     def update_partial(self, text):
         if text.lstrip().startswith(("<tool", "<function")):
             text = ""
-        text = self.project_answer(text)
+        text = self.private_answer(text)
         if text != self.partial_text:
             self.partial_text = text
             self.partial.emit(text)
 
-    def project_answer(self, text):
-        if text and self.private_project_read and not text.startswith(RESULT_HEADER):
+    def private_answer(self, text):
+        if text and self.private_read and not text.startswith(RESULT_HEADER):
             return RESULT_HEADER + text
         return text
 
@@ -278,7 +281,7 @@ class Worker(QObject):
         raise TurnError("Ollama interrumpió la respuesta.")
 
     def task_reply(self, status, text):
-        answer = self.project_answer(text)
+        answer = self.private_answer(text)
         self.task.update(status=status, message=answer)
         self.task["pending"] = text if status in {"paused", "waiting"} else ""
         if status in {"paused", "completed"} and self.ranking_scope is None:
@@ -693,10 +696,20 @@ class Worker(QObject):
         self.check_pause()
         return read_result(estado="ok", contenido=content[:PAGE_CHARS], parcial=len(content) > PAGE_CHARS)
 
-    def can_read_project_content(self, request):
-        folder = self.project.get("folder") if self.project else None
-        return bool(request and request.operation == "content" and folder and not self.ai.cloud
-                    and (request.path is None or request.path.is_relative_to(folder)))
+    async def inspect_local_files(self, arguments):
+        if self.ai.cloud or not await self.verify_local_ollama():
+            return read_result(estado="error", mensaje="Esta consulta requiere un modelo ejecutado en Ollama local.")
+        try:
+            request = local_file_request(arguments, self.project)
+            files = await self.authorize_file_request(request)
+            thread = QThread.currentThread()
+            evidence = await asyncio.to_thread(inspect_path, files, request, lambda: self.check_pause(thread))
+            self.check_pause()
+        except (ValueError, IsolationError) as exc:
+            return read_result(estado="error", mensaje=str(exc))
+        except OSError:
+            return read_result(estado="error", mensaje="No pude consultar la ruta. Comprueba que exista y sea accesible.")
+        return read_result(estado="ok", **evidence)
 
     async def verify_local_ollama(self):
         if self.local_ollama is None:
@@ -713,22 +726,32 @@ class Worker(QObject):
         return read_result(estado="ok", enlace=link, contenido=content[:PAGE_CHARS],
                            parcial=len(content) > PAGE_CHARS)
 
+    async def authorize_file_request(self, request):
+        operation = request.operation
+        if operation in {"count", "list"} and (request.query or request.extension):
+            operation = "search"
+        elif operation == "count":
+            operation = "list"
+        scope = {}
+        if operation != "info":
+            scope["Subcarpetas"] = "Sí" if request.recursive else "No"
+        if request.query:
+            scope["Nombre"] = request.query
+        if request.extension:
+            scope["Extensión"] = request.extension
+        files = await self.authorize_local_files(operation, request.path, **scope)
+        label = "Contar entradas" if request.operation == "count" else OPERATIONS[operation]
+        self.activity.emit(f"Archivos locales · {label}")
+        return files
+
     async def run_local_files(self, request):
         self.used_external_source = True
         if request.operation == "content":
             return RESULT_HEADER + "La exploración nativa consulta nombres y propiedades. Puedes adjuntar el archivo para leer su contenido."
         if request.path is None:
             return RESULT_HEADER + "¿En qué carpeta quieres buscar o consultar archivos? Indica su ruta completa o un nombre como Descargas."
-        scope = {}
-        if request.operation != "info":
-            scope["Subcarpetas"] = "Sí" if request.recursive else "No"
-        if request.query:
-            scope["Nombre"] = request.query
-        if request.extension:
-            scope["Extensión"] = request.extension
         try:
-            files = await self.authorize_local_files(request.operation, request.path, **scope)
-            self.activity.emit(f"Archivos locales · {OPERATIONS[request.operation]}")
+            files = await self.authorize_file_request(request)
             thread = QThread.currentThread()
             result = await asyncio.to_thread(file_answer, files, request, lambda: self.check_pause(thread))
             self.check_pause()
@@ -774,7 +797,7 @@ class Worker(QObject):
 
     async def chat(self):
         try:
-            return self.project_answer(await self.execute_turn())
+            return self.private_answer(await self.execute_turn())
         except StartSavedTask as request:
             self.task = new_task(str(request))
             if self.project:
@@ -785,23 +808,21 @@ class Worker(QObject):
                 self.task = None
                 raise TurnError(str(exc)) from exc
             self.task_started.emit(self.task)
-            return self.project_answer(await self.execute_turn(promoted=True))
+            return self.private_answer(await self.execute_turn(promoted=True))
 
     async def execute_turn(self, *, promoted=False):
         messages = list(self.messages)
         latest = folder = ""
         current = messages[-1] if messages else {}
         command = current.get("content", "").split(maxsplit=1)
-        project_content = False
-        if self.task is None and current.get("role") == "user" and not current.get("attachments"):
+        if self.ai.cloud and self.task is None and current.get("role") == "user" and not current.get("attachments"):
             try:
                 native = (parse_request(current["content"], project=self.project)
                           or continued_request(messages, project=self.project))
             except ValueError as exc:
                 self.used_external_source = True
                 return RESULT_HEADER + str(exc)
-            project_content = self.can_read_project_content(native)
-            if native and not project_content:
+            if native:
                 return await self.run_local_files(native)
         local_read = self.task is None and requests_local_read(messages)
         web_read = self.task is None and requested_web_link(messages) is not None
@@ -995,33 +1016,33 @@ class Worker(QObject):
                 save_request = {**requested, "resolved": {}}
         return await self.chat_with_tools(client, messages, skills, learn=learn,
                                           task_input=(current, latest, folder) if self.task is not None else None,
-                                          save_request=save_request, project_content=project_content)
+                                          save_request=save_request)
 
     async def chat_with_tools(self, client, messages, skills, *, learn=False, task_input=None, save_request=None,
-                              source=None, project_content=False):
+                              source=None):
         routing_messages = list(messages)
         ordinary_turn = self.task is None and not learn and not save_request
         user_text = messages[-1]["content"]
-        if ordinary_turn and source == "archivos" and not uses_mcp(user_text):
+        if self.ai.cloud and ordinary_turn and source == "archivos" and not uses_mcp(user_text):
             try:
                 native = parse_request(user_text, project=self.project, selected=True)
             except ValueError as exc:
                 self.used_external_source = True
                 return RESULT_HEADER + str(exc)
-            if self.can_read_project_content(native):
-                project_content, source = True, None
-            elif native:
+            if native:
                 return await self.run_local_files(native)
         local_read = ordinary_turn and uses_mcp(user_text) and (
             source == "archivos" or requests_local_read(messages))
         web_link = None
         if source == "enlace":
             web_link = referenced_web_link(messages) or ""
-        elif ordinary_turn and source is None and not local_read and not project_content:
+        elif ordinary_turn and source is None and not local_read:
             web_link = requested_web_link(messages)
         if web_link == "":
             return "¿Qué enlace quieres que abra? Pásamelo para consultar la página correcta."
         web_tools_only = bool(web_link) or source == "web"
+        offer_local_files = (ordinary_turn and not self.ai.cloud and not web_tools_only
+                             and source in (None, "archivos") and not uses_mcp(user_text))
         if task_input is not None:
             current, latest, folder = task_input
         pending = set()
@@ -1044,31 +1065,28 @@ class Worker(QObject):
         external_requested = (bool(web_link) or self.task is not None or learn or
                               bool(save_request and "markdown" in pending and save_request["target"]) or
                               local_read or source in ("web", "mcp") or
-                              (ordinary_turn and source is None and not project_content and requests_external_tools(messages)))
+                              (ordinary_turn and source is None and requests_external_tools(messages)))
         if ordinary_turn and external_requested:
             self.used_external_source = True
-        memory_requested = ordinary_turn and not external_requested and not project_content and (
+        memory_requested = ordinary_turn and not external_requested and (
             source == "memoria" or bool(messages and requests_memory(messages[-1]["content"])))
-        can_select_source = ordinary_turn and source is None and not external_requested and not memory_requested and not project_content
+        can_select_source = ordinary_turn and source is None and not external_requested and not memory_requested
         if can_select_source:
             specs.append(SELECT_SOURCE)
         saved_project_reads = self.task is not None and "project_read_project_id" in self.task
-        offer_project_files = (self.task is not None or project_content or can_select_source
-                               or (memory_requested and source is None))
+        offer_project_files = self.task is not None or offer_local_files
         local_project = (self.project and self.project.get("folder") and not self.ai.cloud
                          and (offer_project_files or bool(web_link))
                          and await self.verify_local_ollama())
         if saved_project_reads:
             if not local_project or self.task["project_read_project_id"] != self.project["id"]:
                 return self.task_reply("paused", "Reanuda estas lecturas en el mismo proyecto con un modelo de Ollama local.")
-            self.private_project_read = True
+            self.private_read = True
             await self.refresh_project_file_reads()
             messages = [local_file_placeholder(message) for message in messages]
             external_requested = False
         elif local_project and self.task is not None:
             messages = [local_file_placeholder(message) for message in messages]
-        if project_content and not local_project:
-            return "Para leer archivos del proyecto, selecciona un modelo instalado y ejecutado en Ollama local."
         memory_tools = {}
         if self.task is None and self.memory is not None and (
                 "memory" in pending or (memory_requested and self.share_memory)):
@@ -1230,7 +1248,6 @@ class Worker(QObject):
                     self.read_project_file, self.search_project_memory if self.memory and self.share_memory else None,
                     project_link,
                 )
-                specs.extend(tool.spec for tool in project_reads.values())
                 directive = (
                     "El proyecto activo ya tiene una carpeta vinculada. Para leer un archivo que el usuario "
                     "identifica por nombre, llama directamente a read_project_file con su ruta relativa "
@@ -1255,6 +1272,20 @@ class Worker(QObject):
                 else:
                     messages = [{"role": "system", "content": directive}, *messages]
 
+            registered_reads = dict(project_reads)
+            if offer_local_files:
+                registered_reads[LOCAL_FILES.function.name] = ReadTool(LOCAL_FILES, self.inspect_local_files)
+                directive = (
+                    "Para consultar los archivos o carpetas del equipo, usa inspect_local_files directamente. "
+                    "Elige la operación que entregue lo que pidió el usuario. En la respuesta utiliza los datos "
+                    "obtenidos y explica cualquier error u omisión que afecte al resultado."
+                )
+                if messages[0]["role"] == "system":
+                    messages[0] = {**messages[0], "content": messages[0]["content"] + "\n" + directive}
+                else:
+                    messages = [{"role": "system", "content": directive}, *messages]
+            specs.extend(tool.spec for tool in registered_reads.values())
+
             local_markdown = False
             if save_request:
                 if external:
@@ -1275,8 +1306,8 @@ class Worker(QObject):
             cloud_read_options = {"recover_local_reads": True} if local_read and self.ai.cloud else {}
             final_round = rounds if cloud_read_options else rounds - 1
             local_evidence = []
-            project_read_started = saved_project_reads
-            reading_project = False
+            registered_read_started = saved_project_reads
+            reading_registered = False
             if self.task is not None:
                 self.check_pause()
                 memory_context = await self.plan_task(client, {**external, **project_reads}, query_memories=not project_reads)
@@ -1287,13 +1318,13 @@ class Worker(QObject):
                 len(json.dumps(tool.inputSchema, ensure_ascii=False)) + len(tool.description or "")
                 for _, _, tool, _ in external.values()
             )
-            context_chars += sum(len(tool.spec.model_dump_json()) for tool in project_reads.values())
+            context_chars += sum(len(tool.spec.model_dump_json()) for tool in registered_reads.values())
             loop = ToolLoop(messages, context_chars=context_chars, final_round=final_round,
                             aliases=local_aliases, max_distinct_calls=rounds if ordinary_turn else 0,
-                            count_tool_context=bool(external or project_reads))
+                            count_tool_context=bool(external or registered_reads))
 
             async def request_round(round_index, finishing):
-                nonlocal planning_retried, reading_project, repairs
+                nonlocal planning_retried, reading_registered, repairs
                 if finishing and local_evidence:
                     return await self.summarize_local_reads(client, messages, local_evidence)
                 request_messages = messages
@@ -1305,13 +1336,14 @@ class Worker(QObject):
                     else:
                         request_messages = [{"role": "system", "content": instruction}, *messages]
                 # Los resultados MCP pueden llenar la ventana antes de que Nemotron redacte.
-                options = {"num_ctx": model_context(loop.context_chars, 8192 if self.task or skills or planning_retried else 4096)}
-                if self.task is not None or project_reads:
+                minimum_context = 8192 if self.task or skills or planning_retried or registered_read_started else 4096
+                options = {"num_ctx": model_context(loop.context_chars, minimum_context)}
+                if self.task is not None or project_reads or registered_read_started:
                     options["temperature"] = 0
                 self.activity.emit(f"Esperando la respuesta de {PROVIDERS[self.ai.provider]}…")
                 round_tools = specs
-                if project_read_started:
-                    round_tools = [tool.spec for tool in project_reads.values()]
+                if registered_read_started:
+                    round_tools = [tool.spec for tool in registered_reads.values()]
                     if self.task is not None:
                         round_tools.append(REPORT)
                 try:
@@ -1329,7 +1361,13 @@ class Worker(QObject):
                 if finishing:
                     if local_read and not used_mcp:
                         return "No pude revisar la ruta porque el modelo no seleccionó una herramienta de lectura disponible."
-                    return (reply.content or "").strip() or "No pude obtener una respuesta final del modelo en este turno."
+                    text = (reply.content or "").strip()
+                    if not text and registered_read_started:
+                        retry = await self.model_request(client, "chat", model=self.ai.model, messages=request_messages,
+                                                         tools=[], options=options, think=False, **cloud_read_options)
+                        self.check_pause()
+                        text = (retry.message.content or "").strip()
+                    return text or "No pude obtener una respuesta final del modelo en este turno."
                 if save_request and not reply.tool_calls:
                     if round_index == 0 and pending:
                         messages[-1]["content"] += (
@@ -1341,7 +1379,7 @@ class Worker(QObject):
                 if not reply.tool_calls and not (reply.content or "").strip():
                     if local_evidence:
                         return await self.summarize_local_reads(client, messages, local_evidence)
-                    if used_mcp or ((external or project_reads) and not planning_retried):
+                    if used_mcp or ((external or registered_reads) and not planning_retried):
                         if not used_mcp:
                             planning_retried = True
                             self.mcp_notice.emit(f"{PROVIDERS[self.ai.provider]} respondió vacío antes de seleccionar herramientas "
@@ -1359,7 +1397,7 @@ class Worker(QObject):
                         if used_mcp and self.task is None and (reply.tool_calls or not (reply.content or "").strip()):
                             raise TurnError(f"{PROVIDERS[self.ai.provider]} no generó una respuesta final tras recibir los resultados MCP.")
                     if not reply.tool_calls and not (reply.content or "").strip() and active_servers:
-                        if external or project_reads:
+                        if external or registered_reads:
                             raise TurnError(f"{PROVIDERS[self.ai.provider]} no respondió ni solicitó una herramienta MCP tras el reintento.")
                         raise TurnError(f"{PROVIDERS[self.ai.provider]} no respondió y ningún servidor MCP aportó herramientas. Consulta el diagnóstico.")
                 if self.task is not None:
@@ -1392,17 +1430,17 @@ class Worker(QObject):
                     if local_read and not used_mcp:
                         return "No pude revisar la ruta porque el modelo no seleccionó una herramienta de lectura disponible."
                     return reply.content or "(Sin respuesta)"
-                reading_project = project_read_started or any(
-                    call.function.name in project_reads for call in reply.tool_calls
+                reading_registered = registered_read_started or any(
+                    call.function.name in registered_reads for call in reply.tool_calls
                 )
-                if can_select_source and not reading_project:
+                if can_select_source and not reading_registered:
                     for call in reply.tool_calls:
                         if call.function.name == SELECT_SOURCE.function.name:
                             selected = call.function.arguments.get("fuente")
                             if isinstance(selected, str) and selected in TURN_SOURCES:
                                 self.activity.emit(f"Fuente seleccionada · {TURN_SOURCES[selected]}.")
                                 return await self.chat_with_tools(client, routing_messages, skills, source=selected)
-                if not reading_project and all(call.function.name in activity_tools for call in reply.tool_calls):
+                if not reading_registered and all(call.function.name in activity_tools for call in reply.tool_calls):
                     answers = {}
                     for call in reply.tool_calls:
                         name = call.function.name
@@ -1421,23 +1459,23 @@ class Worker(QObject):
                             answers[name] = await self.show_sw_activity(
                                 name, focus={focus} if focus in ("date", "links", "conclusions", "notes") else None)
                     return "\n\n".join(answers.values())
-                if can_start_task and not used_mcp:
+                if can_start_task and not used_mcp and not reading_registered:
                     for call in reply.tool_calls:
                         if call.function.name == START_TASK.function.name:
                             objective = call.function.arguments.get("objetivo")
                             if isinstance(objective, str) and 0 < len(objective.strip()) <= 4000:
                                 raise StartSavedTask(objective.strip())
-                if not reading_project:
+                if not reading_registered:
                     if skill_answer := await self.use_skill(client, messages, reply, skills):
                         return skill_answer
                 return reply
 
             async def execute_tool(name, arguments, external_name):
-                nonlocal project_read_started, task_calls, used_mcp
-                if name in project_reads:
-                    project_read_started = True
-                    tool = project_reads[name]
-                    self.private_project_read |= tool.private
+                nonlocal registered_read_started, task_calls, used_mcp
+                if name in registered_reads:
+                    registered_read_started = True
+                    tool = registered_reads[name]
+                    self.private_read |= tool.private
                     self.used_external_source = True
                     if self.task is not None:
                         if task_calls >= 12:
@@ -1446,8 +1484,8 @@ class Worker(QObject):
                         result = await self.run_project_task_read(name, tool, arguments)
                     else:
                         result = await tool.execute(arguments)
-                elif reading_project:
-                    result = "Usa las herramientas de lectura disponibles para este encargo de proyecto."
+                elif reading_registered:
+                    result = "Usa las herramientas de lectura disponibles para este encargo."
                 elif external_name in external:
                     used_mcp = True
                     _, server_name, tool, _ = external[external_name]

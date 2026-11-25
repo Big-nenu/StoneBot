@@ -1,9 +1,11 @@
 """Permisos, exclusiones y exploración desde los flujos normales de StoneBot."""
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -11,6 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
+from ollama import Message
 
 import app
 import mcp_client
@@ -63,21 +66,6 @@ async def check_chat(root):
         assert "adjuntar" in await chat(f'Lee "{first / "contrato.pdf"}"')
         assert ".env.local" not in await chat(f'Lista "{first}"')
 
-        downloads = root / "Descargas"
-        downloads.mkdir()
-        for number in range(82):
-            (downloads / f"Carpeta {number}").mkdir()
-        (downloads / "Carpeta 0" / "Anidada").mkdir()
-        (downloads / "archivo.txt").touch()
-        with patch.dict(FOLDER_NAMES, {"descargas": lambda: downloads}):
-            counted = await chat("¿Cuántas carpetas tengo en Descargas?")
-            assert "**82 carpetas**" in counted and "directamente" in counted and "Carpeta 0" not in counted, counted
-            recursive = await chat("¿Cuántas carpetas hay en Descargas incluyendo las subcarpetas?")
-            assert "**83 carpetas**" in recursive and "subcarpetas" in recursive, recursive
-            with patch("local_files.SCAN_LIMIT", 1):
-                partial = await chat("¿Cuántas carpetas tengo en Descargas?")
-                assert "Pude contar" in partial and "Revisión parcial" in partial, partial
-
         question = await chat("Busca el archivo contrato")
         assert "¿En qué carpeta" in question
         worker = app.Worker([user("Busca el archivo contrato"), {"role": "assistant", "content": question},
@@ -108,7 +96,6 @@ async def check_chat(root):
         permissions["list"] = "deny"
         save_settings(permissions, [excluded])
         assert "denegada" in await chat(f'Lista "{second}"')
-        assert "denegada" in await chat(f'¿Cuántas carpetas hay en "{second}"?')
         assert "contrato-2.pdf" in await chat(f'Busca contrato en "{second}"')
 
         permissions["search"] = "ask"
@@ -168,6 +155,113 @@ def check_dialog(root):
     assert load_settings().modes["info"] == "deny"
 
 
+def tool_call(**arguments):
+    return SimpleNamespace(message=Message(role="assistant", tool_calls=[
+        {"function": {"name": "inspect_local_files", "arguments": arguments}},
+    ]))
+
+
+def model_answer(text):
+    return SimpleNamespace(message=Message(role="assistant", content=text))
+
+
+async def check_agent_files(root, live_model=None):
+    settings = load_settings()
+    save_settings({**settings.modes, "list": "allow", "search": "allow", "info": "allow"}, settings.exclusions)
+    downloads = root / "Descargas"
+    downloads.mkdir()
+    for number in range(82):
+        (downloads / f"Carpeta {number}").mkdir()
+    (downloads / "Carpeta 0" / "Anidada").mkdir()
+    (downloads / "informe.pdf").write_bytes(b"abc")
+
+    def worker(text, name):
+        return app.Worker([{"role": "system", "content": app.SYSTEM}, user(text)],
+                          ai=AISettings("ollama", name), think=False)
+
+    async def turn(text, model, *, local_model=True):
+        active = worker(text, "simulado")
+        active.local_ollama = local_model
+        with patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=model)):
+            return await active.chat()
+
+    with (patch.dict(FOLDER_NAMES, {"descargas": lambda: downloads}),
+          patch.object(turn_worker, "parse_request", side_effect=connection_not_expected),
+          patch.object(turn_worker, "load_servers", side_effect=connection_not_expected),
+          patch.object(app.Worker, "enabled_skills", return_value={})):
+        if live_model:
+            questions = (
+                ("¿Cuántas carpetas tengo en Descargas?", ("82",), 1),
+                ("¿Qué PDF hay directamente en Descargas y cuánto pesa en bytes?", ("informe.pdf", "3 bytes"), 2),
+            )
+            for question, expected, operations in questions:
+                active = worker(question, live_model)
+                active.think = None
+                events = []
+                active.activity.connect(events.append)
+                result = await active.run_chat()
+                assert result.startswith(RESULT_HEADER) and all(value in result for value in expected), (result, events)
+                assert sum(event.startswith("Archivos locales · ") for event in events) >= operations, events
+            print(f"PASS: {live_model} eligió el recuento y encadenó búsqueda con propiedades.")
+            return
+
+        for question, recursive, total in (
+            ("¿Cuántas carpetas tengo en Descargas?", False, 82),
+            ("Dame una cifra de los directorios de toda la jerarquía de Descargas.", True, 83),
+        ):
+            async def count_model(**kwargs):
+                assert "inspect_local_files" in {item.function.name for item in kwargs["tools"] if not callable(item)}
+                last = kwargs["messages"][-1]
+                if last["role"] != "tool":
+                    return tool_call(operation="count", target="Descargas", entry_type="folders", recursive=recursive)
+                result = json.loads(last["content"])
+                assert result["total"] == total and not result["parcial"] and "entradas" not in result
+                return model_answer(f"Encontré {result['total']} carpetas.")
+
+            assert await turn(question, count_model) == RESULT_HEADER + f"Encontré {total} carpetas."
+
+        async def search_then_info(**kwargs):
+            last = kwargs["messages"][-1]
+            if last["role"] != "tool":
+                return tool_call(operation="search", target="Descargas", extension="pdf")
+            result = json.loads(last["content"])
+            if "entradas" in result:
+                found, = result["entradas"]
+                assert found["ruta"] == "informe.pdf"
+                return tool_call(operation="info", target=str(Path(result["ruta"]) / found["ruta"]))
+            assert result["tamaño_bytes"] == 3
+            return model_answer("El PDF pesa 3 bytes.")
+
+        assert await turn("¿Qué PDF hay en Descargas y cuánto pesa?", search_then_info) == RESULT_HEADER + "El PDF pesa 3 bytes."
+
+        async def count_with_limit(**kwargs):
+            last = kwargs["messages"][-1]
+            if last["role"] != "tool":
+                return tool_call(operation="count", target="Descargas", entry_type="folders")
+            result = json.loads(last["content"])
+            assert result["parcial"] and result["límite_alcanzado"]
+            return model_answer("El recuento quedó parcial.")
+
+        with patch("local_files.SCAN_LIMIT", 1):
+            assert "parcial" in await turn("¿Me das un total de directorios en Descargas?", count_with_limit)
+
+        async def unavailable(**kwargs):
+            last = kwargs["messages"][-1]
+            if last["role"] != "tool":
+                return tool_call(operation="list", target="Descargas")
+            assert json.loads(last["content"])["estado"] == "error"
+            assert str(downloads) not in last["content"]
+            return model_answer("La herramienta no pudo consultar Descargas.")
+
+        await turn("¿Qué hay en Descargas?", unavailable, local_model=False)
+        settings = load_settings()
+        save_settings({**settings.modes, "list": "deny"}, settings.exclusions)
+        try:
+            await turn("¿Qué hay en Descargas?", unavailable)
+        finally:
+            save_settings(settings.modes, settings.exclusions)
+
+
 if __name__ == "__main__":
     qt = QApplication([])
     with TemporaryDirectory() as directory:
@@ -175,4 +269,8 @@ if __name__ == "__main__":
         with patch.object(mcp_client, "default_root", return_value=root / "perfil"):
             asyncio.run(check_chat(root))
             check_dialog(root)
+            asyncio.run(check_agent_files(root))
+            if sys.argv[1:2] == ["--live"]:
+                with TemporaryDirectory() as live:
+                    asyncio.run(check_agent_files(Path(live).resolve(), sys.argv[2] if len(sys.argv) > 2 else app.MODEL))
     print("PASS: exploración nativa, exclusiones, confirmaciones, privacidad y ajustes.")

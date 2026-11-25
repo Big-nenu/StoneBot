@@ -1,4 +1,4 @@
-"""Interpreta encargos de exploración sin delegar rutas al modelo."""
+"""Solicitudes y resultados de la exploración local."""
 import re
 import stat
 from dataclasses import dataclass, replace
@@ -20,11 +20,6 @@ FOLDER_NAMES = {
 LOCAL_SCOPE = re.compile(r"\b(?:carpeta|directorio|unidad|disco|equipo|mi (?:pc|computadora))\b", re.I)
 PROJECT_SCOPE = re.compile(r"\b(?:en|de)\s+(?:mi|este|el) proyecto\b", re.I)
 SEARCH = re.compile(r"\b(?:busca(?:r)?|encuentra|encuentres|encontrar|localiza|localizar)\b", re.I)
-COUNT_FOLDERS = re.compile(
-    r"\b(?:cu[aá]nt[ao]s|(?:n[uú]mero|cantidad)\s+de|cuenta|contar)\s+"
-    r"(?:tod[ao]s\s+)?(?:(?:las|los)\s+)?(?:subcarpetas|carpetas|directorios)\b"
-    r"(?=\s*(?:$|[?!.,]|(?:hay|tengo|tiene|en|dentro|con|sin|incluy\w*)\b))", re.I,
-)
 PROPERTIES = re.compile(r"\b(?:metadatos|propiedades|tama[ñn]o|cu[aá]nto pesa|fecha de modificaci[oó]n)\b", re.I)
 CONTENT = re.compile(r"^\s*¿?\s*(?:(?:me )?(?:puedes|podr[ií]as)\s+)?(?:lee|leer|resume|resumir|analiza|analizar)\b", re.I)
 EXTENSION = re.compile(r"(?:\bextensi[oó]n\s+\.?|\*\.)([a-z0-9]+)\b|\barchivos?\s+(?:\.([a-z0-9]+)|(pdf|csv|json|docx|xlsx|pptx|txt|md|png|jpg|zip))\b", re.I)
@@ -37,7 +32,7 @@ class FileRequest:
     query: str = ""
     extension: str = ""
     recursive: bool = False
-    count_folders: bool = False
+    entry_type: str = "all"
 
 
 def request_path(text):
@@ -65,7 +60,6 @@ def parse_request(text, *, project=None, selected=False):
             or re.search(r"https?://", text, re.I) or re.match(r"\s*(?:no\b|/|(?:c[oó]mo|por qu[eé])\s+)", text, re.I)):
         return None
     search = SEARCH.search(text)
-    count_folders = bool(COUNT_FOLDERS.search(text))
     properties = PROPERTIES.search(text)
     action = LOCAL_READ_ACTION.search(text) or re.search(r"\b(?:abres|revises|listes|lista|mu[eé]strame)\b", text, re.I)
     content = CONTENT.search(text)
@@ -73,7 +67,7 @@ def parse_request(text, *, project=None, selected=False):
     project_scope = project and project.get("folder") and PROJECT_SCOPE.search(text)
     local = (names or QUOTED_PATH.search(text) or BARE_PATH.search(text) or LOCAL_SCOPE.search(text) or project_scope
              or EXTENSION.search(text) or re.search(r"\barchivos?\b", text, re.I))
-    if not selected and not (local and (search or count_folders or properties or action or content)):
+    if not selected and not (local and (search or properties or action or content)):
         return None
     path = request_path(text)
     if path is None and len(names) == 1:
@@ -82,9 +76,6 @@ def parse_request(text, *, project=None, selected=False):
         path = Path(project["folder"])
     if content:
         return FileRequest("content", path)
-    recursive = bool(RECURSIVE.search(text) and not DIRECT.search(text))
-    if count_folders:
-        return FileRequest("list", path, recursive=recursive, count_folders=True)
     if search:
         extension = EXTENSION.search(text)
         suffix = next(filter(None, extension.groups()), "") if extension else ""
@@ -99,10 +90,11 @@ def parse_request(text, *, project=None, selected=False):
         term = re.sub(r"^(?:(?:los|las|un|una|el|la|todos|todas|archivos?|documentos?|carpetas?|llamad[oa]s?)\b\s*)+",
                       "", term, flags=re.I)
         term = re.sub(r"^(?:con (?:el )?nombre|que (?:se llam(?:e|a)|contenga))\s+", "", term, flags=re.I)
-        return FileRequest("search", path, term.strip(' "`«»“”¿?'), suffix.casefold(), not DIRECT.search(text))
+        return FileRequest("search", path, term.strip(' "`«»“”¿?'), suffix.casefold(),
+                           not DIRECT.search(text), "files")
     if properties:
         return FileRequest("info", path)
-    return FileRequest("list", path, recursive=recursive)
+    return FileRequest("list", path, recursive=bool(RECURSIVE.search(text) and not DIRECT.search(text)))
 
 
 def continued_request(messages, *, project=None):
@@ -123,49 +115,60 @@ def continued_request(messages, *, project=None):
     return None
 
 
-def file_answer(service, request, check_pause):
+def inspect_path(service, request, check_pause):
     path = local_path(request.path)
     if request.operation == "info":
         with service.target(path) as info:
-            kind = "Carpeta" if stat.S_ISDIR(info.st_mode) else "Archivo"
-            size = f" · {info.st_size:,} bytes" if kind == "Archivo" else ""
+            directory = stat.S_ISDIR(info.st_mode)
         modified = datetime.fromtimestamp(info.st_mtime).strftime("%d/%m/%Y %H:%M")
-        return f"`{path}`\n\n{kind}{size} · Modificado el {modified}."
+        return {"ruta": str(path), "tipo": "carpeta" if directory else "archivo",
+                "tamaño_bytes": None if directory else info.st_size, "modificado": modified}
 
     results = []
-    folder_count = 0
+    total = 0
 
     def collect(entry, _info, directory):
-        nonlocal folder_count
-        if request.count_folders:
-            folder_count += directory
-            return False
-        if request.operation == "search" and (
-            directory or request.query.casefold() not in entry.name.casefold()
-            or (request.extension and entry.suffix.casefold() != "." + request.extension)
+        nonlocal total
+        if ((request.entry_type == "folders" and not directory)
+            or (request.entry_type == "files" and directory)
+            or request.query.casefold() not in entry.name.casefold()
+            or (request.extension and (directory or entry.suffix.casefold() != "." + request.extension))
         ):
             return False
-        relative = str(entry.relative_to(path)).replace("`", "ʼ")
-        results.append(f"- `{relative}`" + (" · carpeta" if directory else ""))
+        total += 1
+        if request.operation == "count":
+            return False
+        results.append({"ruta": str(entry.relative_to(path)),
+                        "tipo": "carpeta" if directory else "archivo"})
         return len(results) > RESULT_LIMIT
 
     _, skipped, partial = service.scan(path, request.recursive, check_pause, collect)
-    if request.count_folders:
-        noun = "carpeta" if folder_count == 1 else "carpetas"
-        scope = f"en `{path}`, contando las subcarpetas" if request.recursive else f"directamente en `{path}`"
-        verb = "Pude contar" if partial or skipped else "Hay"
-        summary = f"{verb} **{folder_count:,} {noun}** {scope}."
+    evidence = {"ruta": str(path), "total": total, "recursivo": request.recursive,
+                "parcial": bool(partial or skipped), "límite_alcanzado": partial, "omitidas": skipped}
+    if request.operation != "count":
+        evidence["entradas"] = sorted(results[:RESULT_LIMIT], key=lambda item: item["ruta"].casefold())
+    return evidence
+
+
+def file_answer(service, request, check_pause):
+    evidence = inspect_path(service, request, check_pause)
+    path = evidence["ruta"]
+    if request.operation == "info":
+        size = f" · {evidence['tamaño_bytes']:,} bytes" if evidence["tipo"] == "archivo" else ""
+        return f"`{path}`\n\n{evidence['tipo'].capitalize()}{size} · Modificado el {evidence['modificado']}."
+    listing = []
+    for entry in evidence["entradas"]:
+        relative = entry["ruta"].replace("`", "ʼ")
+        listing.append(f"- `{relative}`" + (" · carpeta" if entry["tipo"] == "carpeta" else ""))
+    if listing:
+        details = "\n".join(listing)
     else:
-        if results:
-            listing = "\n".join(sorted(results[:RESULT_LIMIT], key=str.casefold))
-        else:
-            listing = "No encontré coincidencias." if request.operation == "search" else "No hay elementos para mostrar."
-        summary = f"{OPERATIONS[request.operation]} en `{path}`\n\n{listing}"
-    if partial or skipped:
+        details = "No encontré coincidencias." if request.operation == "search" else "No hay elementos para mostrar."
+    summary = f"{OPERATIONS[request.operation]} en `{path}`\n\n{details}"
+    if evidence["parcial"]:
         summary += "\n\n**Revisión parcial.**"
-        if partial:
-            summary += (" Se alcanzó un límite de recorrido." if request.count_folders
-                        else " Se alcanzó un límite de recorrido o resultados.")
-        if skipped:
-            summary += f" Se omitieron {skipped} entradas excluidas, inaccesibles o redirigidas."
+        if evidence["límite_alcanzado"]:
+            summary += " Se alcanzó un límite de recorrido o resultados."
+        if evidence["omitidas"]:
+            summary += f" Se omitieron {evidence['omitidas']} entradas excluidas, inaccesibles o redirigidas."
     return summary

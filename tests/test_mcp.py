@@ -433,7 +433,7 @@ def test_empty_reply_retries_selection_across_active_servers():
     def chat(**kwargs):
         nonlocal rounds
         tools = {tool.function.description.split(" / ")[0]: tool.function.name
-                 for tool in kwargs["tools"] if not callable(tool)}
+                 for tool in kwargs["tools"] if not callable(tool) and " / " in tool.function.description}
         assert set(tools) == {"docs", "web"} and tools["docs"] != tools["web"]
         rounds += 1
         if rounds == 1:

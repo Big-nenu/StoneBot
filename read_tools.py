@@ -1,4 +1,4 @@
-"""Registro de las herramientas de consulta del turno local de proyecto."""
+"""Herramientas de consulta del agente local."""
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ollama import Tool
 
+from local_file_requests import FOLDER_NAMES, FileRequest
 from local_files import local_path
 
 PAGE_CHARS = 12_000
@@ -45,6 +46,21 @@ PROJECT_LINK = read_tool(
     {},
     [],
 )
+LOCAL_FILES = read_tool(
+    "inspect_local_files",
+    "Explora archivos y carpetas del equipo. Elige count para obtener un total, list para mostrar entradas, "
+    "search para filtrar por nombre o extensión e info para consultar propiedades de una ruta. "
+    "Para totales elige qué tipo de entradas contar y si hay que recorrer las subcarpetas. "
+    "El resultado indica si el recorrido fue parcial.",
+    {"operation": {"type": "string", "enum": ["count", "list", "search", "info"]},
+     "target": {"type": "string", "description": "Ruta local absoluta o un nombre de carpeta conocido: "
+               "Descargas, Documentos, Escritorio o proyecto si hay un proyecto abierto."},
+     "entry_type": {"type": "string", "enum": ["folders", "files", "all"]},
+     "recursive": {"type": "boolean", "description": "Incluye entradas anidadas. Por defecto, false."},
+     "name_contains": {"type": "string", "description": "Texto opcional para filtrar por nombre."},
+     "extension": {"type": "string", "description": "Extensión opcional, por ejemplo pdf."}},
+    ["operation", "target"],
+)
 
 
 @dataclass(frozen=True)
@@ -61,6 +77,33 @@ def project_read_tools(read_file, query_memory, read_link):
     if read_link is not None:
         tools.append(ReadTool(PROJECT_LINK, read_link, private=False))
     return {tool.spec.function.name: tool for tool in tools}
+
+
+def local_file_request(arguments, project):
+    operation = arguments.get("operation")
+    target = arguments.get("target")
+    entry_type = arguments.get("entry_type", "files" if operation == "search" else "all")
+    recursive = arguments.get("recursive", False)
+    query = arguments.get("name_contains", "")
+    extension = arguments.get("extension", "")
+    if operation not in ("count", "list", "search", "info") or entry_type not in ("folders", "files", "all"):
+        raise ValueError("Indica una operación y un tipo de entrada válidos.")
+    if type(recursive) is not bool or not all(isinstance(value, str) for value in (target, query, extension)):
+        raise ValueError("Indica una carpeta o ruta local y argumentos válidos.")
+    target = target.strip()
+    alias = target.casefold()
+    if alias in FOLDER_NAMES:
+        target = FOLDER_NAMES[alias]()
+    elif alias == "proyecto":
+        if not project or not project.get("folder"):
+            raise ValueError("El chat necesita un proyecto con carpeta vinculada.")
+        target = project["folder"]
+    if operation == "info" and (recursive or query or extension):
+        raise ValueError("Para consultar propiedades, indica únicamente la ruta.")
+    if extension and entry_type == "folders":
+        raise ValueError("El filtro por extensión se aplica a archivos.")
+    return FileRequest(operation, local_path(target), query.strip(), extension.strip().lstrip(".").casefold(),
+                       recursive, entry_type)
 
 
 def project_file_path(folder, value):

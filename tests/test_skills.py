@@ -106,7 +106,7 @@ def test_progressive():
         local_skills.set_enabled(EXAMPLE, False)
         assert turn("¿Cuánto es 7 por 8?") == "56"
         assert loaded.call_count == 1
-        assert {tool.function.name for tool in calls[-1]["tools"] if not callable(tool)} == {"elegir_fuente"}
+        assert "load_skill" not in {tool.function.name for tool in calls[-1]["tools"] if not callable(tool)}
 
 
 def test_live():
