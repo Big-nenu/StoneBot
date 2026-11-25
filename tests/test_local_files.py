@@ -17,6 +17,7 @@ import mcp_client
 import turn_worker
 from ai_provider import AISettings, OpenRouter
 from appearance import load_appearance
+from local_file_requests import FOLDER_NAMES
 from local_files import LocalFiles, MODES, OPERATIONS, RESULT_HEADER, load_settings, save_settings
 from local_files_ui import LocalFilesDialog
 from tasks import new_task
@@ -62,6 +63,21 @@ async def check_chat(root):
         assert "adjuntar" in await chat(f'Lee "{first / "contrato.pdf"}"')
         assert ".env.local" not in await chat(f'Lista "{first}"')
 
+        downloads = root / "Descargas"
+        downloads.mkdir()
+        for number in range(82):
+            (downloads / f"Carpeta {number}").mkdir()
+        (downloads / "Carpeta 0" / "Anidada").mkdir()
+        (downloads / "archivo.txt").touch()
+        with patch.dict(FOLDER_NAMES, {"descargas": lambda: downloads}):
+            counted = await chat("¿Cuántas carpetas tengo en Descargas?")
+            assert "**82 carpetas**" in counted and "directamente" in counted and "Carpeta 0" not in counted, counted
+            recursive = await chat("¿Cuántas carpetas hay en Descargas incluyendo las subcarpetas?")
+            assert "**83 carpetas**" in recursive and "subcarpetas" in recursive, recursive
+            with patch("local_files.SCAN_LIMIT", 1):
+                partial = await chat("¿Cuántas carpetas tengo en Descargas?")
+                assert "Pude contar" in partial and "Revisión parcial" in partial, partial
+
         question = await chat("Busca el archivo contrato")
         assert "¿En qué carpeta" in question
         worker = app.Worker([user("Busca el archivo contrato"), {"role": "assistant", "content": question},
@@ -92,6 +108,7 @@ async def check_chat(root):
         permissions["list"] = "deny"
         save_settings(permissions, [excluded])
         assert "denegada" in await chat(f'Lista "{second}"')
+        assert "denegada" in await chat(f'¿Cuántas carpetas hay en "{second}"?')
         assert "contrato-2.pdf" in await chat(f'Busca contrato en "{second}"')
 
         permissions["search"] = "ask"

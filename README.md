@@ -235,6 +235,8 @@ Si quieres usar Desktop Commander para leer contenido, pídelo explícitamente. 
 
 Desde el chat puedes listar carpetas, buscar archivos por nombre o extensión, consultar propiedades y clasificar archivos por tamaño. Prueba «Lista Descargas», «Busca archivos PDF en Documentos», «Busca contrato en `D:\Trabajo`» o «Dime las propiedades de `D:\Trabajo\contrato.pdf`». En un chat de proyecto, «busca contrato en este proyecto» usa la carpeta vinculada. Los resultados de la exploración nativa se preparan en el equipo, incluso cuando el chat usa OpenRouter.
 
+«¿Cuántas carpetas tengo en Descargas?» devuelve el número de carpetas directamente dentro de Descargas. Para contar también las anidadas, añade «incluyendo las subcarpetas». El conteo usa el permiso **Listar carpetas** e indica si se omitieron entradas o se alcanzó el límite de recorrido.
+
 En **Configuración → Archivos locales**, elige **Permitir**, **Preguntar** o **Denegar** para cada operación. Puedes usar cualquier carpeta de una unidad local accesible para tu cuenta. Agrega **Carpetas excluidas** para bloquearlas junto con sus subcarpetas. StoneBot también protege las rutas de memoria y credenciales conocidas. La configuración se guarda en `%USERPROFILE%\.stonebot\local_files.ini`.
 
 El recorrido respeta la carpeta solicitada y avisa si hay entradas omitidas o se alcanzan los límites. Puedes adjuntar un documento para consultar su contenido. Las integraciones MCP conservan sus propios permisos.
