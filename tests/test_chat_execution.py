@@ -20,10 +20,7 @@ import chat_execution
 import mcp_client
 import turn_worker
 from history import History
-
-
-def call(name, **args):
-    return SimpleNamespace(message=Message(role="assistant", tool_calls=[{"function": {"name": name, "arguments": args}}]))
+from engine_harness import call
 
 
 def stage(root, phase, live):

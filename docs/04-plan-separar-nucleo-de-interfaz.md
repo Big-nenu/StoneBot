@@ -1,6 +1,6 @@
 # Plan: separar el núcleo de StoneBot de la interfaz PySide6
 
-**Estado:** paso 0 completado. La separación del núcleo está pendiente.
+**Estado:** pasos 0 y 1 completados. La separación del núcleo está pendiente.
 **Fecha:** 26 de noviembre de 2026
 **Rama base:** `codex/stonebot-tool-loop` en el commit `094c387`
 **Rama de trabajo aprobada:** `refactor/stonebot-core`, creada en `ad09042`.
@@ -89,12 +89,14 @@ Las pruebas usan un perfil temporal (`patch.object(mcp_client, "default_root", .
 - `tests/engine_harness.py`: utilidades compartidas.
 - `tests/test_engine_headless.py`: los escenarios.
 
+El ayudante `call(name, **args)` se trasladó de `tests/test_chat_execution.py` al arnés para compartirlo entre ambas suites.
+
 **Reglas de las pruebas:**
 
 - No importan `app`. No crean `QApplication` ni importan `QtWidgets`.
 - Parchean lo mismo que `tests/test_chat_execution.py`: `mcp_client.default_root` (perfil temporal), `turn_worker.Client` (modelo simulado con `SimpleNamespace(chat=model)`), `turn_worker.ollama_model_is_local`, `turn_worker.automatic_memory_enabled` y `Worker.enabled_skills`.
 - No importar `stonebot_service` en el arnés: calcula `DB_PATH` al importarse (`stonebot_service.py:28`).
-- El modelo simulado usa el ayudante `call(name, **args)` de `tests/test_chat_execution.py:25`.
+- El modelo simulado usa el ayudante compartido `call(name, **args)`.
 
 **Arnés:**
 
@@ -114,13 +116,15 @@ Las pruebas usan un perfil temporal (`patch.object(mcp_client, "default_root", .
 | E5 | Permiso denegado (`approved = False`) en una herramienta de proceso | La herramienta no se ejecuta; el modelo recibe el resultado |
 | E6 | `worker.stop()` durante la espera del modelo | `cancelled` e `interrupted_reply` con el texto parcial |
 | E7 | El proveedor lanza `ResponseError` | `error` con mensaje; sin `finished` |
-| E8 | El modelo pide herramientas más de 6 rondas | `TurnError` del límite de llamadas |
+| E8 | El modelo intenta seguir llamando herramientas al llegar al límite | Cinco rondas con herramientas, una sexta sin herramientas y cierre con `finished` si el modelo vuelve a pedir otra llamada |
 
 La pausa de tareas (E9) ya está cubierta por `tests/test_tasks.py`. Se agrega al arnés en el paso 2, cuando la pausa deje de depender de `QThread`.
 
 **Qué se compara:** el orden de los eventos y los nombres de herramientas, no el texto exacto de la interfaz. El texto está en español y cambia.
 
-**Comprobación de utilidad:** romper a propósito algo pequeño (por ejemplo, quitar la comprobación de herramienta repetida) y confirmar que la prueba correspondiente falla. Revertir.
+**Comprobación de utilidad:** al desactivar temporalmente la comprobación de llamadas repetidas, E4 falló porque el cierre aún ofrecía herramientas. El código original se restauró y E4 volvió a pasar.
+
+En E8, el chat ordinario consume cualquier llamada de la sexta ronda en su rama de cierre y devuelve el texto de reserva cuando falta una respuesta final. El `TurnError` previsto inicialmente queda después de ese retorno.
 
 **Commit:** `Add headless engine characterization tests`
 
@@ -273,7 +277,7 @@ session.complete_turn(outcome, worker)
 - [x] 0.1 Rama creada
 - [x] 0.2 Línea base registrada (apéndice A)
 - [x] 0.3 Limpieza de archivos `.pyc` y decisión registrada
-- [ ] 1 Pruebas del motor sin Qt (E1-E8)
+- [x] 1 Pruebas del motor sin Qt (E1-E8)
 - [ ] 2.1 `turn_events.py`
 - [ ] 2.2 Salida por `TurnEvents`
 - [ ] 2.3 Pausa con `Event`

@@ -416,6 +416,7 @@ Después de una llamada, el catálogo del agente conserva las operaciones compat
 | Cuándo SB interpreta que quieres abrir un enlace, leer una carpeta o usar herramientas externas | [`request_routing.py`](request_routing.py) |
 | Permisos, exclusiones y recorrido nativo de archivos | [`local_files.py`](local_files.py) y [`local_file_requests.py`](local_file_requests.py). El diálogo está en [`local_files_ui.py`](local_files_ui.py). |
 | Cómo SB prepara un turno y conecta el modelo, las herramientas y las autorizaciones con Qt | [`turn_worker.py`](turn_worker.py) |
+| Cómo comprobar el turno de chat sin abrir la ventana | [`tests/test_engine_headless.py`](tests/test_engine_headless.py), con el modelo simulado de [`tests/engine_harness.py`](tests/engine_harness.py) |
 | Cómo SB registra los ejecutores, comprueba las herramientas ofrecidas en cada ronda y devuelve los resultados al modelo | [`tool_loop.py`](tool_loop.py), clases `TurnTools` y `ToolLoop` |
 | Cómo se retoma un encargo interrumpido o se abrevia un chat largo | [`chat_execution.py`](chat_execution.py) y el almacenamiento en [`history.py`](history.py) |
 | Cómo el chat inicia, consulta o cancela programas en Windows | [`process_tools.py`](process_tools.py) conecta las herramientas con el diario. [`managed_process.py`](managed_process.py) supervisa el árbol, la salida y el estado final. |
