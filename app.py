@@ -20,6 +20,7 @@ from appearance import (
 from attachments import FILE_FILTER, attachment_path, has_chat_attachments
 from chat_markdown import CopyButton, MarkdownText
 from chat_preferences import automatic_memory_enabled, load_instructions, save_automatic_memory, save_instructions
+from chat_session import ChatSession
 from chat_titles import generate_title
 from chat_execution import ChatExecution
 from chat_ui import (
@@ -75,8 +76,26 @@ CHAT_WIDTH = 820
 
 
 
+def session_property(name):
+    return property(lambda window: getattr(window.session, name),
+                    lambda window, value: setattr(window.session, name, value))
+
+
 class StoneBot(QMainWindow):
     title_ready = Signal(int, object, str)
+
+    messages = session_property("messages")
+    chat_id = session_property("chat_id")
+    project = session_property("project")
+    history = session_property("history")
+    history_write_ok = session_property("history_write_ok")
+    pending_edit = session_property("pending_edit")
+    task = session_property("task")
+    ai = session_property("ai")
+    memory = session_property("memory")
+    pool = session_property("pool")
+    stopping_turn = session_property("stopping_turn")
+    turn_failed = session_property("turn_failed")
 
     def __init__(self, *, use_tray=False):
         super().__init__()
@@ -88,34 +107,26 @@ class StoneBot(QMainWindow):
         self.resize(1100, 740)
         self.setMinimumSize(340, 360)
 
-        self.messages = [{"role": "system", "content": SYSTEM}]
         self.thread = None
         self.runner = None
         self.worker = None
-        self.memory = StoneWaveMemory()
         try:
-            self.ai = load_ai()
+            ai = load_ai()
         except (OSError, ValueError, RuntimeError):
-            self.ai = AISettings()
+            ai = AISettings()
         self.tray = None
         self.exit_requested = False
         self.mcp_dialog = None
-        self.pool = McpPool()
         self.inline_cancel = None
-        self.chat_id = None
-        self.task = None
-        self.history_write_ok = True
-        self.pending_edit = None
         self.last_regenerate = None
-        self.stopping_turn = False
         self.pending_titles = set()
         self.title_ready.connect(self.finish_chat_title)
-        self.project = None
         self.projects = []
         try:
-            self.history = History()
+            history = History()
         except (OSError, ValueError, RuntimeError, sqlite3.Error):
-            self.history = None
+            history = None
+        self.session = ChatSession(history=history, ai=ai, memory=StoneWaveMemory(), pool=McpPool())
         self.appearance = load_appearance()
 
         central = QWidget()
@@ -889,24 +900,16 @@ class StoneBot(QMainWindow):
             self.show_problem("No se pudo eliminar la conversación.")
 
     def save_message(self, role, text, created, attachments=None, *, task=None, finish_execution=None):
-        message = {"role": role, "content": text, "created": created}
-        if attachments:
-            message["attachments"] = attachments
-        self.messages.append(message)
-        if role == "user":
-            self.history_write_ok = True
-        if self.history is not None and self.history_write_ok:
-            try:
-                self.chat_id = self.history.append(self.chat_id, role, text, created=created,
-                                                   attachments=attachments, task=task,
-                                                   project_id=self.project["id"] if self.project else None,
-                                                   automatic_title=self.chat_id is None and role == "user",
-                                                   finish_execution=finish_execution)
-                self.chat_options.show()
-                self.refresh_history()
-            except (OSError, ValueError, RuntimeError, sqlite3.Error):
-                self.history_write_ok = False
-                self.show_problem("No se pudo guardar el mensaje en el historial.")
+        saved = self.session.save_message(role, text, created, attachments, task=task,
+                                          finish_execution=finish_execution)
+        self.show_save_status(saved)
+
+    def show_save_status(self, saved):
+        if saved:
+            self.chat_options.show()
+            self.refresh_history()
+        elif saved is False:
+            self.show_problem("No se pudo guardar el mensaje en el historial.")
 
     def show_problem(self, message):
         self.problem.setText(message)

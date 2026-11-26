@@ -285,7 +285,7 @@ session.complete_turn(outcome, worker)
 - [x] 2.3 Pausa con `Event`
 - [x] 2.4 `qt_turn_runner.py` y `Worker` sin `QObject`
 - [x] 2.5 Adjuntos con importación diferida
-- [ ] 3.1 `ChatSession` con estado
+- [x] 3.1 `ChatSession` con estado
 - [ ] 3.2 `begin_turn`
 - [ ] 3.3 `complete_turn` y `fail_turn`
 - [ ] 3.4 Pruebas de sesión (S1-S8)
