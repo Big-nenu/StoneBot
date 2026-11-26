@@ -1,9 +1,9 @@
 # Plan: separar el núcleo de StoneBot de la interfaz PySide6
 
-**Estado:** propuesta para revisar. **No está implementada.**
+**Estado:** paso 0 completado. La separación del núcleo está pendiente.
 **Fecha:** 26 de noviembre de 2026
 **Rama base:** `codex/stonebot-tool-loop` en el commit `094c387`
-**Rama nueva propuesta:** `codex/stonebot-core-separation` (se crea desde la rama base; `main` no se toca)
+**Rama de trabajo aprobada:** `refactor/stonebot-core`, creada en `ad09042`.
 **Alcance:** pasos 0 a 3. La CLI (paso 4) y las correcciones del comportamiento del agente (paso 5) quedan para después.
 
 ## 1. Objetivo
@@ -64,21 +64,19 @@ Estado de la ventana que usan las pruebas y que hay que conservar: `window.threa
 
 **0.1 Crear la rama.**
 
-```powershell
-git checkout codex/stonebot-tool-loop
-git pull
-git checkout -b codex/stonebot-core-separation
-```
+Se verificó la rama existente `refactor/stonebot-core` en `ad09042`, con el árbol de trabajo limpio al iniciar el paso 0.
 
 **0.2 Línea base de pruebas.** Antes de tocar nada, ejecutar cada prueba y anotar el resultado en el apéndice A.
 
 ```powershell
+$env:PYTHONPATH = (Get-Location).Path
+$env:QT_QPA_PLATFORM = 'offscreen'
 Get-ChildItem tests\test_*.py | ForEach-Object { python -B $_.FullName; "$($_.Name): exit $LASTEXITCODE" }
 ```
 
 Las pruebas usan un perfil temporal (`patch.object(mcp_client, "default_root", ...)`), no `~/.stonebot`. Si alguna ya falla en la base, se documenta y se deja fuera de la regla "en verde".
 
-**0.3 Higiene de `__pycache__` (decisión pendiente del dueño).** No existe `.gitignore` y hay 59 `.pyc` versionados. Cada ejecución los modifica y ensucia los diffs. Opción recomendada: un commit aparte que agregue `.gitignore` y haga `git rm --cached` de los `.pyc`. Si no se acepta, ignorar los `.pyc` al revisar diffs y no incluirlos en los commits de este plan.
+**0.3 Higiene de `__pycache__`.** Se aprobó agregar `.gitignore` y retirar del índice los 59 archivos `.pyc` con `git rm --cached`, conservando las copias locales. La limpieza se registra en un commit separado.
 
 **Criterio de salida:** rama creada, apéndice A completo, decisión sobre `.pyc` anotada.
 
@@ -239,8 +237,8 @@ session.complete_turn(outcome, worker)
 
 | Id | Tema | Detalle | Decisión sugerida |
 |---|---|---|---|
-| D1 | `QSettings` | 5 módulos de lógica dependen de `QtCore` (no de ventana) | Dejarlo. Reemplazar por un almacén sin Qt solo si hace falta; el formato INI de Qt tiene escapes propios y se comparte con el escritorio |
-| D2 | `.pyc` versionados | Ensucian diffs (59 archivos) | Paso 0.3 |
+| D1 | `QSettings` | 5 módulos de lógica dependen de `QtCore` | Aprobado conservarlo temporalmente |
+| D2 | `.pyc` versionados | 59 archivos en `ad09042` | Aprobado retirarlos del índice e ignorarlos en el paso 0.3 |
 | D3 | Perfil de datos para la CLI | `default_root()` es `~/.stonebot` fijo (`stonebot_engine/safety.py`) y `stonebot_service.DB_PATH` se calcula al importar | En el paso 4 agregar una variable `STONEBOT_HOME`; no entra aquí |
 | D4 | Escritorio y CLI a la vez | `QLockFile` (`app.py:1887`) solo evita dos escritorios; `History` abre SQLite en cada operación | Usar un perfil aparte para la CLI mientras se prueba |
 | D5 | Nombre del módulo | `turn_worker.py` es un nombre de Qt | Renombrarlo a `turn_engine.py` solo cuando las pruebas parcheen el nuevo nombre; no ahora |
@@ -272,9 +270,9 @@ session.complete_turn(outcome, worker)
 
 ## 13. Lista de avance
 
-- [ ] 0.1 Rama creada
-- [ ] 0.2 Línea base registrada (apéndice A)
-- [ ] 0.3 Decisión sobre `.pyc`
+- [x] 0.1 Rama creada
+- [x] 0.2 Línea base registrada (apéndice A)
+- [x] 0.3 Limpieza de archivos `.pyc` y decisión registrada
 - [ ] 1 Pruebas del motor sin Qt (E1-E8)
 - [ ] 2.1 `turn_events.py`
 - [ ] 2.2 Salida por `TurnEvents`
@@ -288,8 +286,36 @@ session.complete_turn(outcome, worker)
 - [ ] README actualizado
 - [ ] Prueba manual del escritorio
 
-## Apéndice A: línea base de pruebas (a completar en el paso 0.2)
+## Apéndice A: línea base de pruebas
 
-| Archivo | Resultado en `094c387` |
+El 26 de noviembre de 2026 se ejecutaron las 27 suites en `ad09042`, con Python 3.14.10 en Windows y la configuración del paso 0.2. Todas terminaron con código 0.
+
+| Archivo | Resultado en `ad09042` |
 |---|---|
-| (pendiente) | (pendiente) |
+| `test_ai_provider.py` | Aprobada (0) |
+| `test_aislamiento.py` | Aprobada (0) |
+| `test_attachments.py` | Aprobada (0) |
+| `test_automatic_memory.py` | Aprobada (0) |
+| `test_chat_continuity.py` | Aprobada (0) |
+| `test_chat_execution.py` | Aprobada (0) |
+| `test_chat_presentation.py` | Aprobada (0) |
+| `test_experiences.py` | Aprobada (0) |
+| `test_local_files.py` | Aprobada (0) |
+| `test_managed_process.py` | Aprobada (0) |
+| `test_mcp.py` | Aprobada (0) |
+| `test_mcp_setup.py` | Aprobada (0) |
+| `test_mcp_tool_groups.py` | Aprobada (0) |
+| `test_mcp_ui.py` | Aprobada (0) |
+| `test_memory_integration.py` | Aprobada (0) |
+| `test_motor.py` | Aprobada (0) |
+| `test_office_attachments.py` | Aprobada (0) |
+| `test_project_reads.py` | Aprobada (0) |
+| `test_project_tasks.py` | Aprobada (0) |
+| `test_servicio.py` | Aprobada (0) |
+| `test_skills.py` | Aprobada (0) |
+| `test_stonewave_memory.py` | Aprobada (0) |
+| `test_task_coverage.py` | Aprobada (0) |
+| `test_tasks.py` | Aprobada (0) |
+| `test_tray.py` | Aprobada (0) |
+| `test_user_corrections.py` | Aprobada (0) |
+| `test_workspace_features.py` | Aprobada (0) |
