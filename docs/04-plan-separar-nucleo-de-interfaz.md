@@ -1,6 +1,6 @@
 # Plan: separar el núcleo de StoneBot de la interfaz PySide6
 
-**Estado:** pasos 0 a 2 completados. La extracción de la sesión de chat queda para el paso 3.
+**Estado:** pasos 0 a 3 completados en la rama `refactor/stonebot-core`.
 **Fecha:** 26 de noviembre de 2026
 **Rama base:** `codex/stonebot-tool-loop` en el commit `094c387`
 **Rama de trabajo aprobada:** `refactor/stonebot-core`, creada en `ad09042`.
@@ -226,6 +226,8 @@ En E8, el chat ordinario consume cualquier llamada de la sexta ronda en su rama 
 4. La misma prueba manual del paso 2, más: regenerar una respuesta, editar un mensaje, reabrir un chat con una ejecución interrumpida.
 5. `README.md` actualizado ("Dónde buscar cuando quieras cambiar algo") con `turn_events.py`, `qt_turn_runner.py` y `chat_session.py`.
 
+**Verificación del paso 3 en Windows.** Las 28 suites previas pasaron en cada subpaso. La suite de sesión cubre S1 a S8 con SQLite temporal y se ejecuta con `python -B tests/test_chat_session.py`. En el escritorio nativo, con perfiles temporales y proveedor simulado, se verificaron los permisos, la cancelación con texto parcial, la pausa y reanudación, el cierre a la bandeja, la regeneración, la edición de mensajes y la recuperación de una ejecución tras interrumpir el proceso.
+
 ## 9. Resultado esperado al terminar el paso 3
 
 Una CLI futura necesitaría solo esto (ilustrativo; no se implementa aquí):
@@ -288,9 +290,9 @@ session.complete_turn(outcome, worker)
 - [x] 3.1 `ChatSession` con estado
 - [x] 3.2 `begin_turn`
 - [x] 3.3 `complete_turn` y `fail_turn`
-- [ ] 3.4 Pruebas de sesión (S1-S8)
-- [ ] README actualizado
-- [ ] Prueba manual del escritorio
+- [x] 3.4 Pruebas de sesión (S1-S8)
+- [x] README actualizado
+- [x] Prueba manual del escritorio
 
 ## Apéndice A: línea base de pruebas
 

@@ -415,6 +415,7 @@ Después de una llamada, el catálogo del agente conserva las operaciones compat
 | La lista de conversaciones o cómo se guardan | [`history_ui.py`](history_ui.py) para la lista y [`history.py`](history.py) para el almacenamiento. |
 | Cuándo SB interpreta que quieres abrir un enlace, leer una carpeta o usar herramientas externas | [`request_routing.py`](request_routing.py) |
 | Permisos, exclusiones y recorrido nativo de archivos | [`local_files.py`](local_files.py) y [`local_file_requests.py`](local_file_requests.py). El diálogo está en [`local_files_ui.py`](local_files_ui.py). |
+| Cómo se prepara un turno y se guarda, regenera o restaura una respuesta | [`chat_session.py`](chat_session.py) mantiene la conversación y coordina el historial. |
 | Cómo SB ejecuta el turno y solicita permisos | [`turn_worker.py`](turn_worker.py) ejecuta el motor. [`turn_events.py`](turn_events.py) define sus eventos y su resultado. |
 | Cómo la ventana recibe los eventos y confirma permisos | [`qt_turn_runner.py`](qt_turn_runner.py) conecta el motor con Qt. |
 | Cómo comprobar el turno de chat sin abrir la ventana | [`tests/test_engine_headless.py`](tests/test_engine_headless.py), con el modelo simulado de [`tests/engine_harness.py`](tests/engine_harness.py) |
