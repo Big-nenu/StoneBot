@@ -1,5 +1,6 @@
 """Trabajos de terminal del chat. Un supervisor independiente conserva la salida y el estado."""
 import codecs
+from contextlib import closing, contextmanager
 import json
 import locale
 import os
@@ -9,7 +10,7 @@ import subprocess
 import sys
 import threading
 import time
-from uuid import UUID
+from uuid import UUID, uuid4
 
 LIMIT = 4 * 1024 * 1024
 PAGE = 8192
@@ -20,6 +21,12 @@ CREATE TABLE job(command TEXT, cwd TEXT, state TEXT, code INTEGER, cancel INTEGE
                  heartbeat REAL, error TEXT DEFAULT '', truncated INTEGER DEFAULT 0);
 CREATE TABLE output(seq INTEGER PRIMARY KEY, text TEXT);
 """
+
+
+@contextmanager
+def connection(path):
+    with closing(sqlite3.connect(path)) as db, db:
+        yield db
 
 
 def location(folder, run_id):
@@ -45,7 +52,7 @@ def start(folder, run_id, arguments):
     folder.mkdir(parents=True, exist_ok=True)
     path = location(folder, run_id)
     path.touch(exist_ok=False)
-    with sqlite3.connect(path) as db:
+    with connection(path) as db:
         db.executescript(SCHEMA)
         db.execute("INSERT INTO job(command,cwd,state,heartbeat) VALUES(?,?,?,?)",
                    (json.dumps(argv), cwd, ACTIVE[0], time.time()))
@@ -55,7 +62,7 @@ def start(folder, run_id, arguments):
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          creationflags=flags, start_new_session=os.name != "nt", close_fds=True)
     except OSError as exc:
-        with sqlite3.connect(path) as db:
+        with connection(path) as db:
             db.execute("UPDATE job SET state='fallido', error=?", (str(exc),))
         raise
     return inspect_run(folder, run_id)
@@ -65,16 +72,16 @@ def description(folder, run_id):
     path = location(folder, run_id)
     if not path.is_file():
         raise ValueError("Ejecución desconocida en este chat.")
-    with sqlite3.connect(path) as db:
+    with connection(path) as db:
         command, cwd = db.execute("SELECT command,cwd FROM job").fetchone()
     return {"id": run_id, "argv": json.loads(command), "cwd": cwd}
 
 
 def inspect_run(folder, run_id, cursor=0, *, cancel=False):
     path = location(folder, run_id)
-    if not path.is_file() or type(cursor) is not int or cursor < 0:
+    if not path.is_file() or type(cursor) is not int or not 0 <= cursor <= 2**63 - 1:
         raise ValueError("Ejecución o cursor desconocido en este chat.")
-    with sqlite3.connect(path) as db:
+    with connection(path) as db:
         if cancel:
             db.execute("UPDATE job SET cancel=1 WHERE state IN (?,?)", ACTIVE)
         if not cancel:
@@ -99,7 +106,7 @@ def capture(stream, path, errors):
 def _capture(stream, path):
     decoder = codecs.getincrementaldecoder(locale.getpreferredencoding(False))(errors="replace")
     retained = 0
-    with stream, sqlite3.connect(path) as db:
+    with stream, connection(path) as db:
         while True:
             raw = os.read(stream.fileno(), PAGE)
             chunk = decoder.decode(raw, final=not raw)
@@ -113,41 +120,101 @@ def _capture(stream, path):
                 break
 
 
-def windows_job():
-    # Los descendientes heredan el Job. Al salir el supervisor se cierra el último handle.
-    import win32api
-    import win32job
-    handle = win32job.CreateJobObject(None, None)
-    cls = win32job.JobObjectExtendedLimitInformation
-    info = win32job.QueryInformationJobObject(handle, cls)
-    info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    win32job.SetInformationJobObject(handle, cls, info)
-    win32job.AssignProcessToJobObject(handle, win32api.GetCurrentProcess())
-    return handle
+class WindowsProcess:
+    """El proceso arranca suspendido hasta que todo su árbol pertenece al Job."""
+
+    def __init__(self, argv, cwd):
+        import msvcrt
+        import win32api
+        import win32event
+        import win32job
+        import win32process
+
+        self.jobs = win32job
+        self.events = win32event
+        self.processes = win32process
+        self.job = win32job.CreateJobObject(None, "StoneBot-" + uuid4().hex)
+        self.handle = None
+        self.stdout = None
+        try:
+            cls = win32job.JobObjectExtendedLimitInformation
+            info = win32job.QueryInformationJobObject(self.job, cls)
+            info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            win32job.SetInformationJobObject(self.job, cls, info)
+            read_fd, write_fd = os.pipe()
+            self.stdout = os.fdopen(read_fd, "rb")
+            with os.fdopen(write_fd, "wb") as output, open(os.devnull, "rb") as stdin:
+                os.set_inheritable(output.fileno(), True)
+                os.set_inheritable(stdin.fileno(), True)
+                startup = win32process.STARTUPINFO()
+                startup.dwFlags = subprocess.STARTF_USESTDHANDLES
+                startup.hStdInput = msvcrt.get_osfhandle(stdin.fileno())
+                startup.hStdError = startup.hStdOutput = msvcrt.get_osfhandle(output.fileno())
+                self.handle, thread, _, _ = win32process.CreateProcess(
+                    argv[0], subprocess.list2cmdline(argv), None, None, True,
+                    win32process.CREATE_SUSPENDED | subprocess.CREATE_NO_WINDOW, None, cwd, startup)
+                try:
+                    win32job.AssignProcessToJobObject(self.job, self.handle)
+                    win32process.ResumeThread(thread)
+                except BaseException:
+                    win32api.TerminateProcess(self.handle, 1)
+                    raise
+                finally:
+                    thread.Close()
+        except BaseException:
+            if self.stdout:
+                self.stdout.close()
+            self.close()
+            raise
+
+    def poll(self):
+        if self.events.WaitForSingleObject(self.handle, 0) == self.events.WAIT_TIMEOUT:
+            return None
+        return self.processes.GetExitCodeProcess(self.handle)
+
+    def wait(self):
+        self.events.WaitForSingleObject(self.handle, self.events.INFINITE)
+        return self.processes.GetExitCodeProcess(self.handle)
+
+    def kill(self):
+        self.jobs.TerminateJobObject(self.job, 1)
+
+    def active(self):
+        info = self.jobs.JobObjectBasicAccountingInformation
+        return self.jobs.QueryInformationJobObject(self.job, info)["ActiveProcesses"] > 0
+
+    def close(self):
+        if self.handle:
+            self.handle.Close()
+        self.job.Close()
 
 
 def supervise(path):
-    with sqlite3.connect(path) as db:
+    with connection(path) as db:
         process = None
         try:
-            job = windows_job() if os.name == "nt" else None
             command, cwd, cancelled = db.execute("SELECT command,cwd,cancel FROM job").fetchone()
             if cancelled:
                 db.execute("UPDATE job SET state='cancelado'")
                 return
-            process = subprocess.Popen(json.loads(command), cwd=cwd, stdin=subprocess.DEVNULL,
-                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, close_fds=True)
+            argv = json.loads(command)
+            if os.name == "nt":
+                process = WindowsProcess(argv, cwd)
+            else:
+                process = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL,
+                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, close_fds=True)
             with db:
                 db.execute("UPDATE job SET state='ejecutando',heartbeat=?", (time.time(),))
             errors = []
             reader = threading.Thread(target=capture, args=(process.stdout, path, errors), daemon=True)
             reader.start()
             last_update = time.monotonic()
-            while process.poll() is None:
+            cancelling = False
+            while (process.active() if isinstance(process, WindowsProcess) else process.poll() is None):
                 cancelled, = db.execute("SELECT cancel FROM job").fetchone()
-                if cancelled:
+                if cancelled and not cancelling:
                     process.kill()
-                    break
+                    cancelling = True
                 if time.monotonic() - last_update >= 1:
                     with db:
                         db.execute("UPDATE job SET heartbeat=?", (time.time(),))
@@ -155,7 +222,7 @@ def supervise(path):
                 time.sleep(0.2)
             code = process.wait()
             reader.join(timeout=2)
-            state = "cancelado" if cancelled else "terminado"
+            state = "cancelado" if cancelling else "terminado"
             with db:
                 db.execute("UPDATE job SET state=?,code=?,error=?,truncated=MAX(truncated,?)",
                            (state, code, "; ".join(errors), int(reader.is_alive() or bool(errors))))
@@ -165,7 +232,9 @@ def supervise(path):
                 process.wait()
             with db:
                 db.execute("UPDATE job SET state='fallido',error=?", (str(exc),))
-        # Mantener el handle del Job hasta que se haya confirmado la transacción final.
+        finally:
+            if isinstance(process, WindowsProcess):
+                process.close()
 
 
 if __name__ == "__main__":

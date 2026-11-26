@@ -1637,6 +1637,7 @@ class StoneBot(QMainWindow):
                     execution = ChatExecution(origin, pending, history.save_execution,
                                               turn_messages[-1]["content"], scope)
                     execution.chat_id = chat_id
+                    execution.saved_process_positions = history.process_positions
                     execution.summary = history.summary(chat_id)
                     execution.save_summary = lambda value: history.save_summary(chat_id, value)
                 except (OSError, ValueError, RuntimeError, sqlite3.Error):

@@ -117,6 +117,27 @@ class History:
                     raise ValueError("Este encargo fue actualizado en otra sesión.")
         return version + 1
 
+    def process_positions(self, chat_id, scope):
+        # Las páginas y sus cursores se confirman juntos en save_execution.
+        # Incluye turnos ya cerrados y diarios anteriores a esta versión.
+        with self.connect() as conn:
+            rows = conn.execute("""
+                WITH observations AS (
+                    SELECT step.value ->> '$.tool' AS tool, step.value ->> '$.run_id' AS dispatched,
+                           CASE WHEN json_valid(step.value ->> '$.result')
+                                THEN step.value ->> '$.result' END AS page
+                    FROM message m JOIN chat_execution e ON e.message_id=m.id,
+                         json_each(e.snapshot,'$.steps') step
+                    WHERE m.chat_id=? AND json_extract(e.snapshot,'$.scope')=json(?)
+                      AND step.value ->> '$.tool' IN ('iniciar_proceso','consultar_proceso','cancelar_proceso')
+                )
+                SELECT COALESCE(dispatched, page ->> '$.id') AS run_id,
+                       MAX(CASE WHEN page ->> '$.salida' != '' THEN page ->> '$.cursor' ELSE 0 END)
+                FROM observations GROUP BY run_id
+                HAVING MAX(tool='iniciar_proceso' AND dispatched IS NOT NULL)
+            """, (chat_id, json.dumps(scope, ensure_ascii=False))).fetchall()
+        return dict(rows)
+
     def summary(self, chat_id):
         with self.connect() as conn:
             row = conn.execute("SELECT snapshot FROM chat_summary WHERE chat_id=?", (chat_id,)).fetchone()

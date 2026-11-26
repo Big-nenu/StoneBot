@@ -132,6 +132,8 @@ class ChatExecution:
     def __init__(self, message_id, previous, save, objective, scope):
         self.message_id = message_id
         self.chat_id = None
+        self.saved_process_positions = None
+        self._positions = None
         self.previous = previous
         self.save = save
         self.version = 0
@@ -161,7 +163,13 @@ class ChatExecution:
                   **({"id_ejecución": s["run_id"]} if s.get("run_id") else {}),
                   "argumentos": excerpt(json.dumps(s["arguments"], ensure_ascii=False), 900) if not s["effect"] else None}
                  for s in self.state["steps"][-10:]]
+        last_pages = {}
+        for step in self.state["steps"]:
+            if step.get("page"):
+                page = step["page"]
+                last_pages[page["id"]] = step["result"]
         return ("Progreso anterior (datos): " + json.dumps({"pasos": steps,
+                "últimas_salidas_guardadas": list(last_pages.values())[-3:],
                 "llamadas_aún_pendientes": self.state.get("pending", [])}, ensure_ascii=False) +
                 "\nRetoma el objetivo y sus restricciones. Revalida las lecturas en orden de dependencia. "
                 "Si una operación de cambio quedó sin confirmar, verifica su efecto antes de proponer otra acción.")
@@ -178,6 +186,12 @@ class ChatExecution:
 
     def unconfirmed(self):
         return [s for s in self.state["steps"] if s["effect"] and s["status"] == "sin confirmar"]
+
+    def process_positions(self):
+        if self._positions is None:
+            self._positions = (self.saved_process_positions(self.chat_id, self.state["scope"])
+                               if self.saved_process_positions else {})
+        return self._positions
 
     def dispatched(self, file_path=None):
         step = self.state["steps"][-1]
@@ -203,3 +217,8 @@ class ChatExecution:
             status = "sin ejecutar"
         step.update(status=status, result=result)
         self.persist()
+        if step["tool"] == "iniciar_proceso" and step.get("run_id"):
+            self.process_positions().setdefault(step["run_id"], 0)
+        if page := step.get("page"):
+            positions = self.process_positions()
+            positions[page["id"]] = max(page["cursor"], positions.get(page["id"], 0))

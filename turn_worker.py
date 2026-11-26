@@ -1,6 +1,5 @@
 """Ejecución de un turno del chat y coordinación de sus herramientas."""
 import asyncio
-import hashlib
 import inspect
 import json
 import os
@@ -12,8 +11,9 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import Event
 
-from uuid import uuid4
 
+import process_tools
+from process_tools import PROCESS_TOOLS, PROCESS_NAMES
 import managed_process
 import ollama
 from chat_execution import ChatContext, RECALL, RESUME
@@ -39,12 +39,12 @@ from local_file_requests import continued_request, file_answer, inspect_path, pa
 from local_files import LocalFiles, OPERATIONS, RESULT_HEADER, load_settings as load_file_settings, local_path
 import local_skills
 from mcp_client import (
-    data_path, call_external, connection_error, discover, is_desktop_commander, load_servers, ollama_tool,
+    call_external, connection_error, discover, is_desktop_commander, load_servers, ollama_tool,
     session_for,
 )
 from mcp_permissions import allowed, permission_signature, remember, safe_read
 from read_tools import (
-    read_tool, LOCAL_FILES, MAX_OFFSET, PAGE_CHARS, PROJECT_FILE, PROJECT_LINK, RANK_FILES, ReadTool, local_file_request, project_file_path,
+    LOCAL_FILES, MAX_OFFSET, PAGE_CHARS, PROJECT_FILE, PROJECT_LINK, RANK_FILES, ReadTool, local_file_request, project_file_path,
     project_read_tools, read_result, resolve_target,
 )
 from request_routing import (
@@ -65,20 +65,6 @@ from tasks import (
 )
 from tool_loop import EndTurn, ToolLoop, ToolResult, TurnTools
 from PySide6.QtCore import QObject, QThread, Signal, Slot
-
-
-PROCESS_TOOLS = [
-    read_tool("iniciar_proceso", "Inicia un programa de Windows con autorización. Devuelve un ID. "
-              "Consulta después su salida y código final para continuar el encargo.",
-              {"argv": {"type": "array", "items": {"type": "string"}, "description": "Ruta absoluta del .exe seguida de sus argumentos"},
-               "cwd": {"type": "string", "description": "Directorio absoluto de trabajo"}}, ["argv", "cwd"]),
-    read_tool("consultar_proceso", "Sin ID lista ejecuciones recientes del chat. Con ID devuelve estado, código "
-              "final y una página de salida desde el cursor. Usa el cursor devuelto para continuar.",
-              {"id": {"type": "string"}, "cursor": {"type": "integer", "minimum": 0}}, []),
-    read_tool("cancelar_proceso", "Solicita cancelar una ejecución de este chat. Consulta después su estado final.",
-              {"id": {"type": "string"}}, ["id"]),
-]
-PROCESS_NAMES = {tool.function.name for tool in PROCESS_TOOLS}
 
 
 COMMANDS = {"/identidad", "/sueno", "/integrar", "/aprender"}
@@ -1416,10 +1402,17 @@ class Worker(QObject):
             journal = self.execution if self.task is None and not learn else None
             process_specs = []
             if (managed_process.WINDOWS_BACKEND and ordinary_turn and journal and journal.chat_id is not None
-                    and not self.ai.cloud and source is None and not local_read and not external_requested
+                    and not self.ai.cloud and source in (None, "archivos") and not local_read and not external
                     and not web_tools_only and await self.verify_local_ollama()):
                 process_specs = PROCESS_TOOLS
                 specs.extend(process_specs)
+                directive = ("Para ejecutar un programa autorizado en Windows utiliza iniciar_proceso. "
+                             "Consulta su salida y estado con consultar_proceso. Un trabajo que sigue activo "
+                             "se puede volver a consultar por ID en este chat sin iniciarlo otra vez.")
+                if messages[0]["role"] == "system":
+                    messages[0] = {**messages[0], "content": messages[0]["content"] + "\n" + directive}
+                else:
+                    messages = [{"role": "system", "content": directive}, *messages]
             if journal and journal.previous:
                 _, _, saved = journal.previous
                 if saved["scope"] == journal.state["scope"] and (self.ai.cloud or await self.verify_local_ollama()):
@@ -1866,46 +1859,14 @@ class Worker(QObject):
                 nonlocal registered_read_started
                 self.private_read = True
                 self.used_external_source = True
-                scope_key = hashlib.sha256(json.dumps(journal.state["scope"]).encode()).hexdigest()
-                folder = data_path("procesos", str(journal.chat_id), scope_key)
-                step = journal.state["steps"][-1]
-                try:
-                    if name == "iniciar_proceso":
-                        managed_process.command_spec(arguments)
-                        run_id = uuid4().hex
-                    else:
-                        run_id = arguments.get("id")
-                    if name == "consultar_proceso" and run_id is None:
-                        recent = sorted(folder.glob("*.sqlite3"), key=lambda p: p.stat().st_mtime, reverse=True)
-                        result = {"ejecuciones_recientes": [p.stem for p in recent[:20]]}
-                    else:
-                        if name != "consultar_proceso":
-                            details = (managed_process.description(folder, run_id)
-                                       if name == "cancelar_proceso" else arguments)
-                            if not await self.confirm_external("Terminal de Windows", name, details, local=True):
-                                return ToolResult("Operación denegada.", reuse=False, status="sin ejecutar")
-                            self.check_pause()
-                            step["run_id"] = run_id
-                            journal.dispatched()
-                        if name == "iniciar_proceso":
-                            result = await asyncio.to_thread(managed_process.start, folder, run_id, arguments)
-                        else:
-                            result = await asyncio.to_thread(managed_process.inspect_run, folder, run_id,
-                                                             arguments.get("cursor", 0),
-                                                             cancel=name == "cancelar_proceso")
-                        if name == "consultar_proceso":
-                            for pending_step in journal.unconfirmed():
-                                if pending_step.get("run_id") == run_id and result["estado"] != "sin confirmar":
-                                    if pending_step["tool"] == "iniciar_proceso" or result["cancelacion_solicitada"]:
-                                        pending_step["status"] = "registro comprobado"
+                result = await process_tools.execute(name, arguments, journal, self.confirm_external, self.check_pause)
+                if result.status == "registro comprobado":
                     registered_read_started = True
                     cancel_spec = PROCESS_TOOLS[2]
                     if cancel_spec not in catalog.restricted_specs:
                         catalog.restricted_specs.append(cancel_spec)
                     catalog.restrict()
-                    return ToolResult(json.dumps(result, ensure_ascii=False), reuse=False, status="registro comprobado")
-                except (ValueError, OSError, sqlite3.Error, TypeError) as exc:
-                    return ToolResult(f"No se pudo completar la operación: {exc}", reuse=False, status=step["status"])
+                return result
 
             catalog.register([tool.function.name for tool in process_specs], execute_process)
             catalog.register(activity_tools, execute_activity)
