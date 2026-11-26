@@ -404,6 +404,8 @@ StoneBot/
     └── 01-primer-experimento-que-ve.md
 ```
 
+Después de una llamada, el catálogo del agente conserva las operaciones compatibles con los datos que recibió. Un proceso que devuelve un error puede dar paso a un comando corregido en el mismo turno. Cada lanzamiento vuelve a mostrar el ejecutable, los argumentos y la carpeta para su autorización. Las lecturas privadas conservan las consultas locales permitidas y bloquean nuevos lanzamientos y destinos externos. Las Skills conservan su límite de lectura. El diario guarda las restricciones para la reanudación del encargo.
+
 ### Dónde buscar cuando quieras cambiar algo
 
 | Si quieres cambiar… | Empieza aquí |

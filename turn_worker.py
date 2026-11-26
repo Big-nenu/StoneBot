@@ -1455,7 +1455,31 @@ class Worker(QObject):
                 restricted_specs.append(skill_spec)
             if self.task is not None:
                 restricted_specs.append(REPORT)
-            catalog = TurnTools(specs, restricted_specs, local_aliases)
+            catalog = TurnTools(specs, local_aliases)
+            local_reads = {item.function.name for item in restricted_specs} | {RECALL.function.name}
+            skill_scope = local_reads | {name for name, entry in external.items() if safe_read(entry[2])}
+            # Este ejecutor exige el destino solicitado y confirma ruta y contenido con el usuario.
+            private_scope = local_reads | ({LOCAL_MARKDOWN.function.name} if local_markdown else set())
+            if ordinary_turn and not external_requested and query_experiences in specs:
+                private_scope.add(query_experiences.__name__)
+            process_scope = private_scope | {tool.function.name for tool in process_specs}
+            memory_scope = private_scope | set(memory_tools)
+            if save_request:
+                memory_scope.update(external)  # Escritura del Markdown solicitado, con permiso y destino validados.
+
+            def limit_tools(permitted):
+                catalog.limit_to(permitted)
+                if journal:
+                    journal.state["tool_boundary"] = sorted(catalog.boundary)
+
+            if journal and journal.resumed and "tool_boundary" in journal.state:
+                limit_tools(journal.state["tool_boundary"])
+                if any(step["tool"] == local_skills.LOAD_SKILL for step in journal.state["steps"]):
+                    limit_tools(skill_scope)
+            if attachment_context:
+                limit_tools(private_scope)
+            elif registered_read_started and not (journal and journal.resumed and "tool_boundary" in journal.state):
+                limit_tools(local_reads)
             loop = ToolLoop(messages, context_chars=context_chars, final_round=final_round,
                             tools=catalog, max_distinct_calls=rounds if ordinary_turn else 0,
                             count_tool_context=bool(external or registered_reads))
@@ -1491,12 +1515,7 @@ class Worker(QObject):
                 if self.task is not None or project_reads or registered_read_started:
                     options["temperature"] = 0
                 self.activity.emit(f"Esperando la respuesta de {PROVIDERS[self.ai.provider]}…")
-                round_tools = catalog.offer(restricted=registered_read_started, finishing=finishing)
-                if skill_loaded and not registered_read_started and not finishing:
-                    permitted = {item.function.name for item in restricted_specs}
-                    permitted.update(name for name, entry in external.items() if safe_read(entry[2]))
-                    round_tools = catalog.select([spec for spec in round_tools if isinstance(spec, Tool)
-                                                  and spec.function.name in permitted])
+                round_tools = catalog.offer(finishing=finishing)
                 if compact.archive and not finishing:
                     round_tools = catalog.select([*round_tools, RECALL])
                 if journal and journal.refresh is not None:
@@ -1601,8 +1620,14 @@ class Worker(QObject):
                 reading_registered = registered_read_started or any(
                     call.function.name in registered_reads or call.function.name in activity_tools for call in reply.tool_calls
                 )
-                if reading_registered:
-                    catalog.restrict([RECALL.function.name] if compact.archive else ())
+                if any(catalog.permits(call.function.name) and (
+                        call.function.name in registered_reads or call.function.name in activity_tools
+                        or call.function.name in (RECALL.function.name, query_experiences.__name__)) for call in reply.tool_calls):
+                    limit_tools(private_scope)
+                if any(catalog.permits(call.function.name) and call.function.name in memory_tools
+                       for call in reply.tool_calls):
+                    # Mantener las operaciones de memoria del turno sin habilitar nuevos programas.
+                    limit_tools(memory_scope)
                 if can_select_source and catalog.permits(SELECT_SOURCE.function.name) and not reading_registered:
                     for call in reply.tool_calls:
                         if call.function.name == SELECT_SOURCE.function.name:
@@ -1661,6 +1686,7 @@ class Worker(QObject):
             async def execute_skill(name, arguments):
                 nonlocal skill_loaded
                 skill_loaded = True
+                limit_tools(skill_scope)
                 return ToolResult(self.load_turn_skill(arguments, skills))
 
             async def execute_external(external_name, arguments):
@@ -1860,12 +1886,7 @@ class Worker(QObject):
                 self.private_read = True
                 self.used_external_source = True
                 result = await process_tools.execute(name, arguments, journal, self.confirm_external, self.check_pause)
-                if result.status == "registro comprobado":
-                    registered_read_started = True
-                    cancel_spec = PROCESS_TOOLS[2]
-                    if cancel_spec not in catalog.restricted_specs:
-                        catalog.restricted_specs.append(cancel_spec)
-                    catalog.restrict()
+                registered_read_started = True
                 return result
 
             catalog.register([tool.function.name for tool in process_specs], execute_process)
@@ -1894,6 +1915,10 @@ class Worker(QObject):
                         (name in external and safe_read(external[name][2], arguments)) or
                         (name in memory_tools and name in {"get_context", "query_memory", "list_memories",
                                                            "bridge_memory", "conclusion_history"}))
+                if name in PROCESS_NAMES:
+                    limit_tools(process_scope)
+                elif name == local_skills.LOAD_SKILL:
+                    limit_tools(skill_scope)
                 if not read and (previous := journal.repeated_effect(name, arguments)):
                     return ToolResult(f"Acción omitida para evitar duplicados. Estado guardado: {previous['status']}.",
                                       reuse=False)

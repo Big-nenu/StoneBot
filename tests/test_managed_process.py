@@ -61,7 +61,7 @@ def lifecycle(root):
     jobs.location(root, run_id).rename(root / "cerrado.sqlite3")
 
 
-async def chat(root, approved):
+async def chat(root, approved, retry=False, allow_retry=True):
     execution = ChatExecution(1, None, lambda mid, version, state: version + 1, "prueba", ["local"])
     execution.chat_id = 1
     worker = turn_worker.Worker([{"role": "system", "content": "Usa el resultado."},
@@ -82,26 +82,34 @@ async def chat(root, approved):
             assert "denegada" in row["content"]
             answer = "Denegada"
         else:
+            if retry and not allow_retry and "denegada" in row["content"]:
+                return SimpleNamespace(message=Message(role="assistant", content="Corrección denegada"))
             data = json.loads(row["content"])
             output.append(data["salida"])
             assert data["estado"] != "fallido", data
             if data["estado"] != "terminado":
                 await asyncio.sleep(.5)
                 return call("consultar_proceso", id=data["id"])
-            assert root.name in "".join(output) and data["codigo"] == 7
-            answer = "El programa terminó con código 7."
+            if retry and data["codigo"] == 7:
+                assert any(getattr(t, "function", None) and t.function.name == "iniciar_proceso" for t in request["tools"])
+                return call("iniciar_proceso", argv=[sys.executable, "-c", "print('corregido')"], cwd=str(root))
+            assert root.name in "".join(output) and data["codigo"] == (0 if retry else 7)
+            answer = f"El programa terminó con código {data['codigo']}."
         return SimpleNamespace(message=Message(role="assistant", content=answer))
 
     with (patch.object(jobs, "WINDOWS_BACKEND", True),
           patch.object(turn_worker, "ollama_model_is_local", return_value=True),
           patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=model)),
-          patch.object(worker, "confirm_external", new=AsyncMock(return_value=approved)) as approval,
+          patch.object(worker, "confirm_external", new=AsyncMock(side_effect=[approved, allow_retry])) as approval,
           patch.object(mcp_client, "default_root", return_value=root / "perfil")):
         answer = await worker.chat()
-    approval.assert_awaited_once()
+    assert approval.await_count == (2 if retry else 1)
+    launches = list((root / "perfil").rglob("*.sqlite3"))
+    assert len(launches) == int(approved) + int(retry and allow_retry)
     first = execution.state["steps"][0]
     if approved:
-        assert "código 7" in answer and first["run_id"] in execution.context()
+        expected = ("código 0" if allow_retry else "denegada") if retry else "código 7"
+        assert expected in answer and first["run_id"] in execution.context()
         assert execution.repeated_effect("iniciar_proceso", first["arguments"]) is first
     else:
         assert "Denegada" in answer and first["status"] == "sin ejecutar", (answer, first)
@@ -203,6 +211,10 @@ if __name__ == "__main__":
         root = Path(directory).resolve()
         asyncio.run(chat(root, False))
         asyncio.run(chat(root, True))
+        for allow_retry in (True, False):
+            folder = root / str(allow_retry)
+            folder.mkdir()
+            asyncio.run(chat(folder, True, retry=True, allow_retry=allow_retry))
         lifecycle(root)
         if os.name == "nt":
             (root / "trabajo.py").write_text(

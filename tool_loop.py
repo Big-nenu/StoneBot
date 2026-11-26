@@ -19,9 +19,9 @@ class EndTurn:
 class TurnTools:
     """Catálogo de la ronda, compartido por el proveedor y el ejecutor."""
 
-    def __init__(self, specs, restricted_specs, aliases):
+    def __init__(self, specs, aliases):
         self.specs = list(specs)
-        self.restricted_specs = list(restricted_specs)
+        self.boundary = None
         self.aliases = aliases
         self.available = set()
         self.handlers = {}
@@ -32,17 +32,23 @@ class TurnTools:
                 raise ValueError(f"Herramienta duplicada: {name}")
             self.handlers[name] = handler
 
-    def restrict(self, extra=()):
-        permitted = {spec.function.name for spec in self.restricted_specs}
-        self.available.intersection_update(permitted.union(extra))
+    def limit_to(self, permitted):
+        """Cada fuente puede reducir los destinos del turno, incluso dentro de una tanda."""
+        self.boundary = set(permitted) if self.boundary is None else self.boundary.intersection(permitted)
+        self.available.intersection_update(self.boundary)
 
-    def offer(self, *, restricted, finishing):
-        specs = self.restricted_specs if restricted else self.specs
-        return self.select([] if finishing else specs)
+    def offer(self, *, finishing):
+        return self.select([] if finishing else self.specs)
 
     def select(self, specs):
-        self.available = {spec.__name__ if callable(spec) else spec.function.name for spec in specs}
-        return specs
+        selected = []
+        self.available = set()
+        for spec in specs:
+            name = spec.__name__ if callable(spec) else spec.function.name
+            if self.boundary is None or name in self.boundary:
+                self.available.add(name)
+                selected.append(spec)
+        return selected
 
     def permits(self, name):
         return self.aliases.get(name, name) in self.available

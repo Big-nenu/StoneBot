@@ -17,6 +17,7 @@ from PySide6.QtCore import Qt
 
 import mcp_client
 import turn_worker
+from chat_execution import ChatExecution
 from attachments import read_attachment
 from ai_provider import AISettings, OpenRouter
 from local_files import OPERATIONS, RESULT_HEADER, load_settings, save_settings
@@ -44,6 +45,8 @@ async def check_project_read(folder, *, select_source=False, mention_stonewave=F
     memory = SimpleNamespace(call=AsyncMock(return_value="Acordamos mantener informes en Markdown."),
                              entries=AsyncMock(return_value={}))
     worker = worker_for(folder, memory)
+    worker.execution = ChatExecution(1, None, lambda mid, version, state: version + 1, "lectura", ["local"])
+    worker.execution.chat_id = 1
     if mention_stonewave:
         worker.messages[-1]["content"] = "Lee el README del proyecto y consulta en StoneWave si contradice una decisión anterior."
     confirmations = []
@@ -64,8 +67,19 @@ async def check_project_read(folder, *, select_source=False, mention_stonewave=F
         rounds += 1
         if rounds == 1:
             memory.call.assert_not_awaited()
-            return reply("read_project_file", path="README.md")
-        last = json.loads(kwargs["messages"][-1]["content"])
+            assert "iniciar_proceso" in tools
+            batch = reply("read_project_file", path="README.md")
+            batch.message.tool_calls.extend(reply("iniciar_proceso", argv=[sys.executable], cwd=str(folder)).message.tool_calls)
+            return batch
+        assert "iniciar_proceso" not in tools
+        if rounds == 2:
+            assert "no disponible" in kwargs["messages"][-1]["content"]
+            assert "elegir_fuente" not in tools
+            assert not any(n.startswith("mcp_") for n in tools)
+            if not select_source and not mention_stonewave:
+                assert turn_worker.query_experiences in kwargs["tools"]
+        index = -2 if rounds == 2 else -1
+        last = json.loads(kwargs["messages"][index]["content"])
         if rounds == 2:
             assert last == {"estado": "ok", "archivo": "README.md", "contenido": "Los informes se entregan en PDF.",
                             "parcial": False, "desplazamiento_siguiente": None}, last
@@ -74,6 +88,7 @@ async def check_project_read(folder, *, select_source=False, mention_stonewave=F
         return SimpleNamespace(message=Message(role="assistant", content="El README dice PDF y StoneWave dice Markdown."))
 
     with (patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=model)),
+          patch.object(turn_worker.managed_process, "WINDOWS_BACKEND", True),
           patch.object(turn_worker, "load_servers", side_effect=AssertionError("El piloto solo usa conexiones locales")),
           patch.object(worker, "enabled_skills", return_value={})):
         answer = await worker.chat()
