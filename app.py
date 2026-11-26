@@ -1338,7 +1338,7 @@ class StoneBot(QMainWindow):
             return
         self.stopping_turn = True
         self.refresh_send_button()
-        self.thread.requestInterruption()
+        self.worker.request_pause()
         self.worker.stop()
 
     def regenerate_reply(self, index):
@@ -1600,8 +1600,6 @@ class StoneBot(QMainWindow):
 
         self.thread = QThread()
         self.refresh_send_button()
-        if task is not None:
-            self.activity_panel.enable_pause(self.thread.requestInterruption)
         turn_messages = [{key: value for key, value in m.items() if key != "created"} for m in self.messages]
         try:
             instructions = load_instructions()
@@ -1651,6 +1649,8 @@ class StoneBot(QMainWindow):
                              project_document_path=history.project_document_path if history is not None else None,
                              capture_memory=self.pending_edit is None, ai=self.ai,
                              think=self.reasoning_modes.checkedAction().data())
+        if task is not None:
+            self.activity_panel.enable_pause(self.worker.request_pause)
         self.worker.moveToThread(self.thread)
 
         self.thread.started.connect(self.worker.run)
@@ -1693,7 +1693,7 @@ class StoneBot(QMainWindow):
     def on_saved_task_started(self, task):
         self.task = task
         self.attach_task_panel(task)
-        self.activity_panel.enable_pause(self.thread.requestInterruption)
+        self.activity_panel.enable_pause(self.worker.request_pause)
 
     @Slot(object)
     def confirmar_mcp(self, request):

@@ -15,6 +15,7 @@ from PySide6.QtCore import QCoreApplication
 from ai_provider import AISettings
 from chat_execution import ChatExecution
 from engine_harness import FakeModel, call, reply, run_turn
+from tasks import new_task
 from turn_worker import Worker, managed_process
 
 
@@ -133,10 +134,23 @@ def test_e8_tool_round_budget(root):
     assert channel == "finished" and "respuesta final" in answer, events.events
 
 
+def test_e9_pause_task(root):
+    task = new_task("Comprobar el proyecto.")
+    worker = worker_for("Continúa.", task=task)
+    worker.request_pause()
+    model = FakeModel()
+    events = run_turn(worker, model, root / "perfil")
+    [(channel, answer)] = events.outcome()
+    assert channel == "finished" and "/reanudar" in answer, events.events
+    assert task["status"] == "paused" and task["pending"] == answer
+    assert not model.requests
+
+
 if __name__ == "__main__":
     for test in (test_e1_plain_reply, test_e2_project_read, test_e3_unknown_tool,
                  test_e4_repeat_closes_without_tools, test_e5_process_denied,
-                 test_e6_cancel_while_waiting, test_e7_provider_error, test_e8_tool_round_budget):
+                 test_e6_cancel_while_waiting, test_e7_provider_error, test_e8_tool_round_budget,
+                 test_e9_pause_task):
         with TemporaryDirectory() as directory:
             test(Path(directory))
         print(f"PASS {test.__name__}")

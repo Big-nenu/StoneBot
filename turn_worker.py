@@ -64,7 +64,7 @@ from tasks import (
     step_caption, task_context, upgrade_task,
 )
 from tool_loop import EndTurn, ToolLoop, ToolResult, TurnTools
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, Signal, Slot
 
 
 COMMANDS = {"/identidad", "/sueno", "/integrar", "/aprender"}
@@ -212,6 +212,7 @@ class Worker(QObject):
         self.share_memory = not self.ai.cloud or self.ai.cloud_memory
         self.ranking_scope = None
         self.ranking_hidden = None
+        self.pause_requested = Event()
         self.stop_requested = Event()
         self.turn_loop = None
         self.turn_task = None
@@ -525,10 +526,13 @@ class Worker(QObject):
         self.check_pause()
         return await self.finish_task_reply(client, status, text, repair_messages)
 
-    def check_pause(self, thread=None):
+    def request_pause(self):
+        self.pause_requested.set()
+
+    def check_pause(self):
         if self.stop_requested.is_set():
             raise asyncio.CancelledError
-        if self.task is not None and (thread or QThread.currentThread()).isInterruptionRequested():
+        if self.task is not None and self.pause_requested.is_set():
             raise TaskPaused("Tarea pausada. Usa /reanudar para continuar con los resultados guardados.")
 
     def checkpoint(self, step, status, result=""):
@@ -736,8 +740,7 @@ class Worker(QObject):
         try:
             request = local_file_request(arguments, self.project)
             files = await self.authorize_file_request(request)
-            thread = QThread.currentThread()
-            evidence = await asyncio.to_thread(inspect_path, files, request, lambda: self.check_pause(thread))
+            evidence = await asyncio.to_thread(inspect_path, files, request, self.check_pause)
             self.check_pause()
         except (ValueError, IsolationError) as exc:
             return read_result(estado="error", mensaje=str(exc))
@@ -753,9 +756,8 @@ class Worker(QObject):
     async def ranked_inventory(self, folder, count, recursive, exclude_hidden):
         service = await self.authorize_local_files("rank", folder, Subcarpetas="Sí" if recursive else "No",
                                                    Resultados=count)
-        thread = QThread.currentThread()
         return await asyncio.to_thread(largest_files, service, folder, count, recursive,
-                                       lambda: self.check_pause(thread), exclude_hidden=exclude_hidden)
+                                       self.check_pause, exclude_hidden=exclude_hidden)
 
     async def rank_local_files(self, arguments):
         try:
@@ -823,8 +825,7 @@ class Worker(QObject):
             return RESULT_HEADER + "¿En qué carpeta quieres buscar o consultar archivos? Indica su ruta completa o un nombre como Descargas."
         try:
             files = await self.authorize_file_request(request)
-            thread = QThread.currentThread()
-            result = await asyncio.to_thread(file_answer, files, request, lambda: self.check_pause(thread))
+            result = await asyncio.to_thread(file_answer, files, request, self.check_pause)
             self.check_pause()
         except (ValueError, IsolationError) as exc:
             result = str(exc)
