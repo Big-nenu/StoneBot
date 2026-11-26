@@ -117,7 +117,7 @@ async def check(root, desktop):
         worker = app.Worker([{"role": "system", "content": app.SYSTEM}, {"role": "user", "content": text}],
                             pool, task=snapshot, save_task=lambda value: history.save_task(chat_id, value))
         if events is not None:
-            worker.activity.connect(events.append)
+            worker.events.activity = events.append
         model = model_for(paths, audit=audit, repair=repair, verified=verified, resume_count=resume_count)
         with (patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=model)),
               patch.object(worker, "confirm_external", side_effect=approve),
@@ -223,7 +223,7 @@ async def run_inventory(task, text, history, chat_id, events=None):
     worker = app.Worker([{"role": "system", "content": app.SYSTEM}, {"role": "user", "content": text}],
                         task=task, save_task=lambda value: history.save_task(chat_id, value))
     if events is not None:
-        worker.activity.connect(events.append)
+        worker.events.activity = events.append
     return await worker.chat()
 
 

@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEventLoop, Qt, QTimer
+from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 from ollama import Message
 
@@ -109,7 +109,7 @@ async def check_chat(root):
             confirmations.append(request)
             request["approved"] = len(confirmations) == 2
 
-        worker.mcp_confirmation.connect(confirm, Qt.ConnectionType.DirectConnection)
+        worker.events.confirm = AsyncMock(side_effect=confirm)
         assert "denegada" in await worker.chat()
         assert "contrato-2.pdf" in await worker.chat()
         assert all(item["arguments"]["Ruta"] == str(second) for item in confirmations)
@@ -207,7 +207,7 @@ async def check_agent_files(root, live_model=None):
                 active = worker(question, live_model)
                 active.think = None
                 events = []
-                active.activity.connect(events.append)
+                active.events.activity = events.append
                 with patch.object(active, "inspect_local_files", wraps=active.inspect_local_files) as reads:
                     result = await active.run_chat()
                 assert result.startswith(RESULT_HEADER) and all(re.search(pattern, result, re.I) for pattern in expected), (

@@ -88,7 +88,7 @@ def test_history_and_gui(qt):
     original = app.Worker.chat
 
     async def instrument(worker):
-        worker.mcp_notice.emit("Diagnóstico sintético de prueba")
+        worker.events.notice("Diagnóstico sintético de prueba")
         return await original(worker)
 
     def chat(**kwargs):
@@ -326,7 +326,7 @@ async def test_permissions():
         requests.append(request.copy())
         request.update(approved=True, remember=len(requests) == 2)
 
-    worker.mcp_confirmation.connect(decision, Qt.ConnectionType.DirectConnection)
+    worker.events.confirm = AsyncMock(side_effect=decision)
     worker.permission = signature
     assert await worker.confirm_external("web", "search", {})
     assert not list_permissions("web")

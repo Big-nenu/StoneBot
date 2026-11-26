@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from ollama import Message
-from PySide6.QtCore import Qt
+from turn_events import RecordingEvents, TurnOutcome
 
 import mcp_client
 import turn_worker
@@ -41,35 +41,29 @@ class FakeModel:
         return response
 
 
-class EventRecorder:
-    def __init__(self, worker, *, approve):
-        self.events = []
-        self.approve = approve
-        for channel in ("activity", "mcp_notice", "reasoning", "partial", "operation_error",
-                        "task_started", "continuity_saved", "finished", "cancelled",
-                        "interrupted_reply", "error"):
-            getattr(worker, channel).connect(self.record(channel), Qt.ConnectionType.DirectConnection)
-        worker.mcp_confirmation.connect(self.confirm, Qt.ConnectionType.DirectConnection)
+def finished_text(worker):
+    outcome = worker.run()
+    assert outcome.kind == "finished", outcome
+    return outcome.text
 
-    def record(self, channel):
-        def receive(*args):
-            text = " ".join(map(str, args))
-            self.events.append((channel, text))
-        return receive
 
-    def confirm(self, request):
-        self.events.append(("mcp_confirmation", request.get("tool") or request["operation"]))
-        request["approved"] = self.approve
+class EventRecorder(RecordingEvents):
+    """Compara los eventos y el resultado con las secuencias de caracterización."""
+    result: TurnOutcome
 
     def select(self, *channels):
-        return [(channel, text) for channel, text in self.events if channel in channels]
+        sequence = [("mcp_notice" if name == "notice" else name, value) for name, value in self.events]
+        return [(name, value) for name, value in sequence + self.outcome() if name in channels]
 
     def outcome(self):
-        return self.select("finished", "interrupted_reply", "cancelled", "error")
+        if self.result.kind == "cancelled":
+            return [("interrupted_reply", self.result.partial_text), ("cancelled", "")]
+        return [(self.result.kind, self.result.text)]
 
 
 def run_turn(worker, model, profile, *, approve=False):
-    events = EventRecorder(worker, approve=approve)
+    events = EventRecorder(approve=approve)
+    worker.events = events
     with ExitStack() as stack:
         stack.enter_context(patch.object(mcp_client, "default_root", return_value=profile))
         stack.enter_context(patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=model.chat)))
@@ -77,5 +71,5 @@ def run_turn(worker, model, profile, *, approve=False):
         stack.enter_context(patch.object(turn_worker, "automatic_memory_enabled", return_value=False))
         stack.enter_context(patch.object(turn_worker.Worker, "enabled_skills", return_value={}))
         stack.enter_context(patch.object(turn_worker, "load_servers", return_value={}))
-        worker.run()
+        events.result = worker.run()
     return events

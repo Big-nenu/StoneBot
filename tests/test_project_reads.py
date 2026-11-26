@@ -13,7 +13,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 from ollama import Message
-from PySide6.QtCore import Qt
 
 import mcp_client
 import turn_worker
@@ -55,7 +54,7 @@ async def check_project_read(folder, *, select_source=False, mention_stonewave=F
         confirmations.append(request)
         request["approved"] = True
 
-    worker.mcp_confirmation.connect(approve, Qt.ConnectionType.DirectConnection)
+    worker.events.confirm = AsyncMock(side_effect=approve)
     rounds = 0
 
     async def model(**kwargs):
@@ -136,7 +135,7 @@ async def check_project_web(folder):
     def approve(request):
         request["approved"] = True
 
-    worker.mcp_confirmation.connect(approve, Qt.ConnectionType.DirectConnection)
+    worker.events.confirm = AsyncMock(side_effect=approve)
     config = {"web": {"enabled": True, "transport": "http", "read_tools": []}}
     with (patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=model)),
           patch.object(turn_worker, "session_for", connected),
@@ -150,7 +149,7 @@ async def check_read_failures(folder):
     memory = SimpleNamespace(call=AsyncMock(side_effect=MemoryUnavailable("sin servicio")))
     worker = worker_for(folder, memory)
     confirmations = []
-    worker.mcp_confirmation.connect(confirmations.append, Qt.ConnectionType.DirectConnection)
+    worker.events.confirm = AsyncMock(side_effect=confirmations.append)
     denied = json.loads(await worker.read_project_file({"path": "README.md"}))
     assert denied["estado"] == "error" and "denegada" in denied["mensaje"]
     assert len(confirmations) == 1
@@ -215,7 +214,7 @@ async def check_attachment_and_notes(folder, live_model=None):
     worker.messages[-1].update(content="Lee el adjunto para identificar el archivo del proyecto. Lee ese archivo "
                                "y la nota más reciente de StoneWave. Compara los dos códigos de entrega.",
                                attachments=[read_attachment(manifest)])
-    worker.mcp_confirmation.connect(lambda request: request.update(approved=True), Qt.ConnectionType.DirectConnection)
+    worker.events.confirm = AsyncMock(side_effect=lambda request: request.update(approved=True))
 
     async def decide(**request):
         available = {tool.function.name for tool in request["tools"]}

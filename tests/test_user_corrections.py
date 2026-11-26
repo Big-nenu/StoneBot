@@ -68,7 +68,7 @@ async def test_inventory_correction(root):
         task = dict(app.new_task(text), inventory_recursive=True)
         worker = app.Worker([{"role": "system", "content": app.SYSTEM}, {"role": "user", "content": text}],
                             task=task, project={"id": project}, save_task=lambda _: None)
-        worker.activity.connect(events.append)
+        worker.events.activity = events.append
         return await worker.chat(), task
 
     objective = f'Encuentra los cinco archivos más pesados de "{folder}".'

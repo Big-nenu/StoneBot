@@ -11,10 +11,10 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PySide6.QtCore import Qt
 
 import mcp_client
 import turn_worker
+from engine_harness import finished_text
 from ai_provider import AISettings
 from history import History
 from local_files import LocalFiles, RESULT_HEADER
@@ -38,7 +38,7 @@ def run_turn(chat_id, history, project, task, memory, model, approvals, *, provi
                                 save_task=lambda snapshot: history.save_task(chat_id, snapshot))
     if live_model is None:
         worker.local_ollama = provider == "ollama"
-    errors, answers = [], []
+    answers = []
 
     def approve(request):
         approvals.append(request["arguments"]["Ruta"])
@@ -48,14 +48,12 @@ def run_turn(chat_id, history, project, task, memory, model, approvals, *, provi
         answers.append(text)
         history.append(chat_id, "assistant", text, task=task)
 
-    worker.mcp_confirmation.connect(approve, Qt.ConnectionType.DirectConnection)
-    worker.error.connect(errors.append)
-    worker.finished.connect(finish)
+    worker.events.confirm = AsyncMock(side_effect=approve)
     with (nullcontext() if live_model else patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=model)),
           patch.object(turn_worker, "OpenRouter", return_value=SimpleNamespace(chat=model)),
           patch.object(turn_worker, "load_servers", return_value={})):
-        worker.run()
-    assert not errors and len(answers) == 1, (errors, answers)
+        finish(finished_text(worker))
+    assert len(answers) == 1, answers
     return answers[0]
 
 

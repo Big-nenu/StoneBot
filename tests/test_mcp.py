@@ -17,6 +17,7 @@ from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 from ollama import Message
 
 import turn_worker
+from engine_harness import finished_text
 import request_routing
 import app
 import mcp_client
@@ -397,17 +398,14 @@ def test_context7_results_are_used_to_finish_after_empty_ollama_response():
         return SimpleNamespace(message=Message(role="assistant", tool_calls=[call]))
 
     worker = app.Worker(messages)
-    outputs, errors = [], []
-    worker.finished.connect(outputs.append)
-    worker.error.connect(errors.append)
+    outputs = []
     confirm = AsyncMock(return_value=True)
     with (patch.object(turn_worker, "load_servers", return_value={"context7": {"enabled": True, "read_tools": []}}),
           patch.object(turn_worker, "session_for", connected),
           patch.object(worker, "enabled_skills", return_value={}),
           patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=chat)),
           patch.object(worker, "confirm_external", confirm)):
-        worker.run()
-    assert not errors, errors
+        outputs.append(finished_text(worker))
     assert outputs == ["Usa QVBoxLayout.addWidget()."] and rounds == 4
     assert [call.args[1] for call in confirm.await_args_list] == names
     assert [call.args for call in session.call_tool.await_args_list] == [
@@ -452,12 +450,10 @@ def test_empty_reply_retries_selection_across_active_servers():
         return SimpleNamespace(message=Message(role="assistant", content="Encontré una fuente."))
 
     worker = app.Worker([{"role": "user", "content": "Busca en la web. " + "Referencia previa. " * 400}])
-    outputs, errors, notices = [], [], []
+    outputs, notices = [], []
     activity = []
-    worker.finished.connect(outputs.append)
-    worker.error.connect(errors.append)
-    worker.mcp_notice.connect(notices.append)
-    worker.activity.connect(activity.append)
+    worker.events.notice = notices.append
+    worker.events.activity = activity.append
     confirm = AsyncMock(return_value=True)
     servers = {name: {"enabled": name != "disabled", "read_tools": []}
                for name in ("docs", "offline", "web", "disabled")}
@@ -466,8 +462,8 @@ def test_empty_reply_retries_selection_across_active_servers():
           patch.object(worker, "enabled_skills", return_value={}),
           patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=chat)),
           patch.object(worker, "confirm_external", confirm)):
-        worker.run()
-    assert not errors and outputs == ["Encontré una fuente."], errors
+        outputs.append(finished_text(worker))
+    assert outputs == ["Encontré una fuente."]
     confirm.assert_awaited_once_with("web", "search", {})
     fixtures["web"].call_tool.assert_awaited_once_with("search", {})
     fixtures["docs"].call_tool.assert_not_awaited()
@@ -536,15 +532,12 @@ def test_stdio_chat_and_permissions():
                 return SimpleNamespace(message=Message(role="assistant", tool_calls=calls))
 
             worker = app.Worker(messages)
-            outputs, errors = [], []
-            worker.finished.connect(outputs.append)
-            worker.error.connect(errors.append)
+            outputs = []
             confirm = AsyncMock(side_effect=[False, True])
             with (patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=chat)),
                   patch("stonebot_engine.safety.protected_paths", return_value=[protected]),
                   patch.object(worker, "confirm_external", confirm)):
-                worker.run()
-            assert not errors, errors
+                outputs.append(finished_text(worker))
             assert outputs == ["Terminado"]
             assert confirm.await_count == 2
             assert personal.read_text(encoding="utf-8") == "datos de prueba"
@@ -568,8 +561,7 @@ def test_stdio_chat_and_permissions():
 
             with (patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=stale_call)),
                   patch.object(worker, "confirm_external", confirm)):
-                worker.run()
-            assert not errors, errors
+                outputs.append(finished_text(worker))
             assert outputs == ["Terminado", "Excluida"]
             assert confirm.await_count == 2 and marker.read_text(encoding="utf-8") == "aprobado"
             manage("revoke-read", "example", "echo")

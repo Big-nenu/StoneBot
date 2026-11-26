@@ -64,7 +64,7 @@ from tasks import (
     step_caption, task_context, upgrade_task,
 )
 from tool_loop import EndTurn, ToolLoop, ToolResult, TurnTools
-from PySide6.QtCore import QObject, Signal, Slot
+from turn_events import NullEvents, TurnEvents, TurnOutcome
 
 
 COMMANDS = {"/identidad", "/sueno", "/integrar", "/aprender"}
@@ -155,41 +155,11 @@ def model_context(prompt_chars, minimum=4096):
 
 
 
-class SignalEvents:
-    """Adaptador temporal para los consumidores de las señales del trabajador."""
-    def __init__(self, worker):
-        self.activity = worker.activity.emit
-        self.notice = worker.mcp_notice.emit
-        self.reasoning = worker.reasoning.emit
-        self.partial = worker.partial.emit
-        self.operation_error = worker.operation_error.emit
-        self.task_started = worker.task_started.emit
-        self.continuity_saved = worker.continuity_saved.emit
-        self.confirmation = worker.mcp_confirmation
-
-    async def confirm(self, request):
-        await asyncio.to_thread(self.confirmation.emit, request)
-
-
-class Worker(QObject):
-    finished = Signal(str)
-    cancelled = Signal()
-    partial = Signal(str)
-    interrupted_reply = Signal(str)
-    error = Signal(str)
-    mcp_notice = Signal(str)
-    operation_error = Signal(str)
-    activity = Signal(str)
-    reasoning = Signal(str)
-    mcp_confirmation = Signal(object)
-    task_started = Signal(object)
-    continuity_saved = Signal(int, str)
-
+class Worker:
     def __init__(self, messages, pool=None, *, identity_enabled=False, memory=None, task=None, save_task=None,
                  completed_task=None, project=None, save_continuity=None, project_document_path=None, think=None,
-                 capture_memory=False, ai=None, execution=None, events=None):
-        super().__init__()
-        self.events = events if events is not None else SignalEvents(self)
+                 capture_memory=False, ai=None, execution=None, events: TurnEvents | None = None):
+        self.events = events if events is not None else NullEvents()
         self.messages = messages
         self.pool = pool
         self.permission = None
@@ -220,35 +190,31 @@ class Worker(QObject):
         self.streaming_client = None
         self.partial_text = ""
 
-    @Slot()
-    def run(self):
+    def run(self) -> TurnOutcome:
         try:
             answer = asyncio.run(self.run_chat())
             if self.stop_requested.is_set():
-                self.interrupted_reply.emit(self.private_answer(self.partial_text.strip()))
-                self.cancelled.emit()
-                return
+                return TurnOutcome("cancelled", partial_text=self.private_answer(self.partial_text.strip()))
             if self.capture_memory and self.memory is not None and self.messages:
                 self.capture_user_memories()
-            self.finished.emit(answer)
+            return TurnOutcome("finished", answer)
         except asyncio.CancelledError:
             if self.task is not None:
                 for step in self.task["steps"]:
                     if step["status"] == "running":
                         step.update(status="exception", result="Se interrumpió la espera. Resultado sin confirmar.")
-                self.finished.emit(self.task_reply("paused", "Tarea pausada. Usa /reanudar para continuar con los resultados guardados."))
+                return TurnOutcome("finished", self.task_reply("paused", "Tarea pausada. Usa /reanudar para continuar con los resultados guardados."))
             else:
-                self.interrupted_reply.emit(self.private_answer(self.partial_text.strip()))
-                self.cancelled.emit()
+                return TurnOutcome("cancelled", partial_text=self.private_answer(self.partial_text.strip()))
         except TaskPaused as exc:
-            self.finished.emit(self.task_reply("paused", str(exc)))
+            return TurnOutcome("finished", self.task_reply("paused", str(exc)))
         except (TurnError, ResponseError) as exc:
             self.observe_ranking("mcp", "fallido")
-            self.error.emit(str(exc))
+            return TurnOutcome("error", str(exc))
         except Exception as exc:
             self.observe_ranking("mcp", "fallido")
             self.events.notice(f"El turno falló ({type(exc).__name__}).")
-            self.error.emit(f"No se pudo completar el turno. Revisa {PROVIDERS[self.ai.provider]} y consulta el diagnóstico.")
+            return TurnOutcome("error", f"No se pudo completar el turno. Revisa {PROVIDERS[self.ai.provider]} y consulta el diagnóstico.")
 
     async def run_chat(self):
         self.turn_loop = asyncio.get_running_loop()

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import app
 import turn_worker
+from engine_harness import finished_text
 import automatic_memory
 import mcp_client
 from chat_preferences import automatic_memory_enabled, save_automatic_memory
@@ -50,16 +51,15 @@ def test_chat_setting():
             patch.object(automatic_memory, "select_memories", return_value=[PREFERENCE]) as select:
         worker = app.Worker([MESSAGE], capture_memory=True, memory=memory)
         events, replies = [], []
-        worker.activity.connect(events.append)
-        worker.finished.connect(replies.append)
+        worker.events.activity = events.append
         assert automatic_memory_enabled()
-        worker.run()
+        replies.append(finished_text(worker))
         select.assert_called_once_with(MESSAGE, app.MODEL)
         memory.call.assert_awaited_once_with("inject_memory", content=PREFERENCE)
         assert events == ["Guardé un recuerdo automáticamente."]
         save_automatic_memory(False)
         assert not automatic_memory_enabled()
-        worker.run()
+        replies.append(finished_text(worker))
         assert select.call_count == 1
         assert replies == ["Respuesta de prueba."] * 2
 
@@ -81,9 +81,8 @@ def test_invalid_json_does_not_save_memories():
         factory.return_value.chat.side_effect = [reply("respuesta de texto"), reply('{"recuerdos":[true]}')]
         worker = app.Worker([MESSAGE], capture_memory=True, memory=memory)
         notices, replies = [], []
-        worker.mcp_notice.connect(notices.append)
-        worker.finished.connect(replies.append)
-        worker.run()
+        worker.events.notice = notices.append
+        replies.append(finished_text(worker))
         memory.call.assert_not_awaited()
         assert "selección JSON válida" in notices[0]
         assert replies == ["Respuesta de prueba."]

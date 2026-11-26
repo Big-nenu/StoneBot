@@ -281,7 +281,7 @@ session.complete_turn(outcome, worker)
 - [x] 2.1 `turn_events.py`
 - [x] 2.2 Salida por `TurnEvents`
 - [x] 2.3 Pausa con `Event`
-- [ ] 2.4 `qt_turn_runner.py` y `Worker` sin `QObject`
+- [x] 2.4 `qt_turn_runner.py` y `Worker` sin `QObject`
 - [ ] 2.5 Adjuntos con importación diferida
 - [ ] 3.1 `ChatSession` con estado
 - [ ] 3.2 `begin_turn`

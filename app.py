@@ -47,13 +47,14 @@ from stonewave_memory import StoneWaveMemory
 from tasks import LABELS as TASK_LABELS, new_task, step_caption, upgrade_task
 from tasks_ui import TaskCorrectionDialog
 from win_caption import apply_native_caption
-from PySide6.QtCore import QEasingCurve, QEvent, QIODevice, QSettings, QVariantAnimation, QSaveFile, QLockFile, QSignalBlocker, QSize, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QEasingCurve, QEvent, QIODevice, QSettings, QVariantAnimation, QSaveFile, QLockFile, QSignalBlocker, QSize, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QActionGroup, QColor, QIcon, QKeySequence, QShortcut, QTextCursor, QTextDocument, QPdfWriter
 from PySide6.QtWidgets import (
     QApplication, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
     QMessageBox, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QSystemTrayIcon,
     QVBoxLayout, QWidget, QWidgetAction,
 )
+from qt_turn_runner import QtTurnRunner
 from turn_worker import COMMANDS, SYSTEM, TASK_COMMANDS, Worker
 
 
@@ -89,6 +90,7 @@ class StoneBot(QMainWindow):
 
         self.messages = [{"role": "system", "content": SYSTEM}]
         self.thread = None
+        self.runner = None
         self.worker = None
         self.memory = StoneWaveMemory()
         try:
@@ -1598,8 +1600,6 @@ class StoneBot(QMainWindow):
             self.attach_task_panel(task)
         self.scroll_to_latest()
 
-        self.thread = QThread()
-        self.refresh_send_button()
         turn_messages = [{key: value for key, value in m.items() if key != "created"} for m in self.messages]
         try:
             instructions = load_instructions()
@@ -1649,26 +1649,23 @@ class StoneBot(QMainWindow):
                              project_document_path=history.project_document_path if history is not None else None,
                              capture_memory=self.pending_edit is None, ai=self.ai,
                              think=self.reasoning_modes.checkedAction().data())
+        self.runner = QtTurnRunner(self.worker)
+        self.thread = self.runner.thread
+        self.refresh_send_button()
         if task is not None:
             self.activity_panel.enable_pause(self.worker.request_pause)
-        self.worker.moveToThread(self.thread)
 
-        self.thread.started.connect(self.worker.run)
-        self.thread.finished.connect(self.worker.deleteLater)
-        self.worker.partial.connect(self.show_partial_reply)
-        self.worker.interrupted_reply.connect(self.keep_interrupted_reply)
-        self.worker.finished.connect(self.respuesta)
-        self.worker.error.connect(self.error)
-        self.worker.mcp_notice.connect(record)
-        self.worker.operation_error.connect(self.show_turn_warning)
-        self.worker.activity.connect(self.activity_panel.add_event)
-        self.worker.reasoning.connect(self.activity_panel.add_reasoning)
-        self.worker.mcp_confirmation.connect(self.confirmar_mcp, Qt.ConnectionType.BlockingQueuedConnection)
-        self.worker.task_started.connect(self.on_saved_task_started)
-        self.worker.continuity_saved.connect(self.update_continuity)
-        self.worker.finished.connect(self.thread.quit)
-        self.worker.error.connect(self.thread.quit)
-        self.worker.cancelled.connect(self.thread.quit)
+        self.runner.partial.connect(self.show_partial_reply)
+        self.runner.interrupted_reply.connect(self.keep_interrupted_reply)
+        self.runner.finished.connect(self.respuesta)
+        self.runner.error.connect(self.error)
+        self.runner.mcp_notice.connect(record)
+        self.runner.operation_error.connect(self.show_turn_warning)
+        self.runner.activity.connect(self.activity_panel.add_event)
+        self.runner.reasoning.connect(self.activity_panel.add_reasoning)
+        self.runner.mcp_confirmation.connect(self.confirmar_mcp, Qt.ConnectionType.BlockingQueuedConnection)
+        self.runner.task_started.connect(self.on_saved_task_started)
+        self.runner.continuity_saved.connect(self.update_continuity)
         self.thread.finished.connect(self.limpiar, Qt.ConnectionType.QueuedConnection)
         self.thread.start()
 
@@ -1847,6 +1844,7 @@ class StoneBot(QMainWindow):
         task = self.task if self.activity_panel is self.task_panel else None
         self.thread.wait()
         self.thread.deleteLater()
+        self.runner = None
         self.worker = None
         self.thread = None
         if task is not None:
