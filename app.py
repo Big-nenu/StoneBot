@@ -54,6 +54,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QSystemTrayIcon,
     QVBoxLayout, QWidget, QWidgetAction,
 )
+from turn_events import TurnOutcome
 from qt_turn_runner import QtTurnRunner
 from turn_worker import COMMANDS, SYSTEM, TASK_COMMANDS, Worker
 
@@ -1729,69 +1730,32 @@ class StoneBot(QMainWindow):
     @Slot(str)
     def keep_interrupted_reply(self, text):
         self.clear_partial_reply()
-        if text:
-            self.respuesta(text, interrupted=True)
+        result = self.session.complete_turn(TurnOutcome("cancelled", partial_text=text), self.worker)
+        self.show_turn_result(result)
 
-    def respuesta(self, texto, *, interrupted=False):
+    def respuesta(self, texto):
         self.clear_partial_reply()
-        if self.stopping_turn and not interrupted and (self.worker is None or self.worker.task is None):
-            if texto.strip() and texto.strip() != "(Sin respuesta)":
-                self.keep_interrupted_reply(texto)
-            return
-        created = time.time_ns()
-        if self.pending_edit is None:
-            task = self.worker.task if self.worker is not None else None
-            execution = getattr(self.worker, "execution", None)
-            unresolved = execution.unconfirmed() if execution else []
-            if unresolved and not interrupted:
-                names = ", ".join(dict.fromkeys(step["tool"] for step in unresolved))
-                texto += f"\n\nStoneBot dejó pendiente comprobar el efecto de {names}. Al reanudar conservará el registro para evitar repetir la acción."
-            finish = (execution.message_id, execution.version) if execution and execution.version and not unresolved and not interrupted and not self.turn_failed else None
-            self.save_message("assistant", texto, created, task=task, finish_execution=finish)
-            if task is not None and not self.history_write_ok:
-                task["status"] = "interrupted"
-        else:
-            chat_id, index, saved, edited, following = self.pending_edit
-            if not texto.strip() or texto.strip() == "(Sin respuesta)":
-                self.error(f"{PROVIDERS[self.ai.provider]} no generó una respuesta nueva. Se conservó la conversación original.")
-                return
-            answer = {"role": "assistant", "content": texto, "created": created}
-            try:
-                self.history.replace_from(chat_id, index, saved, edited, answer, following)
-            except (OSError, ValueError, RuntimeError, sqlite3.Error):
-                self.error("No se pudo guardar la regeneración. Se conservó el historial guardado.")
-                return
-            self.pending_edit = None
-            self.messages.append(answer)
-            if following:
-                self.render_chat(chat_id, [*self.messages[1:], *following], keep_activity=True)
-                self.schedule_chat_title(chat_id, self.messages[1:])
-                return
-            self.refresh_history()
-        self.append_message(texto, created=created, index=len(self.messages) - 2 if self.history_write_ok else None)
-        if self.history_write_ok:
-            self.schedule_chat_title(self.chat_id, self.messages[1:])
+        self.show_turn_result(self.session.complete_turn(TurnOutcome("finished", texto), self.worker))
 
     def error(self, detalle):
-        if self.stopping_turn and (self.worker is None or self.worker.task is None):
-            return
-        if self.worker is not None and self.worker.task is not None:
-            self.worker.task_reply("paused", detalle)
-            self.respuesta(detalle)
-        self.turn_failed = True
-        self.restore_pending_edit()
-        self.activity_panel.add_event(f"Error del turno · {detalle}")
-        self.show_problem(detalle)
+        self.show_turn_result(self.session.fail_turn(detalle, self.worker))
+
+    def show_turn_result(self, result):
+        if result.redraw:
+            self.render_chat(self.chat_id, self.messages[1:], keep_activity=True)
+        else:
+            self.show_save_status(result.saved)
+            if result.message is not None:
+                self.append_message(result.message["content"], created=result.message["created"], index=result.index)
+        if result.schedule_title:
+            self.schedule_chat_title(self.chat_id, self.messages[1:])
+        if result.error:
+            self.activity_panel.add_event(f"Error del turno · {result.error}")
+            self.show_problem(result.error)
 
     def restore_pending_edit(self):
-        if self.pending_edit is not None:
-            chat_id, _, saved, _, _ = self.pending_edit
-            self.pending_edit = None
-            try:
-                saved = self.history.messages(chat_id)
-            except (OSError, ValueError, RuntimeError, sqlite3.Error):
-                pass
-            self.render_chat(chat_id, saved, keep_activity=True)
+        if self.session.restore_pending_edit():
+            self.render_chat(self.chat_id, self.messages[1:], keep_activity=True)
 
     @Slot()
     def limpiar(self):

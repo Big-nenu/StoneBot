@@ -1,8 +1,11 @@
 """Estado de la conversación y persistencia de sus mensajes."""
 import json
 import sqlite3
+import time
 from dataclasses import dataclass
 
+from ai_provider import PROVIDERS
+from turn_events import TurnOutcome
 from chat_execution import ChatExecution
 from chat_preferences import load_instructions
 from diagnostics import record
@@ -16,6 +19,17 @@ class TurnPlan:
 
     def create_worker(self):
         return Worker(**self.worker_kwargs)
+
+
+@dataclass
+class TurnResult:
+    message: dict | None = None
+    index: int | None = None
+    saved: bool | None = None
+    finish_execution: tuple[int, int] | None = None
+    redraw: bool = False
+    schedule_title: bool = False
+    error: str = ""
 
 
 class ChatSession:
@@ -106,3 +120,75 @@ class ChatSession:
             project_document_path=history.project_document_path if history is not None else None,
             capture_memory=self.pending_edit is None, ai=self.ai, think=think,
         ), warning)
+
+    def complete_turn(self, outcome: TurnOutcome, worker=None) -> TurnResult:
+        if outcome.kind == "error":
+            return self.fail_turn(outcome.text, worker)
+        interrupted = outcome.kind == "cancelled"
+        text = outcome.partial_text if interrupted else outcome.text
+        task = worker.task if worker is not None else None
+        if interrupted and not text:
+            return TurnResult()
+        if self.stopping_turn and not interrupted and task is None:
+            if not text.strip() or text.strip() == "(Sin respuesta)":
+                return TurnResult()
+            interrupted = True
+
+        created = time.time_ns()
+        if self.pending_edit is not None:
+            return self._complete_edit(text, created)
+
+        execution = getattr(worker, "execution", None)
+        unresolved = execution.unconfirmed() if execution else []
+        if unresolved and not interrupted:
+            names = ", ".join(dict.fromkeys(step["tool"] for step in unresolved))
+            text += f"\n\nStoneBot dejó pendiente comprobar el efecto de {names}. Al reanudar conservará el registro para evitar repetir la acción."
+        finish = None
+        if execution and execution.version and not (unresolved or interrupted or self.turn_failed):
+            finish = (execution.message_id, execution.version)
+        saved = self.save_message("assistant", text, created, task=task, finish_execution=finish)
+        if task is not None and not self.history_write_ok:
+            task["status"] = "interrupted"
+        return TurnResult(message=self.messages[-1], saved=saved, finish_execution=finish if saved else None,
+                          index=len(self.messages) - 2 if self.history_write_ok else None,
+                          schedule_title=self.history_write_ok)
+
+    def _complete_edit(self, text, created):
+        if not text.strip() or text.strip() == "(Sin respuesta)":
+            return self.fail_turn(f"{PROVIDERS[self.ai.provider]} no generó una respuesta nueva. Se conservó la conversación original.")
+        chat_id, index, saved, edited, following = self.pending_edit
+        answer = {"role": "assistant", "content": text, "created": created}
+        try:
+            self.history.replace_from(chat_id, index, saved, edited, answer, following)
+        except (OSError, ValueError, RuntimeError, sqlite3.Error):
+            return self.fail_turn("No se pudo guardar la regeneración. Se conservó el historial guardado.")
+        self.pending_edit = None
+        self.messages.extend([answer, *following])
+        return TurnResult(message=answer, index=index + 1 if self.history_write_ok else None, saved=True, redraw=bool(following),
+                          schedule_title=bool(following) or self.history_write_ok)
+
+    def restore_pending_edit(self):
+        if self.pending_edit is None:
+            return False
+        chat_id, _, saved, _, _ = self.pending_edit
+        try:
+            saved = self.history.messages(chat_id)
+        except (OSError, ValueError, RuntimeError, sqlite3.Error):
+            pass
+        self.pending_edit = None
+        self.chat_id = chat_id
+        self.messages = [{"role": "system", "content": SYSTEM}, *saved]
+        return True
+
+    def fail_turn(self, detail, worker=None) -> TurnResult:
+        task = worker.task if worker is not None else None
+        if self.stopping_turn and task is None:
+            return TurnResult()
+        result = TurnResult()
+        if task is not None:
+            worker.task_reply("paused", detail)
+            result = self.complete_turn(TurnOutcome("finished", detail), worker)
+        self.turn_failed = True
+        result.redraw = self.restore_pending_edit() or result.redraw
+        result.error = detail
+        return result

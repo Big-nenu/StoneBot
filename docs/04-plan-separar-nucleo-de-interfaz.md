@@ -287,7 +287,7 @@ session.complete_turn(outcome, worker)
 - [x] 2.5 Adjuntos con importación diferida
 - [x] 3.1 `ChatSession` con estado
 - [x] 3.2 `begin_turn`
-- [ ] 3.3 `complete_turn` y `fail_turn`
+- [x] 3.3 `complete_turn` y `fail_turn`
 - [ ] 3.4 Pruebas de sesión (S1-S8)
 - [ ] README actualizado
 - [ ] Prueba manual del escritorio
