@@ -1,6 +1,6 @@
 # Plan: separar el núcleo de StoneBot de la interfaz PySide6
 
-**Estado:** pasos 0 y 1 completados. La separación del núcleo está pendiente.
+**Estado:** pasos 0 a 2 completados. La extracción de la sesión de chat queda para el paso 3.
 **Fecha:** 26 de noviembre de 2026
 **Rama base:** `codex/stonebot-tool-loop` en el commit `094c387`
 **Rama de trabajo aprobada:** `refactor/stonebot-core`, creada en `ad09042`.
@@ -173,6 +173,8 @@ En E8, el chat ordinario consume cualquier llamada de la sexta ronda en su rama 
 3. E1 a E9 pasan sin Qt. Todo el resto de `tests/` queda igual que en el apéndice A.
 4. Prueba manual en el escritorio: chat sin herramientas; una herramienta con diálogo de permiso (aprobar y denegar); botón de detener; tarea con pausa y `/reanudar`; cerrar la ventana a mitad de un turno.
 
+**Verificación del paso 2 en Windows.** Las 28 suites pasaron en cada subpaso, incluidos los escenarios E1 a E9 desde 2.3. En una ventana nativa, con perfil temporal y proveedor simulado, se verificaron el chat sin herramientas, el cierre a la bandeja durante un turno, el botón Detener con texto parcial y la pausa seguida de `/reanudar`. La prueba de procesos ejercitó los botones de aprobación y denegación en diálogos nativos. La importación de `turn_worker` carga `QtCore` por los ajustes y deja fuera `QtWidgets`, `QtGui` y `QtPdf`.
+
 ## 8. Paso 3: sesión de chat sin Qt
 
 **Qué se hace:** crear `chat_session.py` con la lógica de la conversación que hoy vive en `app.py`. La ventana solo pinta.
@@ -282,7 +284,7 @@ session.complete_turn(outcome, worker)
 - [x] 2.2 Salida por `TurnEvents`
 - [x] 2.3 Pausa con `Event`
 - [x] 2.4 `qt_turn_runner.py` y `Worker` sin `QObject`
-- [ ] 2.5 Adjuntos con importación diferida
+- [x] 2.5 Adjuntos con importación diferida
 - [ ] 3.1 `ChatSession` con estado
 - [ ] 3.2 `begin_turn`
 - [ ] 3.3 `complete_turn` y `fail_turn`

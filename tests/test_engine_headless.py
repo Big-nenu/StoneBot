@@ -156,4 +156,5 @@ if __name__ == "__main__":
         print(f"PASS {test.__name__}")
     assert QCoreApplication.instance() is None
     assert "app" not in sys.modules
-    assert "PySide6.QtWidgets" not in sys.modules
+    for module in ("PySide6.QtWidgets", "PySide6.QtGui", "PySide6.QtPdf"):
+        assert module not in sys.modules, module

@@ -415,7 +415,8 @@ Después de una llamada, el catálogo del agente conserva las operaciones compat
 | La lista de conversaciones o cómo se guardan | [`history_ui.py`](history_ui.py) para la lista y [`history.py`](history.py) para el almacenamiento. |
 | Cuándo SB interpreta que quieres abrir un enlace, leer una carpeta o usar herramientas externas | [`request_routing.py`](request_routing.py) |
 | Permisos, exclusiones y recorrido nativo de archivos | [`local_files.py`](local_files.py) y [`local_file_requests.py`](local_file_requests.py). El diálogo está en [`local_files_ui.py`](local_files_ui.py). |
-| Cómo SB prepara un turno y conecta el modelo, las herramientas y las autorizaciones con Qt | [`turn_worker.py`](turn_worker.py) |
+| Cómo SB ejecuta el turno y solicita permisos | [`turn_worker.py`](turn_worker.py) ejecuta el motor. [`turn_events.py`](turn_events.py) define sus eventos y su resultado. |
+| Cómo la ventana recibe los eventos y confirma permisos | [`qt_turn_runner.py`](qt_turn_runner.py) conecta el motor con Qt. |
 | Cómo comprobar el turno de chat sin abrir la ventana | [`tests/test_engine_headless.py`](tests/test_engine_headless.py), con el modelo simulado de [`tests/engine_harness.py`](tests/engine_harness.py) |
 | Cómo SB registra los ejecutores, comprueba las herramientas ofrecidas en cada ronda y devuelve los resultados al modelo | [`tool_loop.py`](tool_loop.py), clases `TurnTools` y `ToolLoop` |
 | Cómo se retoma un encargo interrumpido o se abrevia un chat largo | [`chat_execution.py`](chat_execution.py) y el almacenamiento en [`history.py`](history.py) |

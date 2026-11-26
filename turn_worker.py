@@ -26,7 +26,7 @@ from attachment_actions import attachment_save_request, markdown_destination, te
 import automatic_memory
 from attachments import (
     attach_batch, attachment_batches, attachment_parts, attachment_scope, has_chat_attachments,
-    missing_pdf_pages, read_attachment, without_attachment_images,
+    missing_pdf_pages, without_attachment_images,
 )
 from chat_preferences import automatic_memory_enabled
 from experiences import (
@@ -1011,6 +1011,8 @@ class Worker:
         skills = {} if learn or self.task is not None else self.enabled_skills()
         project_files = [file for file in current.get("attachments", ()) if "project_document" in file]
         if project_files:
+            from attachments import read_attachment
+
             if not self.project or self.project_document_path is None:
                 raise TurnError("Elige el documento desde un chat de su proyecto.")
             files = []

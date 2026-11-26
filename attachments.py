@@ -6,10 +6,6 @@ import os
 import re
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QBuffer, QFile, QIODevice, QSize, Qt
-from PySide6.QtGui import QImage, QImageReader, QPainter
-from PySide6.QtPdf import QPdfDocument
-
 from office_attachments import OFFICE_SUFFIXES, read_office
 from stonebot_engine.safety import check_path
 
@@ -68,6 +64,9 @@ def read_attachment(filename, page_range=None):
 
 
 def encode_image(raw, expected):
+    from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QSize, Qt
+    from PySide6.QtGui import QImageReader
+
     source = QBuffer()
     source.setData(QByteArray(raw))
     source.open(QIODevice.OpenModeFlag.ReadOnly)
@@ -85,6 +84,9 @@ def encode_image(raw, expected):
 
 
 def image_snapshot(source):
+    from PySide6.QtCore import QBuffer, QIODevice, Qt
+    from PySide6.QtGui import QImage, QPainter
+
     image = QImage(source.size(), QImage.Format.Format_RGB32)
     image.fill(Qt.GlobalColor.white)
     with QPainter(image) as painter:
@@ -97,6 +99,8 @@ def image_snapshot(source):
 
 
 def clipboard_attachment(source):
+    from PySide6.QtCore import QSize, Qt
+
     if source.isNull() or source.width() * source.height() > MAX_IMAGE_PIXELS:
         raise ValueError("La captura es inválida o supera 16 megapíxeles.")
     if max(source.width(), source.height()) > 1600:
@@ -106,6 +110,9 @@ def clipboard_attachment(source):
 
 
 def pdf_pages(path, page_range):
+    from PySide6.QtCore import QFile, QIODevice, QSize, Qt
+    from PySide6.QtPdf import QPdfDocument
+
     source = QFile(str(path))
     if not source.open(QIODevice.OpenModeFlag.ReadOnly):
         raise ValueError("No se pudo leer el PDF.")
