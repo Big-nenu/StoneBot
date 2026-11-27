@@ -1,6 +1,6 @@
 # Plan del paso 5 · Comportamiento agéntico de StoneBot
 
-- **Estado** — Plan aprobado. Paso 5.1 en curso.
+- **Estado** — Plan aprobado. Línea base del paso 5.1 completada.
 - **Fecha** — 27 de noviembre de 2026.
 - **Base** — `refactor/stonebot-core` en `307b40a`, con los pasos 0 a 4 completados.
 - **Objetivo** — Que un turno normal pueda descubrir recursos, ejecutar pasos autorizados, recuperarse de fallos y entregar una respuesta comprobable. StoneBot CLI servirá para medir los cambios con Nemotron y Qwen. Desktop y CLI seguirán usando el mismo `ChatSession`, `Worker` y `ToolLoop`.
@@ -89,7 +89,7 @@ La CLI conserva el alcance del paso 4, con perfiles separados, entrada de texto 
 
 ### Evaluación reproducible
 
-La matriz por caso, el piloto y los resultados iniciales se registran en la [línea base del paso 5.1](07-linea-base-comportamiento-agentico.md).
+La matriz por caso, el piloto y las 72 mediciones se registran en la [línea base del paso 5.1](07-linea-base-comportamiento-agentico.md).
 
 Usar `nemotron-3.5-bolt:e4b` y `qwen3.5:4b` como etiquetas iniciales. Registrar etiqueta, ID local del modelo, versión de Ollama, commit, ajustes efectivos, perfil de prueba y latencia por caso. Ejecutar `python -B stonebot_cli.py --model MODELO --verbose` con perfiles temporales equivalentes y una copia limpia de los recursos por intento. Mantener los mismos permisos y límites de hardware para comparar. Los casos que requieren aprobación usan confirmaciones explícitas en una terminal o un adaptador de prueba con decisiones guionadas y verificables.
 
@@ -110,7 +110,7 @@ En Desktop, repetir con perfil temporal una consulta directa, un encargo con her
 
 ## 5. Lista de avance
 
-- [ ] 5.1 Línea base y evaluación
+- [x] 5.1 Línea base y evaluación
 - [ ] 5.2 Contexto operativo
 - [ ] 5.3 Catálogo y descubrimiento
 - [ ] 5.4 Validación y recuperación
