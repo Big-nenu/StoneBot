@@ -1,6 +1,6 @@
 # Plan del paso 5 · Comportamiento agéntico de StoneBot
 
-- **Estado** — Propuesta para revisión.
+- **Estado** — Plan aprobado. Paso 5.1 en curso.
 - **Fecha** — 27 de noviembre de 2026.
 - **Base** — `refactor/stonebot-core` en `307b40a`, con los pasos 0 a 4 completados.
 - **Objetivo** — Que un turno normal pueda descubrir recursos, ejecutar pasos autorizados, recuperarse de fallos y entregar una respuesta comprobable. StoneBot CLI servirá para medir los cambios con Nemotron y Qwen. Desktop y CLI seguirán usando el mismo `ChatSession`, `Worker` y `ToolLoop`.
@@ -39,7 +39,8 @@ La comparación de Claude con Hermes Agent en el commit `93dd2a4e` señala punto
 
 - Probar dos operaciones de cara al modelo. **Ejecutar** recibe un programa y una lista de argumentos. **Gestionar ejecución** consulta el estado, lista ejecuciones del chat o solicita cancelar por ID. Traducir ambas a `process_tools.py` y conservar las identidades históricas de lanzamiento, consulta y cancelación. Mantener el supervisor, el diario, los cursores y el aislamiento por chat, perfil y alcance.
 - Aceptar una ruta absoluta o un nombre de ejecutable que se resuelva de forma determinista contra una lista explícita de ubicaciones confiables. Un nombre ambiguo o ausente devuelve un error corregible. Usar el directorio vinculado al proyecto solo si existe y está autorizado para esa operación. En los demás casos se exige un directorio explícito. Confirmar el ejecutable resuelto, los argumentos exactos y el directorio antes de lanzar. No interpretar cadenas como comandos de shell ni convertir automáticamente listas, redirecciones o tuberías en comandos. Mantener los controles de autorización y las restricciones actuales de procesos y archivos.
-- Cada resultado debe distinguir entre inicio confirmado, ejecución activa, salida parcial o truncada, terminación con código, cancelación solicitada y estado sin confirmar. Consultar por ID con espera breve y acotada. Si el proceso sigue activo al cerrar el turno, informar su ID y el estado conocido. Tras una interrupción, comprobar el ID existente antes de considerar un nuevo lanzamiento. Cancelar sigue siendo una operación con efecto y confirmación.
+- Después del lanzamiento autorizado, esperar durante una ventana corta, limitada por el tiempo restante del turno. Si el supervisor confirma que el comando terminó en esa ventana, devolver directamente su salida acotada, el estado y el código de terminación en la misma llamada. El diario conserva el ID y contabiliza el cursor de la salida entregada. Si vence la espera, devolver el ID y el estado observado para consultar la ejecución larga por separado. La espera no cancela el proceso ni habilita otro lanzamiento.
+- Cada resultado distingue entre inicio confirmado, ejecución activa, salida parcial o truncada, terminación con código, cancelación solicitada y estado sin confirmar. Consultar por ID también admite una espera breve y acotada. Si el proceso sigue activo al cerrar el turno, informar su ID y el estado conocido. Tras una interrupción, comprobar el ID existente antes de considerar un nuevo lanzamiento. Cancelar sigue siendo una operación con efecto y confirmación.
 
 ### 2.4 Validación y recuperación
 
@@ -57,7 +58,8 @@ Validar el nombre contra el catálogo efectivo y los argumentos contra su esquem
 ### 2.5 Presupuesto y motivos de cierre
 
 - Crear un presupuesto de turno que atraviese descubrimiento, cambio de fuente, reanudación, planificación, reparación, auditoría y síntesis. Contabilizar por separado las peticiones al proveedor, las llamadas propuestas, las despachadas, la falta de progreso y el tiempo transcurrido. Una tanda consume presupuesto por llamada y queda sujeta a un tamaño máximo. Los turnos internos usan el mismo presupuesto del turno. El tiempo que el usuario emplea en responder a una confirmación se registra aparte.
-- Como punto de partida a validar, probar 16 peticiones al proveedor para chat y 24 para tareas, incluida la petición reservada para cerrar. Limitar reparaciones consecutivas de una misma solicitud a dos y cortar tras tres rondas sin evidencia, cambio relevante o acción autorizada nueva. Medir tiempos y número de llamadas antes de fijar los valores finales. Mantener un tope de tiempo del motor y tiempos de espera por herramienta. Probar con presupuestos pequeños inyectables para que los límites sean deterministas en la suite.
+- Configurar los presupuestos de chat y tareas en el núcleo compartido y validar los valores al inicio del turno. Probar inicialmente 16 peticiones al proveedor para chat y 24 para tareas, incluida la petición reservada para cerrar. Ajustar esos valores, el tiempo total y los límites por tanda a partir de la evaluación. La configuración se acota por máximos de seguridad y conserva tanto el límite por herramienta como la reserva para el cierre. El modelo y las herramientas no pueden ampliar el presupuesto del turno.
+- Limitar inicialmente las reparaciones consecutivas de una solicitud a dos y cortar tras tres rondas sin evidencia, cambio relevante o acción autorizada nueva. Ajustar los umbrales con datos y mantener activa la detección de falta de progreso en todas las configuraciones. Probar presupuestos pequeños inyectables, valores inválidos y el cierre sin repetir efectos aun con presupuestos altos.
 - Si baja el presupuesto, dejar de abrir trabajo nuevo y usar lo reservado para sintetizar con la evidencia disponible. Si no queda tiempo o el proveedor falla, presentar el estado comprobado desde el núcleo. Conservar la cancelación y la pausa, y suspender las tareas guardadas con pendientes claros. Emitir un motivo estable de cierre, como objetivo completado, falta de información, denegación, falta de progreso, presupuesto agotado, error del proveedor o interrupción. El resultado distingue el motivo de cierre de la suficiencia de evidencia.
 
 ### 2.6 Evidencia y respuesta
@@ -76,8 +78,8 @@ Usar `307b40a` como referencia reproducible. Registrar las 31 suites existentes 
 | 5.2 Contexto operativo | 5.1 | Construir el contexto en la sesión y probar límites, alcance de proyecto, roles, compactación y recuperación. |
 | 5.3 Catálogo y descubrimiento | 5.2 | Registrar y resolver herramientas habilitadas, alias e identidades históricas. Probar colisiones, descubrimiento bajo demanda, cambio de fuente y conservación de fronteras de privacidad. |
 | 5.4 Validación y recuperación | 5.3 | Validar llamadas, devolver errores estructurados y aplicar recuperación acotada. Probar datos inválidos, denegaciones, reintentos, duplicados y reinicio con efectos inciertos. |
-| 5.5 Interfaz de procesos | 5.3, 5.4 | Simplificar ejecutores visibles y preservar los registros existentes. Probar resolución, autorización exacta, consulta incremental, salida no cero, cancelación y recuperación en Windows. |
-| 5.6 Presupuesto y cierre | 5.4, 5.5 | Contar peticiones de todas las ramas y reservar el cierre. Probar que ninguna transición reinicia el contador, que pausa y cancelación se respetan, y que los límites terminan el bucle. |
+| 5.5 Interfaz de procesos | 5.3, 5.4 | Simplificar ejecutores visibles y preservar los registros existentes. Probar resultado directo de comandos cortos con código cero o distinto de cero, vuelta por ID al vencer la espera, cursor incremental, autorización exacta, cancelación y recuperación en Windows. |
+| 5.6 Presupuesto y cierre | 5.4, 5.5 | Contar peticiones de todas las ramas, validar la configuración y reservar el cierre. Probar que ninguna transición reinicia el contador, que pausa y cancelación se respetan y que un presupuesto alto sigue terminando ante falta de progreso. |
 | 5.7 Evidencia y respuesta | 5.4, 5.6 | Vincular cobertura y resultados con el cierre. Probar evidencia parcial, falta de fuentes, resultados contradictorios, estados de efectos y reanudación. |
 | 5.8 Prompt y evaluación final | 5.1–5.7 | Ajustar el prompt después de medir el núcleo con el anterior. Ejecutar la matriz con ambos modelos y la verificación de paridad de Desktop. Actualizar README y registrar resultados. |
 
@@ -86,6 +88,8 @@ La CLI conserva el alcance del paso 4, con perfiles separados, entrada de texto 
 ## 4. Pruebas y criterios de aceptación
 
 ### Evaluación reproducible
+
+La matriz por caso, el piloto y los resultados iniciales se registran en la [línea base del paso 5.1](07-linea-base-comportamiento-agentico.md).
 
 Usar `nemotron-3.5-bolt:e4b` y `qwen3.5:4b` como etiquetas iniciales. Registrar etiqueta, ID local del modelo, versión de Ollama, commit, ajustes efectivos, perfil de prueba y latencia por caso. Ejecutar `python -B stonebot_cli.py --model MODELO --verbose` con perfiles temporales equivalentes y una copia limpia de los recursos por intento. Mantener los mismos permisos y límites de hardware para comparar. Los casos que requieren aprobación usan confirmaciones explícitas en una terminal o un adaptador de prueba con decisiones guionadas y verificables.
 
@@ -96,7 +100,7 @@ Preparar al menos doce casos distribuidos entre las familias de la matriz. Varia
 | Respuesta directa y contexto | Sin herramienta, contexto de proyecto vigente, cambio de tema y límites preservados al compactar. | Respuesta directa cuando basta el contexto. Uso del proyecto pertinente sin añadir herramientas por inercia. |
 | Descubrimiento y encadenamiento | Recurso habilitado tras descubrirlo. Alias en colisión y herramienta deshabilitada. Lectura que reduce destinos autorizados. | Encargo de varias etapas resuelto con distintas formulaciones, con recorrido verificable en la traza. |
 | Errores y permisos | Alias inválido, tipos incompatibles, alternancia de errores, denegación y datos privados. | Corrección o explicación precisa del bloqueo. Cero acciones denegadas ejecutadas y cero transferencias privadas no autorizadas. |
-| Procesos | Lanzamiento aprobado, salida incremental, código no cero, cancelación y pérdida del supervisor. | Resultado coherente con ID, salida y estado final. Ante un proceso activo se informa como activo. |
+| Procesos | Resultado directo del comando corto, expiración de espera del largo, cursor incremental, código no cero, cancelación y pérdida del supervisor. | Un comando corto puede aportar evidencia en la llamada inicial. Ante un proceso activo se informa el ID para continuar y el estado observado. |
 | Límites y continuidad | Ciclo sin progreso, reintentos internos, agotamiento, interrupción y reanudación con efecto incierto. | Cierre parcial con próximos pasos y traza que identifica el motivo. Cero reenvíos de efectos inciertos. |
 | Fundamentación | Resultado faltante, truncado, contradictorio o con instrucciones incrustadas. | Distingue hechos, inferencias y límites. Cero afirmaciones de haber ejecutado, leído o verificado una operación que carezca de respaldo en la evidencia del caso. |
 
