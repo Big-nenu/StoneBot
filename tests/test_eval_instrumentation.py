@@ -3,6 +3,7 @@ import asyncio
 from contextlib import asynccontextmanager, chdir
 import json
 import runpy
+import subprocess
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -14,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from mcp.types import Tool as McpTool
 
 from cli_turn_runner import trace_payload
-from eval_agent_baseline import CASES, RESERVED_CASES, prepare
+from eval_agent_baseline import CASES, RESERVED_CASES, launch, prepare
 from eval_agent_grade import classify, grade
 from mcp_pool import McpPool, mcp_trace_state
 import turn_worker
@@ -33,6 +34,12 @@ def test_classification():
     row["sondeo_mcp"]["example"] = {"estado": "timeout"}
     assert classify(row, expected) == "infraestructura"
     assert grade(row)["estado"] == "no_evaluable"
+    row["sondeo_mcp"]["example"] = {"estado": "exito", "herramientas": ["mark"]}
+    row["traza"].extend([
+        {"evento": "mcp_descubrimiento", "servidor": "example", "estado": "exito", "exclusiones": {}},
+        {"evento": "mcp_oferta", "servidor": "example", "herramientas": [], "localizable": True},
+    ])
+    assert classify(row, expected) == "modelo"
     row["sondeo_mcp"] = {}
     assert classify(row, expected) == "pendiente"
     row["traza"].append({"evento": "peticion_modelo", "herramientas": [MARK]})
@@ -57,6 +64,12 @@ def test_stuck_cursor():
     assert grade(row)["estado"] == "no_cumple"
     row["diario"][0]["pasos"].append(dict(step))
     assert grade(row)["estado"] == "revision_manual"
+
+
+def test_timeout_capture():
+    error = subprocess.TimeoutExpired("fixture", 1, output="Eco", stderr=b"parcial")
+    with patch("eval_agent_baseline.subprocess.run", side_effect=error):
+        assert launch("modelo", "D03", Path.cwd(), {}, "prueba", 1) == ("Eco", "parcial", None, True)
 
 
 def test_reserved_fixtures():
@@ -155,6 +168,7 @@ async def test_pool_trace():
 if __name__ == "__main__":
     test_classification()
     test_stuck_cursor()
+    test_timeout_capture()
     test_reserved_fixtures()
     asyncio.run(test_trace_decisions())
     asyncio.run(test_pool_trace())

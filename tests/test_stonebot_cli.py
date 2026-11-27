@@ -96,8 +96,9 @@ def test_permissions_and_trace(root):
             if last["role"] == "tool":
                 observed.append(last["content"])
                 return reply("Terminado.")
-            name = next(tool.function.name for tool in request["tools"]
-                        if not callable(tool) and " / mark." in tool.function.description)
+            offered = {tool.function.name for tool in request["tools"] if not callable(tool)}
+            assert ("descubrir_mcp" in offered) == (os.getenv("STONEBOT_DISCOVER_MCP") == "1")
+            name = next(name for name in offered if name.startswith("mcp_example_mark_"))
             return call(name, text=SECRET)
         status, output, stderr = invoke(root, ["--verbose"], stdin, model)
         assert status == 0 and "Terminado." in output, (output, stderr)

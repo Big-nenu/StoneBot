@@ -80,6 +80,10 @@ class McpPool:
             if name in invalidated or enabled.get(name) != slot.config or self.expired(slot):
                 self.slots.pop(name)
                 slot.stop.set()
+                if not slot.ready.done():
+                    slot.ready.set_exception(ConnectionError("Se cerró la sesión MCP."))
+                    slot.ready.exception()
+                    slot.task.cancel()
                 tasks.append(slot.task)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -97,6 +101,7 @@ class McpPool:
         slot = self.slots.get(name)
         if slot is not None and self.expired(slot):
             self.slots.pop(name)
+            slot.stop.set()
             await slot.task
             slot = None
         if trace:
@@ -148,6 +153,7 @@ class McpPool:
             if not slot.ready.done():
                 slot.failed_at = time.monotonic()
                 slot.ready.set_exception(exc if isinstance(exc, Exception) else ConnectionError("Se cerró la sesión MCP."))
+                slot.ready.exception()
 
     def invalidate(self, name):
         self.invalidated.add(name)

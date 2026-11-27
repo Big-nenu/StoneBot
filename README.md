@@ -179,6 +179,8 @@ La CLI usa `%USERPROFILE%\.stonebot-cli` por defecto. Para elegir otra carpeta, 
 
 Esta versión admite texto con Ollama local. Para probar un servidor MCP, provisiona `mcp_servers.json` en el perfil CLI con el formato validado por `mcp_client.py`. Para HTTP con autenticación, usa la referencia `token_env` a una variable `STONEBOT_MCP_…` de la sesión, según el formato existente. La terminal pide confirmación para las operaciones que la requieren y concede permiso para una sola llamada. [Plan y alcance de StoneBot CLI](docs/05-plan-stonebot-cli.md)
 
+Para habilitar el descubrimiento MCP del paso 5.3A, ejecuta `$env:STONEBOT_DISCOVER_MCP = '1'` antes de iniciar `python -B app.py` o `python -B stonebot_cli.py`. El chat ordinario con Ollama local verificado ofrece un catálogo inicial de fuentes habilitadas y puede buscar otras herramientas con `descubrir_mcp`. Se siguen aplicando los permisos por operación y los límites de fuentes privadas. El valor `0` conserva el enrutamiento anterior para comparar resultados. [Diseño y evaluación A/B](docs/09-visibilidad-mcp.md)
+
 ### Modelo y proveedor
 
 En el engrane de **Configuración**, abre **Modelo y proveedor de IA**. Usa **Ollama** para conversar en el equipo local o **OpenRouter** para usar un modelo en la nube. Pulsa **Cargar modelos** y busca por nombre o identificador. En OpenRouter, **Solo gratuitos** muestra las variantes `:free` y el selector gratuito si están disponibles en el catálogo de modelos compatibles con herramientas. Selecciona un resultado para rellenar el identificador. StoneBot recuerda el último modelo de cada proveedor en este equipo. El indicador de la parte inferior izquierda también abre esta configuración.

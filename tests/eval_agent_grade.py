@@ -40,10 +40,16 @@ def classify(row, expected=None):
         probe.get("estado") == "exito" and tool not in probe.get("herramientas", [])
     ):
         return "infraestructura"
+    discovery = [event for event in trace if event["evento"] == "mcp_descubrimiento"
+                 and event.get("servidor") == server]
+    if (tool in probe.get("herramientas", []) and discovery and discovery[-1].get("estado") == "exito"
+            and not any(discovery[-1].get("exclusiones", {}).values())
+            and any(event["evento"] == "mcp_oferta" and event.get("servidor") == server and event.get("localizable")
+                    for event in trace)):
+        return "modelo"
     configured = any(event.get("servidor") == server and event.get("habilitado") is True
                      for event in trace if event["evento"] == "mcp_servidor")
-    inconsistent = any(event.get("servidor") == server and event.get("estado") in {"error", "timeout"}
-                       for event in trace if event["evento"] == "mcp_descubrimiento")
+    inconsistent = discovery and discovery[-1].get("estado") in {"error", "timeout", "pendiente"}
     if configured and not inconsistent and probe.get("estado") == "exito" and row.get("cierre") and not row.get("timeout"):
         return "motor"
     return "pendiente"

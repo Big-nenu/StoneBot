@@ -132,8 +132,10 @@ def launch(model, case, root, env, prompt, timeout, *, reopen=False):
         )
         return process.stdout, process.stderr, process.returncode, False
     except subprocess.TimeoutExpired as exc:
-        return ((exc.stdout or b"").decode("utf-8", errors="replace"),
-                (exc.stderr or b"").decode("utf-8", errors="replace"), None, True)
+        def captured_text(value):
+            return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
+
+        return captured_text(exc.stdout), captured_text(exc.stderr), None, True
 
 
 def probe_mcp(profile, root, model, case, env):
@@ -189,7 +191,7 @@ def redact_fixture_root(value, root):
     return value
 
 
-def run_case(model, case, attempt, timeout):
+def run_case(model, case, attempt, timeout, mcp_discovery=None):
     with TemporaryDirectory(prefix="stonebot-piloto-") as directory:
         root = Path(directory).resolve()
         profile, prompt = prepare(case, root)
@@ -200,6 +202,8 @@ def run_case(model, case, attempt, timeout):
         python_path = os.pathsep.join(path for path in (env.get("PYTHONPATH"), site.getusersitepackages()) if path)
         env.update(STONEBOT_HOME=str(profile), PYTHONIOENCODING="utf-8", PYTHONPATH=python_path,
                    STONEBOT_EVAL_USER_SITE=site.getusersitepackages())
+        if mcp_discovery is not None:
+            env["STONEBOT_DISCOVER_MCP"] = mcp_discovery
         # El supervisor real usa Python -E y necesita las dependencias del perfil instalado.
         # La barrera de la fixture bloquea lecturas externas también en estos tres casos.
         if case not in {"D06", "D07", "V03"}:
@@ -221,7 +225,14 @@ def run_case(model, case, attempt, timeout):
                 stdout, next_stderr, exit_code, timed_out = launch(
                     model, case, root, env, continuation, timeout, reopen=True)
                 stderr += "\n" + next_stderr
-        events = [json.loads(line) for line in stderr.splitlines() if line.startswith('{"evento":')]
+        events = []
+        for line in stderr.splitlines():
+            if line.startswith('{"evento":'):
+                try:
+                    events.append(json.loads(line))
+                except ValueError:
+                    if not timed_out:
+                        raise
         ends = [event for event in events if event["evento"] == "fin"]
         observed, journal = observations(profile)
         jobs = processes(profile) if case in {"D06", "D07", "V03"} else []
@@ -250,6 +261,8 @@ def run_case(model, case, attempt, timeout):
             "traza": events,
         }, root)
         result["sondeo_mcp"] = probe_mcp(profile, root, model, case, env)
+        if mcp_discovery is not None:
+            result["variante"] = "B" if mcp_discovery == "1" else "A"
         result["calificacion"] = grade(result)
         return result
 
@@ -262,19 +275,23 @@ def main():
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--timeout", type=int, default=90, help="segundos máximos por intento desde el proceso padre")
     parser.add_argument("--jobs", type=int, default=1, help="intentos simultáneos del mismo modelo")
+    parser.add_argument("--mcp-discovery", choices=("0", "1"), help="0 para control A, 1 para candidato B")
     parser.add_argument("--resume-from", type=Path, action="append", default=[],
                         help="omitir los intentos ya registrados en un JSONL completo")
     args = parser.parse_args()
     if min(args.repeats, args.timeout, args.jobs) < 1:
         parser.error("Las repeticiones y el tiempo máximo deben ser positivos.")
     recorded = set()
+    variant = {"0": "A", "1": "B"}.get(args.mcp_discovery)
     for path in args.resume_from:
         for line in path.read_text(encoding="utf-8-sig").splitlines():
             row = json.loads(line)
+            if variant is not None and row.get("variante") != variant:
+                continue
             recorded.add((row["modelo"], row["caso"], row["intento"]))
     for model in args.model or DEFAULT_MODELS:
         with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-            runs = [(case, attempt, pool.submit(run_case, model, case, attempt, args.timeout))
+            runs = [(case, attempt, pool.submit(run_case, model, case, attempt, args.timeout, args.mcp_discovery))
                     for attempt in range(1, args.repeats + 1) for case in args.case or CASES
                     if (model, case, attempt) not in recorded]
             for case, attempt, run in runs:
@@ -283,6 +300,8 @@ def main():
                 except (OSError, ValueError, sqlite3.Error) as exc:
                     row = {"modelo": model, "caso": case, "intento": attempt,
                            "fallo_infraestructura": type(exc).__name__}
+                    if variant is not None:
+                        row["variante"] = variant
                     row["calificacion"] = grade(row)
                 print(json.dumps(row, ensure_ascii=True), flush=True)
 

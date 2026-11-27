@@ -1,6 +1,6 @@
 # Plan del paso 5 · Comportamiento agéntico de StoneBot
 
-- **Estado** — Pasos 5.1, 5.2 y 5.2.1 completados. Siguiente paso planificado 5.3A.
+- **Estado** — Pasos 5.1, 5.2, 5.2.1 y 5.3A completados. Siguiente paso planificado 5.4.
 - **Fecha** — 27 de noviembre de 2026.
 - **Base** — `refactor/stonebot-core` en `307b40a`, con los pasos 0 a 4 completados.
 - **Objetivo** — Que un turno normal pueda descubrir recursos, ejecutar pasos autorizados, recuperarse de fallos y entregar una respuesta comprobable. StoneBot CLI servirá para medir los cambios con Nemotron y Qwen. Desktop y CLI seguirán usando el mismo `ChatSession`, `Worker` y `ToolLoop`.
@@ -64,6 +64,8 @@ La [ampliación de la línea base](5.1-ampliacion/README.md) registró siete con
 ### 2.2 Catálogo y descubrimiento
 
 **5.3A (prioridad):** ofrecer un manifiesto compacto y acotado de fuentes habilitadas y un mecanismo de descubrimiento siempre localizable, sin depender de que el usuario mencione MCP ni de expresiones regulares para hacer visible una capacidad. Mostrar servidor y nombre de herramienta inequívocos; preparar/cachar el grupo MCP al iniciar la sesión con espera acotada y aislamiento de fallos, sin ejecutar herramientas ni conceder permisos. La elección de fuente y la promoción a tarea no serán requisitos para usar una capacidad pertinente en chat ordinario; conservar las tareas guardadas y los controles explícitos del usuario. Implementar detrás de una bandera configurable para comparación A/B, sin bifurcar Desktop y CLI. La visibilidad no equivale a autorización; excluir metadatos cuya exposición vulnere privacidad y validar cada llamada.
+
+La [evaluación de 5.3A](09-visibilidad-mcp.md) documenta las 60 ejecuciones definitivas, la comparación de visibilidad y los fallos de recuperación observados.
 
 **5.3B (diferido y condicionado a evidencia):** las propuestas de registro canónico, migración de alias y límites persistidos que siguen son un diseño de referencia, no requisitos para 5.3A. Implementar únicamente lo que los datos posteriores justifiquen. No ampliar alcance por una migración.
 
@@ -154,7 +156,7 @@ En Desktop, repetir con perfil temporal una consulta directa, un encargo con her
 - [x] 5.1 Línea base y evaluación
 - [x] 5.2 Contexto operativo
 - [x] 5.2.1 Instrumentación y evaluación
-- [ ] 5.3A Visibilidad y descubrimiento MCP
+- [x] 5.3A Visibilidad y descubrimiento MCP
 - [ ] 5.4 Validación y recuperación
 - [ ] 5.6 Presupuesto y cierre
 - [ ] 5.5 Interfaz de procesos

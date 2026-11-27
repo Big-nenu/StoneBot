@@ -19,6 +19,7 @@ import managed_process
 import ollama
 from chat_execution import ChatContext, RECALL, RESUME
 from mcp_pool import McpPool, mcp_trace_state
+from mcp_visibility import DISCOVER as DISCOVER_MCP, McpVisibility, manifest as mcp_manifest, public_name
 from operational_context import HISTORY_CHARS, OllamaContext, observed_context, ollama_metadata, positive_int
 from ollama import Client, ResponseError, Tool
 from ai_provider import (
@@ -263,6 +264,7 @@ class Worker:
                 offered = [name for name in names if name in aliases]
                 self.trace("mcp_oferta", peticion=self.trace_request, servidor=server, herramientas=offered,
                            excluidas_catalogo=len(aliases.difference(offered)),
+                           localizable=bool(aliases) and DISCOVER_MCP.function.name in names,
                            motivo="ofrecido" if offered else "limite_catalogo")
         response = await self._model_request(client, method, *args, internal=internal, **kwargs)
         if not self.ai.cloud:
@@ -1260,8 +1262,14 @@ class Worker:
         skill_spec = Tool.model_validate(local_skills.tool_spec(skills)) if skills and not save_request else None
         used_mcp = False
         active_servers = False
+        discover_mcp = (os.getenv("STONEBOT_DISCOVER_MCP") == "1" and ordinary_turn
+                        and not self.ai.cloud and not self.private_read and not self.read_sw_activity
+                        and not local_read and not web_tools_only and not memory_requested
+                        and not (self.project and (self.project.get("folder") or self.project.get("continuity")))
+                        and not (self.execution and self.execution.resumed and self.execution.state.get("protected"))
+                        and source in (None, "mcp") and isinstance(self.pool, McpPool))
         try:
-            configured = load_servers() if external_requested or self.trace else {}
+            configured = load_servers() if external_requested or discover_mcp or self.trace else {}
         except (ValueError, OSError, RuntimeError):
             configured = {}
             if external_requested:
@@ -1278,10 +1286,19 @@ class Worker:
         elif ordinary_turn and not uses_mcp(user_text):
             servers = {name: server for name, server in servers.items()
                        if server.get("transport") != "stdio" or not is_desktop_commander(server)}
+        visible_servers = {}
+        if (discover_mcp and configured
+                and not any(server["enabled"] and is_desktop_commander(server) for server in servers.values())
+                and await self.verify_local_ollama()):
+            visible_servers = {name: server for name, server in configured.items()
+                               if server["enabled"] and public_name(name) and not is_desktop_commander(server)}
+            if visible_servers:
+                servers = visible_servers
         if self.trace:
             for name, server in configured.items():
-                reason = ("deshabilitado" if not server["enabled"] else "fuera_del_enrutamiento"
-                          if not external_requested else "politica_de_fuente" if name not in servers else "seleccionado")
+                reason = ("deshabilitado" if not server["enabled"] else "visibilidad_mcp" if name in visible_servers
+                          else "politica_de_fuente" if (external_requested or visible_servers) and name not in servers
+                          else "seleccionado" if external_requested else "fuera_del_enrutamiento")
                 self.trace("mcp_servidor", servidor=name, habilitado=server["enabled"], motivo=reason,
                            exclusiones_configuradas=len(server.get("disabled_tools", ())))
         trace_mcp = {}
@@ -1290,7 +1307,7 @@ class Worker:
         discovery_metrics = {name: {} for name in servers} if self.trace else {}
         if any(server["enabled"] for server in servers.values()):
             self.events.activity("Preparando herramientas MCP disponibles…")
-        if self.pool is not None and external_requested:
+        if self.pool is not None and external_requested and not visible_servers:
             try:
                 await self.pool.prepare(servers)
                 enabled = [(name, server) for name, server in servers.items() if server["enabled"]]
@@ -1305,7 +1322,16 @@ class Worker:
                     self.trace("mcp_pool", estado=mcp_trace_state(exc))
                 self.events.notice(f"No se pudo reutilizar la conexión MCP. {connection_error(exc)}")
         async with AsyncExitStack() as connections:
-            for name, server in servers.items():
+            visibility = None
+            if visible_servers:
+                visibility = McpVisibility(self.pool, visible_servers, self.trace)
+                connections.push_async_callback(visibility.close)
+                await visibility.collect(wait=True)
+                trace_mcp = visibility.aliases_by_server
+                external = visibility.entries
+                specs.append(DISCOVER_MCP)
+                messages = [private_activity_placeholder(local_file_placeholder(message)) for message in messages]
+            for name, server in ({} if visibility else servers).items():
                 if not server["enabled"]:
                     continue
                 active_servers = True
@@ -1415,7 +1441,7 @@ class Worker:
                         f"Consulta este enlace de la conversación: {web_link}. Usa una herramienta web disponible. "
                         "Si solo obtienes resultados de búsqueda, indica qué puedes verificar a partir de ellos."
                     )}]
-            elif source in ("web", "mcp") and not external:
+            elif source in ("web", "mcp") and not external and not visibility:
                 return "No encontré una herramienta activa para esa solicitud. Revisa Configuración → Extensiones… → MCP."
 
             project_reads = {}
@@ -1493,7 +1519,8 @@ class Worker:
             journal = self.execution if self.task is None and not learn else None
             process_specs = []
             if (managed_process.WINDOWS_BACKEND and ordinary_turn and journal and journal.chat_id is not None
-                    and not self.ai.cloud and source in (None, "archivos") and not local_read and not external
+                    and not self.ai.cloud and source in (None, "archivos") and not local_read
+                    and (not external or (visibility and not external_requested))
                     and not web_tools_only and await self.verify_local_ollama()):
                 process_specs = PROCESS_TOOLS
                 specs.extend(process_specs)
@@ -1542,7 +1569,8 @@ class Worker:
                 restricted_specs.append(REPORT)
             catalog = TurnTools(specs, local_aliases)
             local_reads = {item.function.name for item in restricted_specs} | {RECALL.function.name}
-            skill_scope = local_reads | {name for name, entry in external.items() if safe_read(entry[2])}
+            skill_scope = (local_reads if visibility else
+                           local_reads | {name for name, entry in external.items() if safe_read(entry[2])})
             # Este ejecutor exige el destino solicitado y confirma ruta y contenido con el usuario.
             private_scope = local_reads | ({LOCAL_MARKDOWN.function.name} if local_markdown else set())
             if ordinary_turn and not external_requested and query_experiences in specs:
@@ -1600,6 +1628,17 @@ class Worker:
                     options["temperature"] = 0
                 self.events.activity(f"Esperando la respuesta de {PROVIDERS[self.ai.provider]}…")
                 round_tools = catalog.offer(finishing=finishing)
+                if visibility and catalog.permits(DISCOVER_MCP.function.name):
+                    await visibility.collect()
+                    catalog.register(visibility.entries.keys() - catalog.handlers.keys(), execute_external)
+                    aliases = visibility.offered(catalog.boundary)
+                    round_tools = catalog.select([*round_tools, *(visibility.specs[alias] for alias in aliases)])
+                    instruction = mcp_manifest(visible_servers, external, aliases)
+                    if request_messages[0]["role"] == "system":
+                        first = request_messages[0]
+                        request_messages = [{**first, "content": first["content"] + instruction}, *request_messages[1:]]
+                    else:
+                        request_messages = [{"role": "system", "content": instruction}, *request_messages]
                 if compact.archive and not finishing:
                     round_tools = catalog.select([*round_tools, RECALL])
                 if journal and journal.refresh is not None:
@@ -1780,6 +1819,8 @@ class Worker:
                 if skill_loaded and not safe_read(tool, arguments):
                     return ToolResult("La Skill solo dispone de lecturas autorizadas.", reuse=False)
                 used_mcp = True
+                if visibility:
+                    self.used_external_source = True
                 self.events.notice(f"MCP {server_name}. El modelo solicitó {tool.name}.")
                 self.events.activity(f"Solicitando {tool.name} en {server_name}…")
                 started = False
@@ -1974,6 +2015,11 @@ class Worker:
                 registered_read_started = True
                 return result
 
+            async def execute_discovery(name, arguments):
+                self.used_external_source = True
+                result = await visibility.find(arguments, catalog.boundary)
+                return ToolResult(result, reuse=False)
+
             catalog.register([tool.function.name for tool in process_specs], execute_process)
             catalog.register(activity_tools, execute_activity)
             catalog.register([RECALL.function.name], compact.read)
@@ -1982,6 +2028,8 @@ class Worker:
             catalog.register(registered_reads, execute_read)
             catalog.register(external, execute_external)
             catalog.register(memory_tools, execute_memory)
+            if visibility:
+                catalog.register([DISCOVER_MCP.function.name], execute_discovery)
 
             def on_repeat():
                 if self.trace:
@@ -1997,7 +2045,8 @@ class Worker:
             def before_call(name, arguments, remaining):
                 if name == RECALL.function.name:
                     return None
-                read = (name == "consultar_proceso" or name in registered_reads or name in activity_tools or name == local_skills.LOAD_SKILL
+                read = (name in ("consultar_proceso", DISCOVER_MCP.function.name) or name in registered_reads
+                        or name in activity_tools or name == local_skills.LOAD_SKILL
                         or name == query_experiences.__name__ or
                         (name in external and safe_read(external[name][2], arguments)) or
                         (name in memory_tools and name in {"get_context", "query_memory", "list_memories",
