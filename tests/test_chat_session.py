@@ -111,10 +111,31 @@ def test_s8_stop_before_reply(session):
     assert len(session.messages) == 2
 
 
+def test_task_input_and_recovery(session):
+    task = session.prepare_task("/tarea Revisar informe")
+    assert task["status"] == "running"
+    assert session.save_input("/tarea Revisar informe", 2, task=task)
+    chat_id = session.chat_id
+    assert session.prepare_task("Aquí tienes el informe")["status"] == "running"
+    try:
+        session.prepare_task("/tarea Otro objetivo")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Una segunda tarea reemplazó la primera.")
+    session.load_chat(chat_id)
+    session.recover_task()
+    assert session.task["status"] == session.history.task(chat_id)["status"] == "interrupted"
+    assert session.prepare_task("/reanudar informe")["status"] == "running"
+    cancelled = session.prepare_task("/cancelar")
+    assert session.save_input("/cancelar", 3, task=cancelled)
+    assert session.history.task(chat_id)["status"] == "cancelled"
+
+
 if __name__ == "__main__":
     for test in (test_s1_project_prompt, test_s2_execution_scope, test_s3_pending_effect,
                  test_s4_confirmed_effect, test_s5_history_failure, test_s6_task_error,
-                 test_s7_regeneration, test_s8_stop_before_reply):
+                 test_s7_regeneration, test_s8_stop_before_reply, test_task_input_and_recovery):
         with TemporaryDirectory() as root, patch.object(mcp_client, "default_root", return_value=Path(root)):
             session = ChatSession(history=History(), ai=AISettings("ollama", "simulado"))
             session.save_message("user", "Encargo", 1)

@@ -9,7 +9,9 @@ from turn_events import TurnOutcome
 from chat_execution import ChatExecution
 from chat_preferences import load_instructions
 from diagnostics import record
-from turn_worker import SYSTEM, Worker
+from folder_inventory import inventory_followup, ranking_count, uses_mcp
+from tasks import new_task, upgrade_task
+from turn_worker import COMMANDS, SYSTEM, TASK_COMMANDS, Worker
 
 
 @dataclass
@@ -33,11 +35,12 @@ class TurnResult:
 
 
 class ChatSession:
-    def __init__(self, *, history, ai, memory=None, pool=None):
+    def __init__(self, *, history, ai, memory=None, pool=None, automatic_titles=True):
         self.history = history
         self.ai = ai
         self.memory = memory
         self.pool = pool
+        self.automatic_titles = automatic_titles
         self.messages = [{"role": "system", "content": SYSTEM}]
         self.chat_id = None
         self.project = None
@@ -59,13 +62,84 @@ class ChatSession:
                 self.chat_id = self.history.append(self.chat_id, role, text, created=created,
                                                    attachments=attachments, task=task,
                                                    project_id=self.project["id"] if self.project else None,
-                                                   automatic_title=self.chat_id is None and role == "user",
+                                                   automatic_title=self.automatic_titles and self.chat_id is None and role == "user",
                                                    finish_execution=finish_execution)
                 return True
             except (OSError, ValueError, RuntimeError, sqlite3.Error):
                 self.history_write_ok = False
                 return False
         return None
+
+    def load_chat(self, chat_id):
+        if self.history is not None and chat_id is not None:
+            saved = self.history.messages(chat_id)
+            project = self.history.chat_project(chat_id)
+        else:
+            saved, project = [], None
+        self.chat_id = chat_id
+        self.project = project
+        self.messages = [{"role": "system", "content": SYSTEM}, *saved]
+        self.task = None
+        return saved
+
+    def recover_task(self):
+        self.task = self.history.task(self.chat_id)
+        if self.task is None:
+            return
+        changed = upgrade_task(self.task)
+        if self.task["status"] == "running":
+            changed = True
+            self.task["status"] = "interrupted"
+            for step in self.task["steps"]:
+                if step["status"] == "running":
+                    step["status"] = "exception"
+        if changed:
+            self.history.save_task(self.chat_id, self.task)
+
+    def has_pending_execution(self):
+        _, pending = self.history.execution_context(self.chat_id)
+        return pending is not None and (not self.task or self.task["status"] in {"completed", "cancelled"})
+
+    def prepare_task(self, text, *, has_attachments=False, document_query=False, setup_request=False):
+        words = text.split(maxsplit=1)
+        command = words[0] if words else ""
+        task = self.task
+        active_task = task is not None and task["status"] not in {"completed", "cancelled"}
+        inventory_task = (task is not None and (self.ai.cloud or "inventory_recursive" in task) and ranking_count(task["objective"]) is not None
+                          and not uses_mcp(task["objective"]))
+        ordinary = command not in (TASK_COMMANDS | COMMANDS) and not setup_request
+        continue_inventory = (
+            ordinary and not has_attachments and inventory_task and task["status"] != "cancelled"
+            and (active_task or self.ai.cloud)
+            and inventory_followup(text)
+        )
+        task_turn = (command in TASK_COMMANDS or continue_inventory
+                     or (active_task and not inventory_task and ordinary and not document_query))
+        if task_turn:
+            if has_attachments:
+                raise ValueError("Usa las tareas reanudables en una conversación sin adjuntos.")
+            if self.history is None:
+                raise ValueError("El historial debe estar disponible para guardar la tarea.")
+            if command == "/tarea":
+                if len(words) < 2 or active_task:
+                    raise ValueError("Escribe /tarea y el objetivo. Si ya hay una tarea pendiente, usa /cancelar primero.")
+                if len(words[1]) > 4000:
+                    raise ValueError("El objetivo admite hasta 4 000 caracteres.")
+                task = new_task(words[1])
+            elif command in {"/reanudar", "/cancelar"}:
+                if not active_task:
+                    raise ValueError("No hay una tarea pendiente en este chat. Vuelve a pedir lo que quieres hacer.")
+                if command == "/cancelar" and len(words) != 1:
+                    raise ValueError("Para cerrar la tarea pendiente, escribe solo /cancelar.")
+            task = dict(task, status="cancelled" if command == "/cancelar" else "running")
+            return task
+        return None
+
+    def save_input(self, text, created, attachments=None, *, task=None):
+        saved = self.save_message("user", text, created, attachments, task=task)
+        if task is not None and self.history_write_ok:
+            self.task = task
+        return saved
 
     def begin_turn(self, task=None, *, think=None) -> TurnPlan:
         warning = ""

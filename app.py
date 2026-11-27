@@ -31,7 +31,7 @@ from diagnostics import record
 from diagnostics_ui import DiagnosticsDialog
 from extension_ui import Toggle
 from experiences import save_task_correction, task_correction
-from folder_inventory import HIDDEN_MISTAKE, inventory_followup, ranking_count, uses_mcp
+from folder_inventory import HIDDEN_MISTAKE
 from greetings import choose_greeting, format_greeting, greeting_settings
 from history import History
 from history_ui import SEARCH_SHORTCUT, HistoryPanel, SidebarPreview, SidebarRail, load_sidebar_pinned, save_sidebar_pinned, sidebar_icon
@@ -57,7 +57,7 @@ from PySide6.QtWidgets import (
 )
 from turn_events import TurnOutcome
 from qt_turn_runner import QtTurnRunner
-from turn_worker import COMMANDS, SYSTEM, TASK_COMMANDS, Worker
+from turn_worker import COMMANDS, SYSTEM, Worker
 
 
 MODEL = DEFAULT_MODEL
@@ -476,8 +476,7 @@ class StoneBot(QMainWindow):
             self.show_chat_page()
             return
         try:
-            saved = self.history.messages(chat_id) if self.history is not None and chat_id is not None else []
-            self.project = self.history.chat_project(chat_id) if self.history is not None and chat_id is not None else None
+            saved = self.session.load_chat(chat_id)
         except (OSError, ValueError, RuntimeError, sqlite3.Error):
             self.show_problem("No se pudo abrir la conversación.")
             return
@@ -816,24 +815,14 @@ class StoneBot(QMainWindow):
             self.transcript.insertWidget(self.transcript.count() - 1, self.activity_panel)
         elif chat_id is not None and self.history is not None:
             try:
-                self.task = self.history.task(chat_id)
+                self.session.recover_task()
                 if self.task is not None:
-                    changed = upgrade_task(self.task)
-                    if self.task["status"] == "running":
-                        changed = True
-                        self.task["status"] = "interrupted"
-                        for step in self.task["steps"]:
-                            if step["status"] == "running":
-                                step["status"] = "exception"
-                    if changed:
-                        self.history.save_task(chat_id, self.task)
                     panel = ActivityPanel()
                     self.task_panel = panel
                     self.transcript.insertWidget(self.transcript.count() - 1, panel)
                     self.show_task_progress(panel, self.task)
                     self.update_task_correction(panel, self.task)
-                _, pending = self.history.execution_context(chat_id)
-                if pending and (not self.task or self.task["status"] in {"completed", "cancelled"}):
+                if self.session.has_pending_execution():
                     panel = ActivityPanel()
                     self.transcript.insertWidget(self.transcript.count() - 1, panel)
                     panel.add_event("Hay un encargo interrumpido. Puedes pedir que continúe.")
@@ -1375,7 +1364,6 @@ class StoneBot(QMainWindow):
             texto = "Resume los puntos principales de " + (words[1] if len(words) > 1 else
                                                          "los adjuntos o la conversación, según esté disponible.")
         task = self.task
-        active_task = task is not None and task["status"] not in {"completed", "cancelled"}
         has_attachments = bool(files) or has_chat_attachments(self.messages)
         document_query = files and all("project_document" in file for file in files)
         if (not files and task and task["status"] in {"completed", "paused"} and task.get("inventory_folder")
@@ -1383,41 +1371,14 @@ class StoneBot(QMainWindow):
             if self.correct_task(mistake=texto[:600]):
                 self.message.clear()
             return
-        inventory_task = (task is not None and (self.ai.cloud or "inventory_recursive" in task) and ranking_count(task["objective"]) is not None
-                          and not uses_mcp(task["objective"]))
         setup_request = is_setup_request(texto)
-        ordinary = command not in (TASK_COMMANDS | COMMANDS) and not setup_request
-        continue_inventory = (
-            ordinary and not has_attachments and inventory_task and task["status"] != "cancelled"
-            and (active_task or self.ai.cloud)
-            and inventory_followup(texto)
-        )
-        task_turn = (command in TASK_COMMANDS or continue_inventory
-                     or (active_task and not inventory_task and ordinary and not document_query))
-        if task_turn:
-            if has_attachments:
-                self.show_problem("Usa las tareas reanudables en una conversación sin adjuntos.")
-                return
-            if self.history is None:
-                self.show_problem("El historial debe estar disponible para guardar la tarea.")
-                return
-            if command == "/tarea":
-                if len(words) < 2 or active_task:
-                    self.show_problem("Escribe /tarea y el objetivo. Si ya hay una tarea pendiente, usa /cancelar primero.")
-                    return
-                if len(words[1]) > 4000:
-                    self.show_problem("El objetivo admite hasta 4 000 caracteres.")
-                    return
-                task = new_task(words[1])
-            elif command in {"/reanudar", "/cancelar"}:
-                if not active_task:
-                    self.show_problem("No hay una tarea pendiente en este chat. Vuelve a pedir lo que quieres hacer.")
-                    return
-                if command == "/cancelar" and len(words) != 1:
-                    self.show_problem("Para cerrar la tarea pendiente, escribe solo /cancelar.")
-                    return
-            task = dict(task, status="cancelled" if command == "/cancelar" else "running")
-        elif setup_request:
+        try:
+            task = self.session.prepare_task(texto, has_attachments=has_attachments,
+                                             document_query=document_query, setup_request=setup_request)
+        except ValueError as exc:
+            self.show_problem(str(exc))
+            return
+        if setup_request and task is None:
             if files:
                 self.show_problem("Envía la configuración MCP por separado, sin adjuntos.")
                 return
@@ -1435,17 +1396,17 @@ class StoneBot(QMainWindow):
         texto = texto or "Revisa los archivos adjuntos."
         created = time.time_ns()
         self.problem.hide()
-        self.save_message("user", texto, created, files, task=task if task_turn else None)
+        saved = self.session.save_input(texto, created, files, task=task)
+        self.show_save_status(saved)
         self.append_message(texto, user=True, created=created, index=len(self.messages) - 2, attachments=files)
-        if task_turn:
+        if task is not None:
             if not self.history_write_ok:
                 self.show_problem("No se inició la tarea porque el historial no pudo guardar el estado.")
                 return
-            self.task = task
             if task["status"] == "cancelled":
                 self.render_chat(self.chat_id, self.messages[1:])
                 return
-        self.start_turn(task=task if task_turn else None)
+        self.start_turn(task=task)
 
     def edit_message(self, index, body):
         if self.thread is not None or self.chat_id is None or self.history is None:

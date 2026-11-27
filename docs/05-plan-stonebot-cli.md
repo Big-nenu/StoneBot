@@ -90,6 +90,6 @@ El paso 5 conserva las decisiones sobre enrutamiento, selección de herramientas
 ## 7. Lista de avance
 
 - [x] 4.1 Perfil de conversación y bloqueo
-- [ ] 4.2 Apertura y entrada de tareas compartidas
+- [x] 4.2 Apertura y entrada de tareas compartidas
 - [ ] 4.3 Adaptador de terminal y permisos
 - [ ] 4.4 Comandos, documentación y verificación de aceptación
