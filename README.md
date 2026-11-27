@@ -181,6 +181,8 @@ Esta versión admite texto con Ollama local. Para probar un servidor MCP, provis
 
 Para habilitar el descubrimiento MCP del paso 5.3A, ejecuta `$env:STONEBOT_DISCOVER_MCP = '1'` antes de iniciar `python -B app.py` o `python -B stonebot_cli.py`. El chat ordinario con Ollama local verificado ofrece un catálogo inicial de fuentes habilitadas y puede buscar otras herramientas con `descubrir_mcp`. Se siguen aplicando los permisos por operación y los límites de fuentes privadas. El valor `0` conserva el enrutamiento anterior para comparar resultados. [Diseño y evaluación A/B](docs/09-visibilidad-mcp.md)
 
+El núcleo valida cada llamada contra el catálogo de la ronda y el esquema de la herramienta antes de solicitar permisos. Las lecturas MCP verificadas admiten un reintento acotado ante fallos transitorios. `--verbose` registra el motivo del reintento y distingue validación, denegación, reutilización e incertidumbre. [Validación y recuperación](docs/10-validacion-recuperacion.md)
+
 ### Modelo y proveedor
 
 En el engrane de **Configuración**, abre **Modelo y proveedor de IA**. Usa **Ollama** para conversar en el equipo local o **OpenRouter** para usar un modelo en la nube. Pulsa **Cargar modelos** y busca por nombre o identificador. En OpenRouter, **Solo gratuitos** muestra las variantes `:free` y el selector gratuito si están disponibles en el catálogo de modelos compatibles con herramientas. Selecciona un resultado para rellenar el identificador. StoneBot recuerda el último modelo de cada proveedor en este equipo. El indicador de la parte inferior izquierda también abre esta configuración.
@@ -441,7 +443,7 @@ Después de una llamada, el catálogo del agente conserva las operaciones compat
 | Cómo StoneBot abre una conversación y ejecuta un turno desde la terminal | [`stonebot_cli.py`](stonebot_cli.py) y [`cli_turn_runner.py`](cli_turn_runner.py) |
 | Cómo se prepara un turno y se guarda, regenera o restaura una respuesta | [`chat_session.py`](chat_session.py) mantiene la conversación y coordina el historial. |
 | Cómo se prepara y abrevia el contexto que recibe el modelo | [`operational_context.py`](operational_context.py) y [`chat_execution.py`](chat_execution.py) |
-| Cómo SB ejecuta el turno y solicita permisos | [`turn_worker.py`](turn_worker.py) ejecuta el motor. [`turn_events.py`](turn_events.py) define sus eventos y su resultado. |
+| Cómo SB ejecuta el turno y solicita permisos | [`turn_worker.py`](turn_worker.py) ejecuta el motor. [`tool_loop.py`](tool_loop.py) valida el catálogo y usa [`tool_validation.py`](tool_validation.py) para los argumentos. [`turn_events.py`](turn_events.py) define sus eventos y su resultado. |
 | Cómo la ventana recibe los eventos y confirma permisos | [`qt_turn_runner.py`](qt_turn_runner.py) conecta el motor con Qt. |
 | Cómo comprobar el turno de chat sin abrir la ventana | [`tests/test_engine_headless.py`](tests/test_engine_headless.py), con el modelo simulado de [`tests/engine_harness.py`](tests/engine_harness.py) |
 | Cómo SB registra los ejecutores, comprueba las herramientas ofrecidas en cada ronda y devuelve los resultados al modelo | [`tool_loop.py`](tool_loop.py), clases `TurnTools` y `ToolLoop` |

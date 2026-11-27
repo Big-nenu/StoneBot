@@ -72,6 +72,18 @@ def test_timeout_capture():
         assert launch("modelo", "D03", Path.cwd(), {}, "prueba", 1) == ("Eco", "parcial", None, True)
 
 
+def test_retry_then_next_page():
+    name = "mcp_inventario_consultar_inventario_0bad0b82fdd6"
+    first = {"tool": name, "status": "respuesta recibida", "reintento_mcp": "error_transitorio",
+             "result": json.dumps({"cursor": 1, "next_cursor": 2, "elementos": ["primera"]})}
+    second = {"tool": name, "status": "respuesta recibida",
+              "result": json.dumps({"cursor": 2, "elementos": ["PÁGINA-SEGUNDA-472"]})}
+    row = {"caso": "D08", "cierre": {"estado": "finished"}, "diario": [{"pasos": [first, second]}]}
+    assert grade(row)["estado"] == "revision_manual"
+    del first["reintento_mcp"]
+    assert grade(row)["estado"] == "no_cumple"
+
+
 def test_reserved_fixtures():
     script = Path(__file__).with_name("eval_agent_mcp.py").resolve()
     assert not set(CASES).intersection(RESERVED_CASES)
@@ -161,6 +173,12 @@ async def test_pool_trace():
             assert [entry[2].name for entry in entries.values()] == ["mark"]
             assert metrics == {"configuracion": 1}
         assert events == [("mcp_conexion", state) for state in ("intento", "exito", "reutilizada", "exito")]
+        try:
+            await pool.entries("example", {**server, "read_tools": ["mark"]})
+        except ConnectionError:
+            pass
+        else:
+            raise AssertionError("La caché MCP no debe reutilizar otra configuración.")
     finally:
         pool.close()
 
@@ -169,6 +187,7 @@ if __name__ == "__main__":
     test_classification()
     test_stuck_cursor()
     test_timeout_capture()
+    test_retry_then_next_page()
     test_reserved_fixtures()
     asyncio.run(test_trace_decisions())
     asyncio.run(test_pool_trace())

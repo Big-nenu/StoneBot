@@ -62,14 +62,17 @@ async def test_shared_worker():
         names = [item.__name__ if callable(item) else item.function.name for item in kwargs["tools"]]
         system = kwargs["messages"][0]["content"]
         assert "privado" not in system and "C:\\datos privados" not in str(kwargs["tools"])
-        assert DISCOVER_NAME in names and all("oculta" not in name for name in names)
+        assert all("oculta" not in name for name in names)
+        if len(kwargs["messages"]) > 4:
+            assert not names
+            return response(final="Revisado.")
+        assert DISCOVER_NAME in names
         aliases.update({name.split("_")[2]: name for name in names if name.startswith("mcp_sierra_")})
         if len(kwargs["messages"]) == 2:
             return response((DISCOVER_NAME, {"servidor": "sierra"}))
         if len(kwargs["messages"]) == 4:
             assert session.call_tool.await_count == 0 and not events.confirmations
-            return response((aliases["denegar"], {}), (aliases["autorizar"], {}))
-        return response(final="Revisado.")
+            return response((aliases["autorizar"], {}), (aliases["denegar"], {}), (aliases["medir"], {}))
 
     try:
         with (patch.dict("os.environ", {"STONEBOT_DISCOVER_MCP": "1"}),
@@ -78,7 +81,7 @@ async def test_shared_worker():
             worker = Worker([], pool=pool, events=events)
             worker.local_ollama = True
             assert await worker.chat_with_tools(SimpleNamespace(chat=chat), list(MESSAGES), {}) == "Revisado."
-            assert events.confirmations == [("sierra", "denegar", {}), ("sierra", "autorizar", {})]
+            assert events.confirmations == [("sierra", "autorizar", {}), ("sierra", "denegar", {})]
             session.call_tool.assert_awaited_once_with("autorizar", {})
             session.list_tools.assert_awaited_once()
 

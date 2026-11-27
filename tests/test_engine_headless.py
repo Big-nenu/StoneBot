@@ -158,8 +158,9 @@ def test_cli_trace_redacts_and_reports_repeat(root):
     assert result.outcome()[0][0] == "finished"
     assert [event["herramientas"] for event in events if event["evento"] == "peticion_modelo"][-1] == []
     assert events[-1]["motivo"] == "llamada_repetida"
-    [tool_result] = [event for event in events if event["evento"] == "resultado"]
-    assert tool_result["resultado"]["campos"]["estado"] == "ok"
+    tool_results = [event for event in events if event["evento"] == "resultado"]
+    assert [event["estado"] for event in tool_results] == ["ejecutada", "reutilizada"]
+    assert all(event["resultado"]["campos"]["estado"] == "ok" for event in tool_results)
     assert "README.md" not in json.dumps(events) and "Los informes" not in json.dumps(events)
     hidden = trace_payload("resultado", {"resultado": secret, "argumentos": {"text": secret, secret: "otro"}})
     assert secret not in json.dumps(hidden)

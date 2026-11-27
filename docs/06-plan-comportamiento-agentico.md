@@ -1,6 +1,6 @@
 # Plan del paso 5 · Comportamiento agéntico de StoneBot
 
-- **Estado** — Pasos 5.1, 5.2, 5.2.1 y 5.3A completados. Siguiente paso planificado 5.4.
+- **Estado** — Pasos 5.1, 5.2, 5.2.1, 5.3A y 5.4 completados. Siguiente paso planificado 5.6.
 - **Fecha** — 27 de noviembre de 2026.
 - **Base** — `refactor/stonebot-core` en `307b40a`, con los pasos 0 a 4 completados.
 - **Objetivo** — Que un turno normal pueda descubrir recursos, ejecutar pasos autorizados, recuperarse de fallos y entregar una respuesta comprobable. StoneBot CLI servirá para medir los cambios con Nemotron y Qwen. Desktop y CLI seguirán usando el mismo `ChatSession`, `Worker` y `ToolLoop`.
@@ -94,6 +94,8 @@ Validar el nombre contra el catálogo efectivo y los argumentos contra su esquem
 | Fallo transitorio | Reintentar de forma acotada solo para operaciones de lectura verificadas o cuando el ejecutor pueda demostrar que la llamada con efecto aún no se envió. |
 | Efecto enviado con resultado incierto | Conservar el estado y el ID en el diario. Buscar evidencia con una verificación autorizada. Evitar el reenvío automático y mostrar lo pendiente. |
 
+El [informe del paso 5.4](10-validacion-recuperacion.md) documenta los controles introducidos, las pruebas simuladas y las 30 ejecuciones con descubrimiento MCP activo.
+
 ### 2.5 Presupuesto y motivos de cierre
 
 - Crear un presupuesto de turno que atraviese descubrimiento, cambio de fuente, reanudación, planificación, reparación, auditoría y síntesis. Contabilizar por separado las peticiones al proveedor, las llamadas propuestas, las despachadas, la falta de progreso y el tiempo transcurrido. Una tanda consume presupuesto por llamada y queda sujeta a un tamaño máximo. Los turnos internos usan el mismo presupuesto del turno. El tiempo que el usuario emplea en responder a una confirmación se registra aparte.
@@ -157,7 +159,7 @@ En Desktop, repetir con perfil temporal una consulta directa, un encargo con her
 - [x] 5.2 Contexto operativo
 - [x] 5.2.1 Instrumentación y evaluación
 - [x] 5.3A Visibilidad y descubrimiento MCP
-- [ ] 5.4 Validación y recuperación
+- [x] 5.4 Validación y recuperación
 - [ ] 5.6 Presupuesto y cierre
 - [ ] 5.5 Interfaz de procesos
 - [ ] 5.7 Evidencia y respuesta

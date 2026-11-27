@@ -1,5 +1,6 @@
 """Configuración y sesiones MCP de StoneBot."""
 import argparse
+import asyncio
 import hashlib
 import json
 import os
@@ -18,6 +19,7 @@ from stonebot_engine import default_root
 from stonebot_engine.safety import check_path, cli_root
 from mcp_credentials import CredentialAccessError, credential_target, delete_key, read_key
 from mcp_permissions import revoke, safe_read
+from tool_validation import InvalidToolArguments, validate_arguments
 
 
 class MissingTokenError(ValueError):
@@ -303,30 +305,63 @@ def check_tool_paths(value):
             check_tool_paths(item)
 
 
-async def call_external(entry, arguments, confirm, *, on_start=None, on_result=None, on_partial=None):
-    from jsonschema import ValidationError, validators
-    from referencing import Registry
+def transient_mcp_error(error):
+    import httpx
+    from mcp.shared.exceptions import McpError
+
+    return (isinstance(error, (TimeoutError, ConnectionError, httpx.TimeoutException, httpx.NetworkError))
+            or isinstance(error, McpError) and error.error.code in {408, 429, 502, 503, 504})
+
+
+async def call_external(entry, arguments, confirm, *, on_start=None, on_result=None, on_partial=None,
+                        on_rejected=None, on_retry=None, reconnect=None, on_evidence=None):
 
     session, name, tool, auto = entry
+
+    def rejected(code, detail):
+        if on_rejected is not None:
+            on_rejected(code)
+        return detail
+
     try:
-        schema = tool.inputSchema
-        validators.validator_for(schema)(schema, registry=Registry()).validate(arguments)
-    except ValidationError:
-        return "Los argumentos no coinciden con el esquema de la herramienta MCP."
+        validate_arguments(tool.inputSchema, arguments)
+    except InvalidToolArguments as exc:
+        return rejected("ESQUEMA_NO_DISPONIBLE" if exc.unavailable else "ARGUMENTOS_INVALIDOS", str(exc))
     try:
         check_tool_paths(arguments)
     except (OSError, RuntimeError, ValueError):
-        return "La herramienta MCP recibió una ruta local bloqueada."
+        return rejected("DESTINO_BLOQUEADO", "La herramienta MCP recibió una ruta local bloqueada.")
     if not (auto and safe_read(tool, arguments)) and not await confirm(name, tool.name, arguments):
-        return "El usuario no autorizó esta operación MCP."
+        return rejected("OPERACION_DENEGADA", "El usuario no autorizó esta operación MCP.")
     if on_start is not None:
         on_start()
-    reply = await session.call_tool(tool.name, arguments)
+    can_retry = on_retry is not None and safe_read(tool, arguments)
+    try:
+        reply = await session.call_tool(tool.name, arguments)
+    except Exception as exc:
+        if not (can_retry and reconnect is not None and transient_mcp_error(exc)):
+            raise
+        on_retry("transporte_transitorio")
+        async with asyncio.timeout(5):
+            session = await reconnect()
+            reply = await session.call_tool(tool.name, arguments)
+    else:
+        if can_retry and reply.isError:
+            metadata = reply.structuredContent or {}
+            error_text = "\n".join(item.text for item in reply.content if item.type == "text")[:8000]
+            if metadata.get("retryable") is True or re.search(
+                    r"\b(?:transient|temporarily unavailable|fallo transitorio|error transitorio|temporalmente no disponible)\b",
+                    error_text, re.I):
+                on_retry("error_transitorio")
+                async with asyncio.timeout(5):
+                    reply = await session.call_tool(tool.name, arguments)
     result = "\n".join(item.text for item in reply.content if item.type == "text")
     if reply.structuredContent is not None and not result:
         result = json.dumps(reply.structuredContent, ensure_ascii=False)
+    metadata = reply.structuredContent or {}
+    if on_evidence is not None and not reply.isError:
+        on_evidence(metadata, result)
     if on_partial is not None:
-        metadata = reply.structuredContent or {}
         lines = result.splitlines()
         if len(result) > 8000:
             on_partial("StoneBot recortó la respuesta de la herramienta.")

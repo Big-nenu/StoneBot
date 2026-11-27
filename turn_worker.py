@@ -1,6 +1,7 @@
 """Ejecución de un turno del chat y coordinación de sus herramientas."""
 import asyncio
 from collections import Counter
+import hashlib
 import inspect
 import json
 import os
@@ -161,6 +162,7 @@ class Worker:
         self.messages = messages
         self.pool = pool
         self.permission = None
+        self.operation_denied = False
         self.identity_enabled = identity_enabled
         self.memory = memory
         self.task = task
@@ -631,6 +633,7 @@ class Worker:
             await self.events.confirm(request)
             self.check_pause()
             if not request["approved"]:
+                self.operation_denied = True
                 raise IsolationError("La operación fue denegada.")
             files = LocalFiles(load_file_settings())
             files.check(path)
@@ -1567,7 +1570,15 @@ class Worker:
                 restricted_specs.append(skill_spec)
             if self.task is not None:
                 restricted_specs.append(REPORT)
-            catalog = TurnTools(specs, local_aliases)
+
+            def contract(name):
+                entry = external.get(name) or memory_tools.get(name)
+                if entry:
+                    tool = entry[2]
+                    return tool.inputSchema, ("cursor",) if name in external and safe_read(tool) else ()
+                return None, ("cursor",) if name == "consultar_proceso" else ()
+
+            catalog = TurnTools(specs, local_aliases, contract)
             local_reads = {item.function.name for item in restricted_specs} | {RECALL.function.name}
             skill_scope = (local_reads if visibility else
                            local_reads | {name for name, entry in external.items() if safe_read(entry[2])})
@@ -1577,6 +1588,9 @@ class Worker:
                 private_scope.add(query_experiences.__name__)
             process_scope = private_scope | {tool.function.name for tool in process_specs}
             memory_scope = private_scope | set(memory_tools)
+            retry_requests = set()
+            stalled_pages = set()
+            uncertain_effect = bool(journal and journal.resumed and journal.unconfirmed())
             if save_request:
                 memory_scope.update(external)  # Escritura del Markdown solicitado, con permiso y destino validados.
 
@@ -1584,6 +1598,11 @@ class Worker:
                 catalog.limit_to(permitted)
                 if journal:
                     journal.state["tool_boundary"] = sorted(catalog.boundary)
+
+            def limit_to_verification():
+                if visibility:
+                    visibility.selected = None
+                limit_tools(local_reads | {alias for alias, entry in external.items() if safe_read(entry[2])})
 
             if journal and journal.resumed and "tool_boundary" in journal.state:
                 limit_tools(journal.state["tool_boundary"])
@@ -1593,6 +1612,8 @@ class Worker:
                 limit_tools(private_scope)
             elif registered_read_started and not (journal and journal.resumed and "tool_boundary" in journal.state):
                 limit_tools(local_reads)
+            if uncertain_effect:
+                limit_to_verification()
             loop = ToolLoop(messages, final_round=final_round, tools=catalog,
                             max_distinct_calls=rounds if ordinary_turn else 0)
 
@@ -1628,11 +1649,13 @@ class Worker:
                     options["temperature"] = 0
                 self.events.activity(f"Esperando la respuesta de {PROVIDERS[self.ai.provider]}…")
                 round_tools = catalog.offer(finishing=finishing)
-                if visibility and catalog.permits(DISCOVER_MCP.function.name):
+                can_discover = catalog.permits(DISCOVER_MCP.function.name)
+                if visibility and not finishing and (can_discover or uncertain_effect):
                     await visibility.collect()
                     catalog.register(visibility.entries.keys() - catalog.handlers.keys(), execute_external)
-                    aliases = visibility.offered(catalog.boundary)
+                    aliases = [alias for alias in visibility.offered(catalog.boundary) if alias not in catalog.blocked]
                     round_tools = catalog.select([*round_tools, *(visibility.specs[alias] for alias in aliases)])
+                if visibility and can_discover:
                     instruction = mcp_manifest(visible_servers, external, aliases)
                     if request_messages[0]["role"] == "system":
                         first = request_messages[0]
@@ -1706,7 +1729,7 @@ class Worker:
                 if self.task is not None:
                     calls = reply.tool_calls or []
                     reporting = (len(calls) == 1 and calls[0].function.name == REPORT.function.name
-                                 and catalog.permits(REPORT.function.name))
+                                 and not isinstance(catalog.validate(REPORT.function.name, calls[0].function.arguments), ToolResult))
                     if reporting or not calls:
                         can_repair = repairs < 2 and task_calls < 12 and round_index + 1 < rounds
                         repair_messages = messages if can_repair else None
@@ -1735,10 +1758,13 @@ class Worker:
                     return reply.content or "(Sin respuesta)"
                 if catalog.permits(RESUME.function.name):
                     for call in reply.tool_calls:
-                        if call.function.name == RESUME.function.name:
+                        if (call.function.name == RESUME.function.name and
+                                not isinstance(catalog.validate(call.function.name, call.function.arguments), ToolResult)):
                             raise ResumeChatWork(call.function.arguments.get("refresh_first", True) is True)
                 if skill_spec and catalog.permits(local_skills.LOAD_SKILL) and any(
-                        call.function.name == local_skills.LOAD_SKILL for call in reply.tool_calls):
+                        call.function.name == local_skills.LOAD_SKILL and
+                        not isinstance(catalog.validate(call.function.name, call.function.arguments), ToolResult)
+                        for call in reply.tool_calls):
                     catalog.select([skill_spec])
                     return reply
                 reading_registered = registered_read_started or any(
@@ -1754,14 +1780,16 @@ class Worker:
                     limit_tools(memory_scope)
                 if can_select_source and catalog.permits(SELECT_SOURCE.function.name) and not reading_registered:
                     for call in reply.tool_calls:
-                        if call.function.name == SELECT_SOURCE.function.name:
+                        if (call.function.name == SELECT_SOURCE.function.name and
+                                not isinstance(catalog.validate(call.function.name, call.function.arguments), ToolResult)):
                             selected = call.function.arguments.get("fuente")
                             if isinstance(selected, str) and selected in TURN_SOURCES:
                                 self.events.activity(f"Fuente seleccionada · {TURN_SOURCES[selected]}.")
                                 return await self.chat_with_tools(client, routing_messages, skills, source=selected)
                 if can_start_task and catalog.permits(START_TASK.function.name) and not used_mcp and not reading_registered:
                     for call in reply.tool_calls:
-                        if call.function.name == START_TASK.function.name:
+                        if (call.function.name == START_TASK.function.name and
+                                not isinstance(catalog.validate(call.function.name, call.function.arguments), ToolResult)):
                             objective = call.function.arguments.get("objetivo")
                             if isinstance(objective, str) and 0 < len(objective.strip()) <= 4000:
                                 raise StartSavedTask(objective.strip())
@@ -1814,7 +1842,7 @@ class Worker:
                 return ToolResult(self.load_turn_skill(arguments, skills))
 
             async def execute_external(external_name, arguments):
-                nonlocal used_mcp, task_calls
+                nonlocal used_mcp, task_calls, uncertain_effect
                 _, server_name, tool, _ = external[external_name]
                 if skill_loaded and not safe_read(tool, arguments):
                     return ToolResult("La Skill solo dispone de lecturas autorizadas.", reuse=False)
@@ -1828,6 +1856,10 @@ class Worker:
                 step = None
                 destination = None
                 verify_path = None
+                code = None
+                hint = ""
+                read = safe_read(tool, arguments)
+                retry_key = (external_name, json.dumps(arguments, sort_keys=True)) if read else None
                 if save_request:
                     try:
                         if "markdown" not in pending:
@@ -1879,13 +1911,65 @@ class Worker:
                     nonlocal outcome
                     outcome = value
 
+                def on_rejected(value):
+                    nonlocal code, hint
+                    code = value
+                    if code == "OPERACION_DENEGADA":
+                        hint = "Informa la denegación. No vuelvas a solicitar esa operación ni intentes una alternativa."
+                    elif code == "DESTINO_BLOQUEADO":
+                        hint = "Usa únicamente un destino compatible con el alcance autorizado."
+
+                def on_retry(reason):
+                    self.check_pause()
+                    retry_requests.add(retry_key)
+                    if journal:
+                        journal.state["steps"][-1]["reintento_mcp"] = reason
+                        journal.persist()
+                    if self.trace:
+                        self.trace("mcp_reintento", peticion=self.trace_request, herramienta=external_name, motivo=reason)
+
+                async def reconnect():
+                    if load_servers().get(server_name) != servers[server_name]:
+                        raise ConnectionError("La configuración MCP cambió.")
+                    entries = await self.pool.entries(server_name, servers[server_name])
+                    previous = external[external_name]
+                    entry = next((item for item in entries.values() if item[2:] == previous[2:]), None)
+                    if entry is None:
+                        raise ConnectionError("La herramienta MCP cambió.")
+                    external[external_name] = entry
+                    self.check_pause()
+                    return entry[0]
+
+                def on_evidence(metadata, content):
+                    nonlocal code, hint
+                    if not metadata and len(content) <= 8000:
+                        try:
+                            metadata = json.loads(content)
+                        except ValueError:
+                            return
+                    if not isinstance(metadata, dict):
+                        return
+                    cursor = metadata.get("cursor")
+                    if type(cursor) not in (int, str) or not any(
+                            type(metadata.get(key)) is type(cursor) and metadata[key] == cursor
+                            for key in ("next_cursor", "nextCursor", "next_page_token", "nextPageToken")):
+                        return
+                    page = (external_name, hashlib.sha256(content.encode()).digest())
+                    code = "CURSOR_ESTANCADO"
+                    hint = ("El cursor siguiente coincide con el devuelto. La misma página cuenta como una sola "
+                            "observación. Informa el resultado parcial y evita deducir un total.")
+                    if page in stalled_pages:
+                        catalog.block(external_name)
+                    stalled_pages.add(page)
+
                 try:
-                    self.permission = (permission_signature(servers[server_name], tool)
-                                       if safe_read(tool, arguments) else None)
+                    self.permission = permission_signature(servers[server_name], tool) if read else None
                     result = await call_external(external[external_name], arguments, self.confirm_external,
                                                  on_start=on_start,
-                                                 on_result=on_result if (journal or cloud_read_options or learn or
-                                                                         step is not None or destination is not None) else None,
+                                                 on_result=on_result, on_rejected=on_rejected,
+                                                 on_retry=on_retry if read and retry_key not in retry_requests else None,
+                                                 reconnect=reconnect if isinstance(self.pool, McpPool) else None,
+                                                 on_evidence=on_evidence if read else None,
                                                  on_partial=(lambda reason: step.update(partial=reason)) if step is not None else None)
                 except TaskPaused:
                     raise
@@ -1937,9 +2021,16 @@ class Worker:
                     status_label = "sin ejecutar"
                 elif outcome in {"timeout", "exception"}:
                     status_label = "sin confirmar"
+                    code = "LECTURA_NO_DISPONIBLE" if read else code
                 elif outcome == "tool_error":
                     status_label = "error de herramienta"
-                if journal and started and not safe_read(tool, arguments):
+                    code = "ERROR_HERRAMIENTA"
+                if started and not read and outcome in {"timeout", "exception", "tool_error"} and not verified:
+                    uncertain_effect = True
+                    code = "EFECTO_SIN_CONFIRMAR"
+                    hint = "La operación fue enviada. Verifica el efecto mediante una lectura autorizada antes de repetir."
+                    status_label = "sin confirmar"
+                if journal and started and not read:
                     if verified:
                         status_label = "verificada en disco"
                         result += "\n[StoneBot: contenido comprobado en el archivo autorizado.]"
@@ -1948,7 +2039,7 @@ class Worker:
                     else:
                         status_label = "sin confirmar"
                         result += "\n[StoneBot: el efecto de esta operación sigue sin verificación.]"
-                return ToolResult(result, status=status_label)
+                return ToolResult(result, status=status_label, code=code, hint=hint)
 
             async def execute_memory(name, arguments):
                 if save_request and "memory" not in pending:
@@ -2017,7 +2108,10 @@ class Worker:
 
             async def execute_discovery(name, arguments):
                 self.used_external_source = True
-                result = await visibility.find(arguments, catalog.boundary)
+                boundary = catalog.boundary
+                if catalog.blocked:
+                    boundary = (set(external) if boundary is None else boundary) - catalog.blocked
+                result = await visibility.find(arguments, boundary)
                 return ToolResult(result, reuse=False)
 
             catalog.register([tool.function.name for tool in process_specs], execute_process)
@@ -2043,6 +2137,7 @@ class Worker:
                 return None
 
             def before_call(name, arguments, remaining):
+                nonlocal uncertain_effect
                 if name == RECALL.function.name:
                     return None
                 read = (name in ("consultar_proceso", DISCOVER_MCP.function.name) or name in registered_reads
@@ -2051,24 +2146,41 @@ class Worker:
                         (name in external and safe_read(external[name][2], arguments)) or
                         (name in memory_tools and name in {"get_context", "query_memory", "list_memories",
                                                            "bridge_memory", "conclusion_history"}))
+                if uncertain_effect and not read:
+                    return ToolResult("Quedó una operación sin confirmar. Solo se permiten lecturas de verificación.",
+                                      reuse=False, status="sin ejecutar", code="EFECTO_SIN_CONFIRMAR")
+                if not journal:
+                    return None
                 if name in PROCESS_NAMES:
                     limit_tools(process_scope)
                 elif name == local_skills.LOAD_SKILL:
                     limit_tools(skill_scope)
                 if not read and (previous := journal.repeated_effect(name, arguments)):
+                    if previous["status"] == "sin confirmar":
+                        uncertain_effect = True
+                        limit_to_verification()
                     return ToolResult(f"Acción omitida para evitar duplicados. Estado guardado: {previous['status']}.",
-                                      reuse=False)
+                                      reuse=False, status="sin ejecutar", code="EFECTO_YA_REGISTRADO")
                 if (name in registered_reads and registered_reads[name].private) or name in activity_tools or name in PROCESS_NAMES:
                     journal.state["protected"] = True
                     journal.state["activity_read" if name in activity_tools else "file_read"] = True
                 return journal.start(name, arguments, not read, remaining)
+
+            def after_tool(name, result):
+                nonlocal uncertain_effect
+                if self.operation_denied:
+                    limit_tools(set())
+                if (name in PROCESS_NAMES or name in memory_tools) and isinstance(result, ToolResult):
+                    uncertain_effect |= result.status == "sin confirmar" and name != "consultar_proceso"
+                if uncertain_effect:
+                    limit_to_verification()
 
             def trace_result(event, **fields):
                 self.trace(event, peticion=self.trace_request, **fields)
 
             answer = await loop.run(request_round, execute_control, check_pause=self.check_pause,
                                     on_repeat=on_repeat, after_batch=after_batch, activity=self.events.activity,
-                                    before_call=before_call if journal else None,
+                                    before_call=before_call, after_tool=after_tool,
                                     after_call=journal.observe if journal else None,
                                     trace=trace_result if self.trace else None)
             if answer is not None:
@@ -2325,6 +2437,8 @@ class Worker:
         return f"Guardado y verificado en `{destination}`.", True
 
     async def confirm_external(self, server, tool, arguments, *, local=False):
+        if self.operation_denied:
+            return False
         signature = None if local else self.permission
         if signature and allowed(server, tool, signature):
             return True
@@ -2332,6 +2446,7 @@ class Worker:
                    "can_remember": bool(signature), "remember": False, "local": local}
         self.events.activity(f"Esperando autorización para {tool}…")
         await self.events.confirm(request)
+        self.operation_denied = not request["approved"]
         if request["approved"] and request["remember"] and signature:
             remember(server, tool, signature)
         return request["approved"]

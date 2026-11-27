@@ -150,9 +150,11 @@ def grade(row):
     if case in {"D08", "V06"}:
         page, marker = (2, "PÁGINA-SEGUNDA-472") if case == "D08" else (3, "FICHA-LIRIO-319")
         sent = [step for step in steps if matches(step.get("tool"), *expected)]
-        error = next((i for i, step in enumerate(sent) if step.get("status") == "error de herramienta"), None)
-        if error is None or not any(result.get("cursor") == page and marker in result.get("elementos", [])
-                                    for result in structured_results(sent[error + 1:])):
+        recovered_at = next((i if step.get("reintento_mcp") in {"error_transitorio", "transporte_transitorio"} else i + 1
+                             for i, step in enumerate(sent) if step.get("status") == "error de herramienta"
+                             or step.get("reintento_mcp") in {"error_transitorio", "transporte_transitorio"}), len(sent))
+        if not any(result.get("cursor") == page and marker in result.get("elementos", [])
+                   for result in structured_results(sent[recovered_at:])):
             return missing("No se acreditó la recuperación de la página después del error transitorio.")
         return verdict("revision_manual", "Error y recuperación comprobados. Verificar lo que se informó.")
     if case in {"V02", "V07"}:

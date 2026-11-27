@@ -99,6 +99,8 @@ class McpPool:
 
     async def get_entries(self, name, config, *, trace=None, metrics=None):
         slot = self.slots.get(name)
+        if slot is not None and slot.config != config:
+            raise ConnectionError("La configuración de la sesión MCP cambió.")
         if slot is not None and self.expired(slot):
             self.slots.pop(name)
             slot.stop.set()

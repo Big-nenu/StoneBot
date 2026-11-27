@@ -2,12 +2,23 @@
 import json
 from dataclasses import dataclass
 
+from ollama._utils import convert_function_to_tool
+
+from tool_validation import InvalidToolArguments, validate_arguments
 
 @dataclass(frozen=True)
 class ToolResult:
     content: str
     reuse: bool = True
     status: str = "respuesta recibida"
+    code: str | None = None
+    hint: str = ""
+
+    def model_text(self, *, reused=False):
+        notes = ([f"[{self.code}] {self.hint}".rstrip()] if self.code else [self.hint] if self.hint else [])
+        if reused:
+            notes.append("[SIN_PROGRESO] Se reutilizó la observación anterior. No se ejecutó otra llamada.")
+        return "\n".join([self.content, *notes])
 
 
 @dataclass(frozen=True)
@@ -18,12 +29,15 @@ class EndTurn:
 class TurnTools:
     """Catálogo de la ronda, compartido por el proveedor y el ejecutor."""
 
-    def __init__(self, specs, aliases):
+    def __init__(self, specs, aliases, contract=None):
         self.specs = list(specs)
         self.boundary = None
         self.aliases = aliases
         self.available = set()
         self.handlers = {}
+        self.contract = contract
+        self.schemas = {}
+        self.blocked = set()
 
     def register(self, names, handler):
         for name in names:
@@ -39,18 +53,40 @@ class TurnTools:
     def offer(self, *, finishing):
         return self.select([] if finishing else self.specs)
 
+    def block(self, name):
+        self.blocked.add(name)
+        self.available.discard(name)
+
     def select(self, specs):
         selected = []
         self.available = set()
         for spec in specs:
             name = spec.__name__ if callable(spec) else spec.function.name
-            if self.boundary is None or name in self.boundary:
+            if name not in self.blocked and (self.boundary is None or name in self.boundary):
                 self.available.add(name)
+                definition = convert_function_to_tool(spec) if callable(spec) else spec
+                parameters = definition.function.parameters
+                self.schemas[name] = parameters.model_dump(by_alias=True, exclude_none=True) if parameters else {}
                 selected.append(spec)
         return selected
 
     def permits(self, name):
         return self.aliases.get(name, name) in self.available
+
+    def validate(self, name, arguments):
+        name = self.aliases.get(name, name)
+        if name not in self.available:
+            offered = ", ".join(sorted(self.available))
+            return ToolResult(f"Herramienta desconocida o no disponible. Usa un nombre exacto de esta lista: {offered}."
+                              if offered else "No hay herramientas disponibles.",
+                              reuse=False, status="sin ejecutar", code="HERRAMIENTA_NO_DISPONIBLE")
+        schema, decimal_fields = self.contract(name) if self.contract else (None, ())
+        try:
+            return validate_arguments(self.schemas[name] if schema is None else schema, arguments,
+                                      decimal_fields=decimal_fields)
+        except InvalidToolArguments as exc:
+            return ToolResult(str(exc), reuse=False, status="sin ejecutar",
+                              code="ESQUEMA_NO_DISPONIBLE" if exc.unavailable else "ARGUMENTOS_INVALIDOS")
 
 
 class ToolLoop:
@@ -61,7 +97,7 @@ class ToolLoop:
         self.max_distinct_calls = max_distinct_calls
 
     async def run(self, request_round, execute_tool, *, check_pause, on_repeat, after_batch, activity,
-                  before_call=None, after_call=None, trace=None):
+                  before_call=None, after_call=None, after_tool=None, trace=None):
         """Ejecuta rondas hasta obtener una respuesta o alcanzar el límite.
 
         request_round devuelve un mensaje con llamadas, texto final o None para
@@ -83,16 +119,16 @@ class ToolLoop:
             calls = []
             for call in reply.tool_calls:
                 name = call.function.name
-                arguments = call.function.arguments
+                arguments = self.tools.validate(name, call.function.arguments)
                 resolved = self.tools.aliases.get(name, name)
-                key = (resolved, json.dumps(arguments, sort_keys=True)) if self.max_distinct_calls else None
+                key = ((resolved, json.dumps(arguments, sort_keys=True))
+                       if self.max_distinct_calls and not isinstance(arguments, ToolResult) else None)
                 calls.append((name, arguments, resolved, key))
             if self.max_distinct_calls and all(key in results for _, _, _, key in calls):
                 on_repeat()
                 if trace:
                     trace("lote_omitido", ronda=index + 1, estado="repetido")
                 finish_without_tools = True
-                continue
 
             self.messages.append(reply)
             for position, (name, arguments, resolved, key) in enumerate(calls):
@@ -100,9 +136,10 @@ class ToolLoop:
                 disposition = "ejecutada"
                 if not self.tools.permits(name):
                     disposition = "no_disponible"
-                    offered = ", ".join(sorted(self.tools.available))
-                    result = ToolResult(f"Herramienta desconocida o no disponible. Usa un nombre exacto de esta lista: {offered}.",
-                                        reuse=False)
+                    result = self.tools.validate(name, {})
+                elif isinstance(arguments, ToolResult):
+                    disposition = "sin_ejecutar"
+                    result = arguments
                 elif key in results:
                     disposition = "reutilizada"
                     result = results[key]
@@ -115,7 +152,8 @@ class ToolLoop:
                     activity(f"El modelo solicitó {resolved}.")
                     step = None
                     if before_call:
-                        remaining = [item[2] for item in calls[position + 1:] if self.tools.permits(item[0])]
+                        remaining = [item[2] for item in calls[position + 1:]
+                                     if self.tools.permits(item[0]) and not isinstance(item[1], ToolResult)]
                         step = before_call(resolved, arguments, remaining)
                     if isinstance(step, ToolResult):
                         disposition = "omitida"
@@ -125,18 +163,22 @@ class ToolLoop:
                         if step is not None:
                             after_call(step, result.answer if isinstance(result, EndTurn) else result.content,
                                        result.status if isinstance(result, ToolResult) else "respuesta recibida")
+                        if after_tool:
+                            after_tool(resolved, result)
                 if trace:
                     if isinstance(result, ToolResult) and result.status == "sin ejecutar" and disposition == "ejecutada":
                         disposition = "sin_ejecutar"
                     trace("resultado", ronda=index + 1, posicion=position + 1,
                           herramienta=resolved if disposition != "no_disponible" else "(no disponible)",
                           estado=disposition, estado_ejecutor=result.status if isinstance(result, ToolResult) else "cierre",
+                          codigo=result.code if isinstance(result, ToolResult) else None,
                           resultado=result.answer if isinstance(result, EndTurn) else result.content)
                 if isinstance(result, EndTurn):
                     return result.answer
                 if key is not None and result.reuse:
                     results[key] = result
-                self.messages.append({"role": "tool", "tool_name": name, "content": result.content})
+                self.messages.append({"role": "tool", "tool_name": name,
+                                      "content": result.model_text(reused=disposition == "reutilizada")})
             answer = after_batch()
             if answer is not None:
                 return answer

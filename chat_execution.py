@@ -183,8 +183,8 @@ class ChatExecution:
     def repeated_effect(self, name, arguments):
         if self.previous and self.previous[2]["scope"] == self.state["scope"]:
             for step in reversed(self.previous[2]["steps"]):
-                if (step["effect"] and step["tool"] == name and step["arguments"] == arguments
-                        and step["status"] != "sin ejecutar"):
+                if (step["effect"] and step["tool"] == name and step["status"] != "sin ejecutar"
+                        and (step["status"] == "sin confirmar" or step["arguments"] == arguments)):
                     return step
         return next((s for s in reversed(self.state["steps"])
                      if s["effect"] and s["tool"] == name and s["status"] != "sin ejecutar"

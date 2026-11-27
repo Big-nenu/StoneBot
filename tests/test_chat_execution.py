@@ -121,6 +121,7 @@ async def check_saved_state():
     _, pending = History().execution_context(cid)
     resumed = chat_execution.ChatExecution(origin, pending, history.save_execution, "", ["local"])
     assert resumed.repeated_effect("guardar", {"nombre": "a"})
+    assert resumed.repeated_effect("guardar", {"nombre": "b"})
     resumed.resume("continúa")
     assert resumed.repeated_effect("guardar", {"nombre": "a"}) and not resumed.repeated_effect("leer", {})
     try:

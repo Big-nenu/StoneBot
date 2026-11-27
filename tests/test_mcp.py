@@ -141,7 +141,7 @@ def test_cloud_chat_keeps_mcp_out_of_conversation_and_stops_repeated_calls():
         def repeating(**kwargs):
             requests.append(kwargs)
             if not kwargs["tools"]:
-                assert kwargs["messages"][-1]["content"] == "Fuente encontrada"
+                assert kwargs["messages"][-1]["content"].startswith("Fuente encontrada\n[SIN_PROGRESO]")
                 return SimpleNamespace(message=Message(role="assistant", content="Aquí está la fuente."))
             alias, = (spec.function.name for spec in kwargs["tools"] if spec.function.name.startswith("mcp_"))
             arguments = {"query": "PySide6", "max": 1} if len(requests) == 1 else {"max": 1, "query": "PySide6"}
