@@ -1,6 +1,6 @@
 # Plan del paso 5 · Comportamiento agéntico de StoneBot
 
-- **Estado** — Plan aprobado. Pasos 5.1 y 5.2 completados.
+- **Estado** — Plan revisado tras la auditoría independiente. Pasos 5.1 y 5.2 completados; siguiente: 5.2.1 (instrumentación y evaluación).
 - **Fecha** — 27 de noviembre de 2026.
 - **Base** — `refactor/stonebot-core` en `307b40a`, con los pasos 0 a 4 completados.
 - **Objetivo** — Que un turno normal pueda descubrir recursos, ejecutar pasos autorizados, recuperarse de fallos y entregar una respuesta comprobable. StoneBot CLI servirá para medir los cambios con Nemotron y Qwen. Desktop y CLI seguirán usando el mismo `ChatSession`, `Worker` y `ToolLoop`.
@@ -19,7 +19,28 @@ La comparación de Claude con Hermes Agent en el commit `93dd2a4e` señala punto
 | `SYSTEM`, `tasks.py` y `ChatExecution` | El prompt ya contiene reglas de privacidad y algunas obligaciones de verificación. Las tareas guardadas tienen comprobaciones de cobertura. El chat ordinario ya puede encadenar herramientas y guardar efectos pendientes. | Aplicar un criterio común de progreso y evidencia para el chat y las tareas. Conservar la semántica de guardar, pausar y reanudar un encargo. |
 | `stonebot_cli.py`, `cli_turn_runner.py`, `qt_turn_runner.py` | La CLI selecciona modelo por invocación y observa el turno desde el motor. Desktop traduce los eventos al hilo de Qt. | Extender los eventos del núcleo y medir por CLI. Los adaptadores presentan resultados y resuelven confirmaciones. |
 
+### 1.1 Revisión independiente del 27 de noviembre
+
+Claude contrastó el plan con Hermes Agent y con el código de `ae7deab`, y reportó una revisión de los 252 registros de las dos campañas. Se conserva su diagnóstico como evidencia de auditoría, no como nueva ejecución ni recalificación definitiva. Véanse la [línea base](07-linea-base-comportamiento-agentico.md) y su [ampliación](5.1-ampliacion/README.md).
+
+- D04, D08 y V02 tuvieron cero aciertos en 63 intentos. Según la auditoría, el catálogo inicial de esos intentos ofrecía elegir_fuente y herramientas locales/de procesos, pero no herramientas MCP; elegir_fuente se invocó una sola vez. En 252 intentos solo se ofrecieron herramientas MCP en nueve, con doce llamadas; inspect_local_files se invocó 217 veces.
+- D03 sigue sin explicación: se ofreció MCP en 6/6 intentos de los dos modelos originales y en 0/15 de las configuraciones adicionales. No se puede distinguir retrospectivamente entre fallo de arranque, entorno y exclusión por el motor. Registrar la causa antes de clasificar. Una denegación no ejercitada no acredita el control.
+- Los 19 cierres por límite de rondas reportados se concentran en recorridos sin herramientas pertinentes; aumentar las rondas no es la primera intervención. V01 también señala un problema de diseño de herramienta: la búsqueda por nombre no es recursiva por defecto. No corregir únicamente las frases de la matriz.
+- Corrección sobre Hermes, según la nueva lectura de Claude: tool_search, tool_describe y tool_call están siempre activos y presentan un inventario acotado de herramientas diferidas (mínimo de 4000 tokens y 5% del contexto); las herramientas núcleo no se difieren. Lo importante es que el modelo sabe qué capacidades existen, no replicar literalmente sus límites.
+- Las calificaciones adicionales son provisionales y mezclan condiciones de ejecución. No usar el ranking para concluir qué modelo es superior ni atribuir las diferencias al contexto.
+
+**Decisión:** medir primero, hacer visibles las capacidades, recuperar errores reales, ajustar el presupuesto y después simplificar procesos y resultados. Posponer el rediseño amplio del registro y el prompt. No reducir los controles de seguridad.
+
 ## 2. Diseño del núcleo compartido
+
+### 2.0 Instrumentación y evaluación (nuevo paso 5.2.1)
+
+- Añadir trazas redactadas de descubrimiento MCP: servidor habilitado, intento de conexión, éxito/error/timeout, cantidad de herramientas descubiertas, exclusiones por política y motivo de no oferta al modelo. Registrar catálogo efectivo por ronda y llamadas sin exponer datos privados.
+- Clasificar separadamente: (a) fallo de infraestructura cuando una fixture/servidor no arranca o no cumple sus precondiciones por causas externas al motor; (b) fallo del motor cuando una capacidad habilitada y disponible no se descubre, no se ofrece ni es localizable mediante el mecanismo previsto; (c) fallo de selección/ejecución del modelo cuando la capacidad sí es accesible y no la utiliza correctamente. Si la causa es desconocida, registrar diagnóstico pendiente; no excluir automáticamente una medición del denominador porque no se ofreció MCP.
+- Introducir calificadores deterministas por caso para hechos comprobables (trazas, efectos, códigos, cobertura y respuestas esperadas). Cuando la semántica no se pueda calificar de forma fiable, dejar revisión manual explícita, con rúbrica única. D03 exige propuesta de llamada y denegación comprobadas, sin efecto; V04 exige evidencia del cursor repetido y cierre parcial correcto. Conservar los registros históricos y las calificaciones anteriores sin sobrescribirlos.
+- Añadir V05–V08: descubrimiento de fuente por formulación distinta, recuperación de error transitorio, recuperación de evidencia truncada y cobertura de búsqueda con múltiples coincidencias. Variar fixtures y mantener los casos nuevos fuera del ajuste. Los casos V01–V04 usados para diagnóstico dejan de ser validación independiente. Predefinir expectativas y reservar los casos nuevos para la evaluación de candidatos, sin adaptar el motor a sus textos.
+- Medir y documentar una política explícita de contexto por modelo (máximo, valor configurado, valor solicitado y valor observado, diferenciados), incluyendo tokens de entrada/salida cuando Ollama los informe. Revisar la decisión de 5.2 antes de cambiar comportamiento: un valor fijo demasiado pequeño también puede truncar herramientas y resultados. Mantener configuración de Ollama y compactación actuales mientras se instrumenta; cualquier cambio funcional de contexto tendrá prueba separada, valor configurable, límites del modelo y reserva de salida. No afirmar que se conoce la VRAM libre a partir de /api/ps.
+- Entrega: pruebas simuladas de clasificación y trazas, calificadores, fixtures nuevas y piloto acotado de Nemotron/Qwen que permita diagnosticar D03 y verificar la medición. Sin cambios de catálogo, permisos, enrutamiento ni bucle durante este subpaso.
 
 ### 2.1 Contexto operativo y prompt
 
@@ -40,6 +61,10 @@ La [ampliación de la línea base](5.1-ampliacion/README.md) registró siete con
 
 ### 2.2 Catálogo y descubrimiento
 
+**5.3A (prioridad):** ofrecer un manifiesto compacto y acotado de fuentes habilitadas y un mecanismo de descubrimiento siempre localizable, sin depender de que el usuario mencione MCP ni de expresiones regulares para hacer visible una capacidad. Mostrar servidor y nombre de herramienta inequívocos; preparar/cachar el grupo MCP al iniciar la sesión con espera acotada y aislamiento de fallos, sin ejecutar herramientas ni conceder permisos. La elección de fuente y la promoción a tarea no serán requisitos para usar una capacidad pertinente en chat ordinario; conservar las tareas guardadas y los controles explícitos del usuario. Implementar detrás de una bandera configurable para comparación A/B, sin bifurcar Desktop y CLI. La visibilidad no equivale a autorización; excluir metadatos cuya exposición vulnere privacidad y validar cada llamada.
+
+**5.3B (diferido y condicionado a evidencia):** las propuestas de registro canónico, migración de alias y límites persistidos que siguen son un diseño de referencia, no requisitos para 5.3A. Implementar únicamente lo que los datos posteriores justifiquen. No ampliar alcance por una migración.
+
 - Definir un registro de herramientas con identificador canónico, alias de presentación, familia, descripción, esquema, proveedor o servidor, requisitos de disponibilidad, clase de efecto, política de confirmación y clasificación de entrada y salida. Reutilizar los ejecutores existentes. Mantener una distinción verificable entre herramienta registrada, habilitada, ofrecida y autorizada para la llamada concreta.
 - Ofrecer un conjunto inicial acotado de herramientas nativas y un mecanismo para descubrir herramientas habilitadas por capacidad y fuente, con resultados paginados o limitados. Descubrir servidores bajo demanda con `McpPool` y su caché. Una búsqueda puede sugerir una herramienta y ofrecerla en la ronda siguiente si es compatible. Descubrir, cargar una Skill y elegir una fuente nunca conceden un permiso.
 - Usar las reglas de intención actuales como pistas para ordenar candidatos y conservar los controles explícitos del usuario. Los recursos habilitados podrán encontrarse ante distintas formulaciones. Reevaluar relevancia por ronda y conservar las exclusiones de seguridad aplicables durante todo el turno. Tras leer datos privados, impedir que esos datos o su contexto lleguen a destinos incompatibles. Las tandas vuelven a validar permisos y privacidad por llamada, incluso si la herramienta se ofreció al inicio.
@@ -48,7 +73,7 @@ La [ampliación de la línea base](5.1-ampliacion/README.md) registró siete con
 ### 2.3 Terminal y procesos gestionados
 
 - Probar dos operaciones de cara al modelo. **Ejecutar** recibe un programa y una lista de argumentos. **Gestionar ejecución** consulta el estado, lista ejecuciones del chat o solicita cancelar por ID. Traducir ambas a `process_tools.py` y conservar las identidades históricas de lanzamiento, consulta y cancelación. Mantener el supervisor, el diario, los cursores y el aislamiento por chat, perfil y alcance.
-- Aceptar una ruta absoluta o un nombre de ejecutable que se resuelva de forma determinista contra una lista explícita de ubicaciones confiables. Un nombre ambiguo o ausente devuelve un error corregible. Usar el directorio vinculado al proyecto solo si existe y está autorizado para esa operación. En los demás casos se exige un directorio explícito. Confirmar el ejecutable resuelto, los argumentos exactos y el directorio antes de lanzar. No interpretar cadenas como comandos de shell ni convertir automáticamente listas, redirecciones o tuberías en comandos. Mantener los controles de autorización y las restricciones actuales de procesos y archivos.
+- Conservar inicialmente el requisito de ruta absoluta. Diferir la resolución por nombre de ejecutable mediante ubicaciones confiables hasta demostrar que es necesaria; si se implementa, será determinista y no ampliará permisos. Un nombre ambiguo o ausente devuelve un error corregible. Usar el directorio vinculado al proyecto solo si existe y está autorizado para esa operación. En los demás casos se exige un directorio explícito. Confirmar el ejecutable resuelto, los argumentos exactos y el directorio antes de lanzar. No interpretar cadenas como comandos de shell ni convertir automáticamente listas, redirecciones o tuberías en comandos. Mantener los controles de autorización y las restricciones actuales de procesos y archivos.
 - Después del lanzamiento autorizado, esperar durante una ventana corta, limitada por el tiempo restante del turno. Si el supervisor confirma que el comando terminó en esa ventana, devolver directamente su salida acotada, el estado y el código de terminación en la misma llamada. El diario conserva el ID y contabiliza el cursor de la salida entregada. Si vence la espera, devolver el ID y el estado observado para consultar la ejecución larga por separado. La espera no cancela el proceso ni habilita otro lanzamiento.
 - Cada resultado distingue entre inicio confirmado, ejecución activa, salida parcial o truncada, terminación con código, cancelación solicitada y estado sin confirmar. Consultar por ID también admite una espera breve y acotada. Si el proceso sigue activo al cerrar el turno, informar su ID y el estado conocido. Tras una interrupción, comprobar el ID existente antes de considerar un nuevo lanzamiento. Cancelar sigue siendo una operación con efecto y confirmación.
 
@@ -74,6 +99,8 @@ Validar el nombre contra el catálogo efectivo y los argumentos contra su esquem
 
 ### 2.6 Evidencia y respuesta
 
+Priorizar resultados difíciles de malinterpretar: cobertura completa/parcial explícita, truncamiento y siguiente cursor visibles, búsqueda por nombre con recursión por defecto dentro del alcance autorizado (con límites y opción no recursiva explícita), código de salida y estado del proceso en la primera línea. Probar los contratos con entradas variadas. Diferir el sistema general de identificadores de procedencia y citas hasta que exista evidencia de su necesidad; conservar referencias de diario, privacidad y verificación de efectos actuales.
+
 - Ampliar el resultado estructurado de las herramientas para representar procedencia, estado, cobertura, truncamiento y evidencia verificable. Usar un identificador estable de observación dentro del turno y conservar las referencias recuperables en `ChatExecution`. La traza muestra nombres y metadatos permitidos, con la redacción del paso 4. Los resultados completos siguen el alcance de privacidad vigente.
 - Reutilizar las comprobaciones de cobertura de tareas guardadas y aplicar comprobaciones equivalentes en chat cuando el encargo dependa de una lectura, un cálculo externo o un efecto. Separar datos observados, inferencias y partes desconocidas. El cierre ordinario puede citar una fuente, un archivo autorizado, una página o un ID de ejecución cuando sea pertinente. Verificar contra resultados de herramientas cualquier afirmación de operación realizada.
 - La comprobación distingue salida de proceso de código de terminación, una lectura parcial de una cobertura completa y una respuesta MCP de un efecto confirmado independientemente. Un acto denegado, pendiente, cancelado o sin confirmación conserva ese estado al responder y al reabrir. Aplicar los cambios de historial de forma compatible con registros de los pasos previos.
@@ -82,16 +109,18 @@ Validar el nombre contra el catálogo efectivo y los argumentos contra su esquem
 
 Usar `307b40a` como referencia reproducible. Registrar las 31 suites existentes antes de modificar el núcleo y mantener un commit por subpaso. E3, E4 y E8 caracterizan el tratamiento anterior de errores, repetición y presupuesto. Conservar esas observaciones en la línea base y actualizar las expectativas cuando cambie el contrato correspondiente. Mantener las regresiones de permisos, privacidad, persistencia, pausa, aislamiento y bandeja.
 
-| Paso | Dependencia | Entrega y comprobación |
+| Paso (orden de ejecución) | Dependencia | Entrega y comprobación |
 |---|---|---|
-| 5.1 Línea base y evaluación | Paso 4 | Congelar casos, datos, criterios y traza de referencia. Confirmar que ambos modelos corren desde la CLI. Registrar el resultado de las suites y las limitaciones observadas. |
-| 5.2 Contexto operativo | 5.1 | Construir el contexto en la sesión y probar límites, alcance de proyecto, roles, compactación y recuperación. |
-| 5.3 Catálogo y descubrimiento | 5.2 | Registrar y resolver herramientas habilitadas, alias e identidades históricas. Probar colisiones, descubrimiento bajo demanda, cambio de fuente y conservación de fronteras de privacidad. |
-| 5.4 Validación y recuperación | 5.3 | Validar llamadas, devolver errores estructurados y aplicar recuperación acotada. Probar datos inválidos, denegaciones, reintentos, duplicados y reinicio con efectos inciertos. |
-| 5.5 Interfaz de procesos | 5.3, 5.4 | Simplificar ejecutores visibles y preservar los registros existentes. Probar resultado directo de comandos cortos con código cero o distinto de cero, vuelta por ID al vencer la espera, cursor incremental, autorización exacta, cancelación y recuperación en Windows. |
-| 5.6 Presupuesto y cierre | 5.4, 5.5 | Contar peticiones de todas las ramas, validar la configuración y reservar el cierre. Probar que ninguna transición reinicia el contador, que pausa y cancelación se respetan y que un presupuesto alto sigue terminando ante falta de progreso. |
-| 5.7 Evidencia y respuesta | 5.4, 5.6 | Vincular cobertura y resultados con el cierre. Probar evidencia parcial, falta de fuentes, resultados contradictorios, estados de efectos y reanudación. |
-| 5.8 Prompt y evaluación final | 5.1–5.7 | Ajustar el prompt después de medir el núcleo con el anterior. Ejecutar la matriz con ambos modelos y la verificación de paridad de Desktop. Actualizar README y registrar resultados. |
+| 5.1 Línea base y evaluación (completo) | Paso 4 | Preservar 252 intentos y las limitaciones de sus dos campañas. |
+| 5.2 Contexto operativo (completo, revisión pendiente) | 5.1 | Conservar el núcleo compartido; revisar política de contexto con instrumentación, sin revertir por suposición. |
+| 5.2.1 Instrumentación y evaluación | 5.2 | Trazas de MCP, clasificación causal, calificadores, V05–V08 reservados y piloto de diagnóstico. No modificar el comportamiento del agente. |
+| 5.3A Visibilidad y descubrimiento | 5.2.1 | Manifiesto compacto y descubrimiento accesible; bandera A/B; probar D03, D04, D08, V02 y V04 con Nemotron y Qwen. Cero efectos no autorizados. |
+| 5.4 Validación y recuperación | 5.3A | Ejercitar errores reales, esquemas, denegaciones, lecturas repetidas y efectos inciertos; recuperación acotada. |
+| 5.6 Presupuesto y cierre | 5.4 | Instrumentar presupuesto global y falta de progreso; ajustar límites con los resultados de 5.3A/5.4. Los valores 16/24 son candidatos, no una ampliación obligatoria. |
+| 5.5 Interfaz de procesos | 5.6 | Priorizar resultado directo con espera acotada para comandos cortos y conservar consulta por ID, cursor, supervisor y autorización. Auditar con el presupuesto compartido. |
+| 5.7 Evidencia y respuesta | 5.5 | Mejorar contratos de cobertura, recursión, truncamiento y códigos de salida; fundamentar el cierre. |
+| 5.3B Registro y alias (condicional) | 5.7 | Implementar únicamente si la evidencia justifica registro canónico/migración; de lo contrario documentar aplazamiento. |
+| 5.8 Prompt y evaluación final | anteriores | Ajustar prompt al final; evaluar con rúbrica uniforme, condiciones controladas, casos reservados y paridad Desktop. |
 
 La CLI conserva el alcance del paso 4, con perfiles separados, entrada de texto y Ollama local. Usar MCP de prueba con datos sintéticos. Mantener las capacidades existentes de Desktop y sus restricciones para proveedores en la nube, memoria y adjuntos. Incluir sus regresiones aunque la evaluación comparativa se ejecute con Ollama local.
 
@@ -103,7 +132,7 @@ La matriz por caso, el piloto y las 72 mediciones se registran en la [línea bas
 
 Usar `nemotron-3.5-bolt:e4b` y `qwen3.5:4b` como etiquetas iniciales. Registrar etiqueta, ID local del modelo, versión de Ollama, commit, ajustes efectivos, perfil de prueba y latencia por caso. Ejecutar `python -B stonebot_cli.py --model MODELO --verbose` con perfiles temporales equivalentes y una copia limpia de los recursos por intento. Mantener los mismos permisos y límites de hardware para comparar. Los casos que requieren aprobación usan confirmaciones explícitas en una terminal o un adaptador de prueba con decisiones guionadas y verificables.
 
-Preparar al menos doce casos distribuidos entre las familias de la matriz. Variar lenguaje, nombres, orden de recursos y resultados. Reservar al menos un tercio como casos de validación sin usar durante el ajuste. Repetir tres veces por modelo, antes y después, y evaluarlos contra resultados esperados de las herramientas. Registrar casos completados con evidencia, recuperaciones, afirmaciones sin respaldo, preguntas innecesarias, llamadas y tiempo. Si un modelo no está disponible, registrar esa ausencia como verificación pendiente.
+Preparar al menos doce casos distribuidos entre las familias de la matriz. Variar lenguaje, nombres, orden de recursos y resultados. Reservar al menos un tercio como casos de validación sin usar durante el ajuste. Repetir tres veces por modelo, antes y después, y evaluarlos contra resultados esperados de las herramientas. No repetir los 180 intentos adicionales antes de medir 5.3A con los dos modelos de referencia. Registrar contexto solicitado/observado, concurrencia y presupuesto; no atribuir diferencias a un parámetro sin controlarlo. V01–V04 son ahora diagnósticos; reservar V05–V08 y ampliar la validación independiente si el ajuste los expone. Registrar casos completados con evidencia, recuperaciones, afirmaciones sin respaldo, preguntas innecesarias, llamadas y tiempo. Si un modelo no está disponible, registrar esa ausencia como verificación pendiente.
 
 | Familia | Caso automatizado con proveedor simulado | Evidencia esperada en la CLI con ambos modelos |
 |---|---|---|
@@ -122,9 +151,11 @@ En Desktop, repetir con perfil temporal una consulta directa, un encargo con her
 
 - [x] 5.1 Línea base y evaluación
 - [x] 5.2 Contexto operativo
-- [ ] 5.3 Catálogo y descubrimiento
+- [ ] 5.2.1 Instrumentación y evaluación (siguiente)
+- [ ] 5.3A Visibilidad y descubrimiento MCP
 - [ ] 5.4 Validación y recuperación
-- [ ] 5.5 Interfaz de procesos
 - [ ] 5.6 Presupuesto y cierre
+- [ ] 5.5 Interfaz de procesos
 - [ ] 5.7 Evidencia y respuesta
+- [ ] 5.3B Registro y alias (condicional)
 - [ ] 5.8 Prompt y evaluación final
