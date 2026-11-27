@@ -24,6 +24,8 @@ StoneBot es un asistente personal local. Mantiene continuidad entre sesiones con
 
 La [hoja de ruta de mejora arquitectónica](docs/03-hoja-de-ruta-arquitectura.md) recoge las seis fases del agente, su estado y los criterios de aceptación.
 
+El [plan de StoneBot CLI](docs/05-plan-stonebot-cli.md) documenta la propuesta para usar el núcleo compartido desde la terminal de Windows.
+
 Las primeras etapas documentan el prototipo original. La configuración vigente está en **Memoria personal en StoneWave**.
 
 | Etapa | Objetivo | Entregable comprobable | Estado |

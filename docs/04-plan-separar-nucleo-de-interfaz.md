@@ -6,6 +6,8 @@
 **Rama de trabajo aprobada:** `refactor/stonebot-core`, creada en `ad09042`.
 **Alcance:** pasos 0 a 3. La CLI (paso 4) y las correcciones del comportamiento del agente (paso 5) quedan para después.
 
+El diseño de la siguiente etapa se recoge en el [plan del paso 4 · StoneBot CLI](05-plan-stonebot-cli.md).
+
 ## 1. Objetivo
 
 Que el motor del agente (el turno, las herramientas, los permisos, el registro de ejecución) funcione **sin PySide6** y **sin ventana**, para poder:
