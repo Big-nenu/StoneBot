@@ -1,5 +1,6 @@
 """Ejecución de un turno del chat y coordinación de sus herramientas."""
 import asyncio
+from collections import Counter
 import inspect
 import json
 import os
@@ -17,7 +18,8 @@ from process_tools import PROCESS_TOOLS, PROCESS_NAMES
 import managed_process
 import ollama
 from chat_execution import ChatContext, RECALL, RESUME
-from operational_context import HISTORY_CHARS, OllamaContext, observed_context, ollama_metadata
+from mcp_pool import McpPool, mcp_trace_state
+from operational_context import HISTORY_CHARS, OllamaContext, observed_context, ollama_metadata, positive_int
 from ollama import Client, ResponseError, Tool
 from ai_provider import (
     AISettings, OLLAMA_URL, PROVIDERS, OpenRouter, TextToolCallError, local_file_placeholder,
@@ -244,7 +246,7 @@ class Worker:
             with suppress(RuntimeError):
                 loop.call_soon_threadsafe(task.cancel)
 
-    async def model_request(self, client, method, *args, internal=False, **kwargs):
+    async def model_request(self, client, method, *args, internal=False, trace_mcp=None, **kwargs):
         if not self.trace or method != "chat":
             return await self._model_request(client, method, *args, internal=internal, **kwargs)
         names = [tool.__name__ if callable(tool) else tool.function.name for tool in kwargs.get("tools", ())]
@@ -254,8 +256,20 @@ class Worker:
         self.trace("peticion_modelo", peticion=self.trace_request, herramientas=names,
                    contexto_maximo=context.maximum if context else None,
                    contexto_configurado=context.configured if context else None,
+                   contexto_solicitado=positive_int((kwargs.get("options") or {}).get("num_ctx")),
                    presupuesto_historial_chars=context.history_chars if context else HISTORY_CHARS)
+        if trace_mcp:
+            for server, aliases in trace_mcp.items():
+                offered = [name for name in names if name in aliases]
+                self.trace("mcp_oferta", peticion=self.trace_request, servidor=server, herramientas=offered,
+                           excluidas_catalogo=len(aliases.difference(offered)),
+                           motivo="ofrecido" if offered else "limite_catalogo")
         response = await self._model_request(client, method, *args, internal=internal, **kwargs)
+        if not self.ai.cloud:
+            counts = [getattr(response, field, None) for field in ("prompt_eval_count", "eval_count")]
+            self.trace("tokens_modelo", peticion=self.trace_request,
+                       tokens_entrada=counts[0] if type(counts[0]) is int and counts[0] >= 0 else None,
+                       tokens_salida=counts[1] if type(counts[1]) is int and counts[1] >= 0 else None)
         if self.ollama_context is not None:
             self.trace("contexto_ollama", peticion=self.trace_request, **await observed_context(self.ai.model))
         for call in getattr(response.message, "tool_calls", None) or ():
@@ -1247,10 +1261,14 @@ class Worker:
         used_mcp = False
         active_servers = False
         try:
-            servers = load_servers() if external_requested else {}
+            configured = load_servers() if external_requested or self.trace else {}
         except (ValueError, OSError, RuntimeError):
-            servers = {}
-            self.events.notice("No se pudo leer la configuración MCP.")
+            configured = {}
+            if external_requested:
+                self.events.notice("No se pudo leer la configuración MCP.")
+            if self.trace:
+                self.trace("mcp_configuracion", estado="error")
+        servers = configured if external_requested else {}
         if local_read:
             servers = {name: server for name, server in servers.items()
                        if server["enabled"] and is_desktop_commander(server)}
@@ -1260,24 +1278,40 @@ class Worker:
         elif ordinary_turn and not uses_mcp(user_text):
             servers = {name: server for name, server in servers.items()
                        if server.get("transport") != "stdio" or not is_desktop_commander(server)}
+        if self.trace:
+            for name, server in configured.items():
+                reason = ("deshabilitado" if not server["enabled"] else "fuera_del_enrutamiento"
+                          if not external_requested else "politica_de_fuente" if name not in servers else "seleccionado")
+                self.trace("mcp_servidor", servidor=name, habilitado=server["enabled"], motivo=reason,
+                           exclusiones_configuradas=len(server.get("disabled_tools", ())))
+        trace_mcp = {}
         short_local_names = local_read and self.ai.cloud and len(servers) == 1
         cached = {}
+        discovery_metrics = {name: {} for name in servers} if self.trace else {}
         if any(server["enabled"] for server in servers.values()):
             self.events.activity("Preparando herramientas MCP disponibles…")
         if self.pool is not None and external_requested:
             try:
                 await self.pool.prepare(servers)
                 enabled = [(name, server) for name, server in servers.items() if server["enabled"]]
-                entries = await asyncio.gather(*(self.pool.entries(name, cfg) for name, cfg in enabled),
+                entries = await asyncio.gather(*(self.pool.entries(name, cfg, trace=self.trace,
+                                                                    metrics=discovery_metrics[name])
+                                                 if self.trace and isinstance(self.pool, McpPool)
+                                                 else self.pool.entries(name, cfg) for name, cfg in enabled),
                                                return_exceptions=True)
                 cached = {name: data for (name, _), data in zip(enabled, entries)}
             except Exception as exc:
+                if self.trace:
+                    self.trace("mcp_pool", estado=mcp_trace_state(exc))
                 self.events.notice(f"No se pudo reutilizar la conexión MCP. {connection_error(exc)}")
         async with AsyncExitStack() as connections:
             for name, server in servers.items():
                 if not server["enabled"]:
                     continue
                 active_servers = True
+                excluded = Counter() if self.trace else None
+                direct_connecting = False
+                metrics = discovery_metrics.get(name)
                 try:
                     async with AsyncExitStack() as connection:
                         if name in cached:
@@ -1287,17 +1321,31 @@ class Worker:
                                     raise entries
                                 raise ConnectionError("Se cerró la sesión MCP.")
                         else:
+                            if self.trace:
+                                self.trace("mcp_conexion", servidor=name, estado="intento", via="directa")
+                                direct_connecting = True
                             session = await connection.enter_async_context(session_for(name, server))
-                            entries = await discover(session, name, server)
+                            if self.trace:
+                                direct_connecting = False
+                                self.trace("mcp_conexion", servidor=name, estado="exito", via="directa")
+                            entries = await discover(session, name, server, metrics=metrics)
                         available = 0
                         for alias, entry in entries.items():
                             if local_read and entry[2].name not in LOCAL_READ_TOOLS:
+                                if excluded is not None:
+                                    excluded["solo_lectura_local"] += 1
                                 continue
                             if web_tools_only and entry[2].name not in WEB_LINK_TOOLS:
+                                if excluded is not None:
+                                    excluded["solo_web"] += 1
                                 continue
                             if save_request and entry[2].name != "write_file":
+                                if excluded is not None:
+                                    excluded["solo_guardado"] += 1
                                 continue
                             if self.task is not None and not safe_read(entry[2]):
+                                if excluded is not None:
+                                    excluded["tarea_solo_lectura"] += 1
                                 continue
                             tool_name = entry[2].name if short_local_names else alias
                             try:
@@ -1305,6 +1353,8 @@ class Worker:
                                     "type": "function", "function": {"name": tool_name, **ollama_tool(entry)},
                                 })
                             except ValueError:
+                                if excluded is not None:
+                                    excluded["esquema_incompatible"] += 1
                                 self.events.notice(f"MCP {name}: una herramienta tiene un esquema incompatible.")
                                 continue
                             specs.append(spec)
@@ -1312,9 +1362,24 @@ class Worker:
                             if short_local_names:
                                 local_aliases[alias] = tool_name
                             available += 1
+                            if self.trace:
+                                trace_mcp.setdefault(name, set()).add(tool_name)
                         await connections.enter_async_context(connection.pop_all())
+                    if self.trace:
+                        excluded.update(metrics)
+                        self.trace("mcp_descubrimiento", servidor=name, estado="exito",
+                                   descubiertas=len(entries) + metrics.get("configuracion", 0),
+                                   elegibles=available, exclusiones=dict(excluded),
+                                   motivo="politica_de_herramienta" if (entries or metrics.get("configuracion")) and not available
+                                   else "catalogo_vacio" if not entries else "elegibles")
                     self.events.notice(f"MCP {name}. Herramientas disponibles para Nemotron: {available}.")
                 except Exception as exc:
+                    if self.trace:
+                        failure = mcp_trace_state(exc)
+                        if direct_connecting:
+                            self.trace("mcp_conexion", servidor=name, estado=failure, via="directa")
+                        self.trace("mcp_descubrimiento", servidor=name, estado=failure,
+                                   motivo="fallo_descubrimiento")
                     self.events.notice(f"MCP {name}. {connection_error(exc)}")
 
             if local_read:
@@ -1546,7 +1611,7 @@ class Worker:
                 try:
                     response = await self.model_request(client, "chat", model=self.ai.model, messages=request_messages,
                                                        tools=round_tools, options=options, think=self.think,
-                                                       **cloud_read_options)
+                                                       trace_mcp=trace_mcp, **cloud_read_options)
                 except TextToolCallError:
                     if not local_evidence:
                         raise
@@ -1561,7 +1626,7 @@ class Worker:
                     text = (reply.content or "").strip()
                     if not text and registered_read_started:
                         retry = await self.model_request(client, "chat", model=self.ai.model, messages=request_messages,
-                                                         tools=[], options=options, think=False, **cloud_read_options)
+                                                         tools=[], options=options, think=False, trace_mcp=trace_mcp, **cloud_read_options)
                         self.check_pause()
                         text = (retry.message.content or "").strip()
                     if not text and self.trace:
@@ -1587,7 +1652,7 @@ class Worker:
                         retry_tools = ([REPORT] if self.task is not None else []) if used_mcp else round_tools
                         retry = await self.model_request(client, "chat", model=self.ai.model, messages=request_messages,
                                                         tools=catalog.select(retry_tools), think=False,
-                                                        options=options,
+                                                        options=options, trace_mcp=trace_mcp,
                                                         **cloud_read_options)
                         reply = retry.message
                         if thinking := getattr(reply, "thinking", None):
@@ -1949,10 +2014,14 @@ class Worker:
                     journal.state["activity_read" if name in activity_tools else "file_read"] = True
                 return journal.start(name, arguments, not read, remaining)
 
+            def trace_result(event, **fields):
+                self.trace(event, peticion=self.trace_request, **fields)
+
             answer = await loop.run(request_round, execute_control, check_pause=self.check_pause,
                                     on_repeat=on_repeat, after_batch=after_batch, activity=self.events.activity,
                                     before_call=before_call if journal else None,
-                                    after_call=journal.observe if journal else None, trace=self.trace)
+                                    after_call=journal.observe if journal else None,
+                                    trace=trace_result if self.trace else None)
             if answer is not None:
                 return answer
             if save_request:

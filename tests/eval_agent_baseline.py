@@ -1,4 +1,4 @@
-"""Evaluación reproducible del paso 5.1 con Ollama y datos sintéticos."""
+"""Evaluación reproducible del agente con Ollama y datos sintéticos."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -13,10 +13,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic, sleep
 
+from eval_agent_grade import grade
+
 
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_MODELS = ("nemotron-3.5-bolt:e4b", "qwen3.5:4b")
 CASES = tuple(f"D{i:02}" for i in range(1, 9)) + tuple(f"V{i:02}" for i in range(1, 5))
+RESERVED_CASES = ("V05", "V06", "V07", "V08")
 
 
 def prepare_mcp(profile, sources):
@@ -95,6 +98,25 @@ def prepare(case, root):
     if case == "V02":
         prepare_mcp(profile, {"recorte": ["consultar_registro"], "registro_final": ["consultar_registro"]})
         return profile, "Confirma la referencia y fecha del registro usando las fuentes habilitadas."
+    if case == "V05":
+        prepare_mcp(profile, {"nacar": ["echo"], "ambar": ["echo"]})
+        return profile, "Pregunta al recurso Ámbar por CLAVE-F47 y devuelve su respuesta."
+    if case == "V06":
+        prepare_mcp(profile, {"archivo_fichas": ["consultar_inventario"]})
+        return profile, "Consulta por MCP la página con cursor 3 del archivo de fichas y dame la ficha que aparece."
+    if case == "V07":
+        prepare_mcp(profile, {"extracto": ["consultar_registro"], "acta_integra": ["consultar_registro"]})
+        return profile, ("Comprueba en el conector la referencia y la fecha del acta. Empieza por el extracto "
+                         "y consulta el acta íntegra si faltan datos.")
+    if case == "V08":
+        for name, size in (("bandeja/lirio.dat", 701), ("bandeja/cedro.dat", 211),
+                           ("copias/este/lirio.dat", 905), ("copias/oeste/anexo/lirio.dat", 1103),
+                           ("copias/oeste/cedro.dat", 1700)):
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x" * size)
+        return profile, (f'Toma el fichero de mayor tamaño de "{root / "bandeja"}". En todo el árbol '
+                         f'de "{root / "copias"}", localiza cada fichero del mismo nombre y entrega los tamaños.')
     prepare_mcp(profile, {"atascado": ["consultar_inventario"]})
     return profile, "Consulta la fuente local de inventario y dime el total completo del inventario."
 
@@ -112,6 +134,19 @@ def launch(model, case, root, env, prompt, timeout, *, reopen=False):
     except subprocess.TimeoutExpired as exc:
         return ((exc.stdout or b"").decode("utf-8", errors="replace"),
                 (exc.stderr or b"").decode("utf-8", errors="replace"), None, True)
+
+
+def probe_mcp(profile, root, model, case, env):
+    if not (profile / "mcp_servers.json").exists():
+        return {}
+    try:
+        process = subprocess.run([sys.executable, "-B", "tests/eval_agent_fixture.py", case, model, str(root),
+                                  "--probe"], cwd=REPO, env=env, encoding="utf-8", capture_output=True, timeout=40)
+        return json.loads(process.stdout) if process.returncode == 0 else {"estado": "error_evaluador"}
+    except subprocess.TimeoutExpired:
+        return {"estado": "timeout_evaluador"}
+    except ValueError:
+        return {"estado": "error_evaluador"}
 
 
 def observations(profile):
@@ -163,7 +198,8 @@ def run_case(model, case, attempt, timeout):
             (home / folder).mkdir(parents=True, exist_ok=True)
         env = {key: value for key, value in os.environ.items() if not key.startswith("OneDrive")}
         python_path = os.pathsep.join(path for path in (env.get("PYTHONPATH"), site.getusersitepackages()) if path)
-        env.update(STONEBOT_HOME=str(profile), PYTHONIOENCODING="utf-8", PYTHONPATH=python_path)
+        env.update(STONEBOT_HOME=str(profile), PYTHONIOENCODING="utf-8", PYTHONPATH=python_path,
+                   STONEBOT_EVAL_USER_SITE=site.getusersitepackages())
         # El supervisor real usa Python -E y necesita las dependencias del perfil instalado.
         # La barrera de la fixture bloquea lecturas externas también en estos tres casos.
         if case not in {"D06", "D07", "V03"}:
@@ -195,7 +231,7 @@ def run_case(model, case, attempt, timeout):
             while any(job["estado"] not in {"terminado", "cancelado", "fallido"} for job in jobs) and monotonic() < until:
                 sleep(0.1)
                 jobs = processes(profile)
-        return redact_fixture_root({
+        result = redact_fixture_root({
             "modelo": model, "caso": case, "intento": attempt, "segundos": round(monotonic() - started, 2),
             "exit": exit_code, "timeout": timed_out,
             "cierre": ends[-1] if ends else None,
@@ -213,12 +249,16 @@ def run_case(model, case, attempt, timeout):
             "avisos": [line for line in stderr.splitlines() if line and not line.startswith('{"evento":')],
             "traza": events,
         }, root)
+        result["sondeo_mcp"] = probe_mcp(profile, root, model, case, env)
+        result["calificacion"] = grade(result)
+        return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", action="append", help="repetir para comparar varios modelos")
-    parser.add_argument("--case", action="append", choices=CASES, help="repetir para seleccionar varios casos")
+    parser.add_argument("--case", action="append", choices=CASES + RESERVED_CASES,
+                        help="repetir para seleccionar casos, incluidos los reservados V05–V08")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--timeout", type=int, default=90, help="segundos máximos por intento desde el proceso padre")
     parser.add_argument("--jobs", type=int, default=1, help="intentos simultáneos del mismo modelo")
@@ -242,7 +282,8 @@ def main():
                     row = run.result()
                 except (OSError, ValueError, sqlite3.Error) as exc:
                     row = {"modelo": model, "caso": case, "intento": attempt,
-                           "fallo_infraestructura": type(exc).__name__, "mensaje": str(exc)}
+                           "fallo_infraestructura": type(exc).__name__}
+                    row["calificacion"] = grade(row)
                 print(json.dumps(row, ensure_ascii=True), flush=True)
 
 

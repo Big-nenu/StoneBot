@@ -62,15 +62,17 @@ async def test_trace_observation():
     captured = []
     worker = Worker([], trace=lambda event, **fields: captured.append((event, fields)))
     worker.ollama_context = OllamaContext(16384, 8192)
-    response = SimpleNamespace(message=SimpleNamespace(tool_calls=[]))
+    response = SimpleNamespace(message=SimpleNamespace(tool_calls=[]), prompt_eval_count=1200, eval_count=40)
     with (patch.object(worker, "_model_request", new=AsyncMock(return_value=response)) as request,
           patch("turn_worker.observed_context", new=AsyncMock(return_value={"tokens_observados": 8192}))):
-        await worker.model_request(None, "chat", options={"temperature": 0})
-        assert request.await_args.kwargs["options"] == {"temperature": 0}
+        await worker.model_request(None, "chat", options={"temperature": 0, "num_ctx": 4096})
+        assert request.await_args.kwargs["options"] == {"temperature": 0, "num_ctx": 4096}
     assert captured[0][1]["contexto_maximo"] == 16384
     assert captured[0][1]["contexto_configurado"] == 8192
     assert captured[0][1]["presupuesto_historial_chars"] == 16384
-    assert captured[1] == ("contexto_ollama", {"peticion": 1, "tokens_observados": 8192})
+    assert captured[0][1]["contexto_solicitado"] == 4096
+    assert captured[1] == ("tokens_modelo", {"peticion": 1, "tokens_entrada": 1200, "tokens_salida": 40})
+    assert captured[2] == ("contexto_ollama", {"peticion": 1, "tokens_observados": 8192})
 
 
 if __name__ == "__main__":

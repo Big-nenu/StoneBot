@@ -1,6 +1,6 @@
 # Plan del paso 5 · Comportamiento agéntico de StoneBot
 
-- **Estado** — Plan revisado tras la auditoría independiente. Pasos 5.1 y 5.2 completados; siguiente: 5.2.1 (instrumentación y evaluación).
+- **Estado** — Pasos 5.1, 5.2 y 5.2.1 completados. Siguiente paso planificado 5.3A.
 - **Fecha** — 27 de noviembre de 2026.
 - **Base** — `refactor/stonebot-core` en `307b40a`, con los pasos 0 a 4 completados.
 - **Objetivo** — Que un turno normal pueda descubrir recursos, ejecutar pasos autorizados, recuperarse de fallos y entregar una respuesta comprobable. StoneBot CLI servirá para medir los cambios con Nemotron y Qwen. Desktop y CLI seguirán usando el mismo `ChatSession`, `Worker` y `ToolLoop`.
@@ -41,6 +41,8 @@ Claude contrastó el plan con Hermes Agent y con el código de `ae7deab`, y repo
 - Añadir V05–V08: descubrimiento de fuente por formulación distinta, recuperación de error transitorio, recuperación de evidencia truncada y cobertura de búsqueda con múltiples coincidencias. Variar fixtures y mantener los casos nuevos fuera del ajuste. Los casos V01–V04 usados para diagnóstico dejan de ser validación independiente. Predefinir expectativas y reservar los casos nuevos para la evaluación de candidatos, sin adaptar el motor a sus textos.
 - Medir y documentar una política explícita de contexto por modelo (máximo, valor configurado, valor solicitado y valor observado, diferenciados), incluyendo tokens de entrada/salida cuando Ollama los informe. Revisar la decisión de 5.2 antes de cambiar comportamiento: un valor fijo demasiado pequeño también puede truncar herramientas y resultados. Mantener configuración de Ollama y compactación actuales mientras se instrumenta; cualquier cambio funcional de contexto tendrá prueba separada, valor configurable, límites del modelo y reserva de salida. No afirmar que se conoce la VRAM libre a partir de /api/ps.
 - Entrega: pruebas simuladas de clasificación y trazas, calificadores, fixtures nuevas y piloto acotado de Nemotron/Qwen que permita diagnosticar D03 y verificar la medición. Sin cambios de catálogo, permisos, enrutamiento ni bucle durante este subpaso.
+
+La implementación, la rúbrica y los resultados de los tres intentos del piloto están registrados por separado de la línea base. [Informe de instrumentación y evaluación](08-instrumentacion-evaluacion-agentica.md)
 
 ### 2.1 Contexto operativo y prompt
 
@@ -151,7 +153,7 @@ En Desktop, repetir con perfil temporal una consulta directa, un encargo con her
 
 - [x] 5.1 Línea base y evaluación
 - [x] 5.2 Contexto operativo
-- [ ] 5.2.1 Instrumentación y evaluación (siguiente)
+- [x] 5.2.1 Instrumentación y evaluación
 - [ ] 5.3A Visibilidad y descubrimiento MCP
 - [ ] 5.4 Validación y recuperación
 - [ ] 5.6 Presupuesto y cierre

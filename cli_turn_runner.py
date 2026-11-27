@@ -78,8 +78,9 @@ def trace_payload(event, fields):
         fields["resultado"] = trace_value(raw)
     if "herramientas" in fields:
         fields["herramientas"] = [safe_trace_name(name) for name in fields["herramientas"]]
-    if "herramienta" in fields and not fields["herramienta"].startswith("("):
-        fields["herramienta"] = safe_trace_name(fields["herramienta"])
+    for name in ("servidor", "herramienta"):
+        if name in fields and fields[name] not in ("(desconocida)", "(no disponible)"):
+            fields[name] = safe_trace_name(fields[name])
     return {"evento": event, **fields}
 
 
@@ -110,13 +111,16 @@ def permission_details(value, secrets, key="", depth=0):
 class CliTurnEvents(NullEvents):
     def __init__(self, queue):
         self.queue = queue
+        self.last_request = None
 
     async def confirm(self, request):
         reply = Future()
-        self.queue.put(("confirmar", (request, reply)))
+        self.queue.put(("confirmar", (request, reply, self.last_request)))
         await asyncio.wrap_future(reply)
 
     def trace(self, event, **fields):
+        if event == "peticion_modelo":
+            self.last_request = fields["peticion"]
         self.queue.put(("traza", trace_payload(event, fields)))
 
 
@@ -162,7 +166,7 @@ def run_turn(session, plan, stdin, stderr, *, verbose=False):
             except Empty:
                 continue
             if event == "confirmar":
-                request, reply = payload
+                request, reply, request_id = payload
                 if not reply.set_running_or_notify_cancel():
                     continue
                 try:
@@ -175,7 +179,10 @@ def run_turn(session, plan, stdin, stderr, *, verbose=False):
                 finally:
                     reply.set_result(None)
                 if verbose:
-                    print(json.dumps({"evento": "permiso", "aprobado": request["approved"]}), file=stderr, flush=True)
+                    print(json.dumps(trace_payload("permiso", {"aprobado": request["approved"],
+                                                  "servidor": request.get("server"), "herramienta": request.get("tool"),
+                                                  "peticion": request_id}),
+                                     ensure_ascii=True), file=stderr, flush=True)
             elif event == "traza":
                 print(json.dumps(payload, ensure_ascii=True), file=stderr, flush=True)
             elif event == "fin":

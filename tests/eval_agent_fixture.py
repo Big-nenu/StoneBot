@@ -1,13 +1,19 @@
 """Arranque de la CLI con datos y confirmaciones controlados para la evaluación."""
 import argparse
+import asyncio
 import hashlib
 import json
 import os
+import site
 import sys
 import time
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
+
+# Con un HOME sintético, PYTHONPATH por sí solo no procesa los .pth de pywin32.
+if user_site := os.environ.get("STONEBOT_EVAL_USER_SITE"):
+    site.addsitedir(user_site)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -18,6 +24,8 @@ from ai_provider import AISettings
 from chat_session import ChatSession
 from history import History
 from local_files import LocalFiles
+from mcp_client import load_servers, probe_server
+from mcp_pool import mcp_trace_state
 from stonebot_engine.safety import IsolationError, configure_cli_profile
 
 
@@ -55,7 +63,24 @@ def main():
     parser.add_argument("model")
     parser.add_argument("root", type=Path)
     parser.add_argument("--reopen", action="store_true")
+    parser.add_argument("--probe", action="store_true")
     args = parser.parse_args()
+    if args.probe:
+        configure_cli_profile(os.environ["STONEBOT_HOME"])
+
+        async def probe():
+            results = {}
+            for label, server in load_servers().items():
+                try:
+                    async with asyncio.timeout(12):
+                        tools = await probe_server(label, server, include_definitions=True)
+                    results[label] = {"estado": "exito", "herramientas": sorted(tool.name for tool in tools)}
+                except Exception as exc:
+                    results[label] = {"estado": mcp_trace_state(exc)}
+            return results
+
+        print(json.dumps(asyncio.run(probe())))
+        return 0
     command = [sys.executable, "-B", str(args.root / "trabajo.py")]
     allowed = {"argv": command, "cwd": str(args.root)}
     target = LocalFiles.target

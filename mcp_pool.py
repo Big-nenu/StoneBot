@@ -7,6 +7,24 @@ from types import SimpleNamespace
 from mcp_client import discover, session_for, startup_timeout
 
 
+def mcp_trace_state(error):
+    """Clasifica excepciones sin exponer mensajes de red ni del servidor."""
+    import httpx
+
+    pending, seen = [error], set()
+    while pending:
+        cause = pending.pop()
+        if id(cause) in seen:
+            continue
+        seen.add(id(cause))
+        if isinstance(cause, (TimeoutError, httpx.TimeoutException)):
+            return "timeout"
+        if isinstance(cause, BaseExceptionGroup):
+            pending.extend(cause.exceptions)
+        pending.extend(exc for exc in (cause.__cause__, cause.__context__) if exc)
+    return "error"
+
+
 class SessionProxy:
     def __init__(self, pool, slot, session):
         self.pool, self.slot, self.session = pool, slot, session
@@ -66,8 +84,8 @@ class McpPool:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def entries(self, name, config):
-        return await self.submit(self.get_entries(name, config))
+    async def entries(self, name, config, *, trace=None, metrics=None):
+        return await self.submit(self.get_entries(name, config, trace=trace, metrics=metrics))
 
     @staticmethod
     def expired(slot):
@@ -75,27 +93,41 @@ class McpPool:
             return time.monotonic() - slot.failed_at >= 30
         return slot.task.done() or slot.stop.is_set() or slot.changed
 
-    async def get_entries(self, name, config):
+    async def get_entries(self, name, config, *, trace=None, metrics=None):
         slot = self.slots.get(name)
         if slot is not None and self.expired(slot):
             self.slots.pop(name)
             await slot.task
             slot = None
+        if trace:
+            trace("mcp_conexion", servidor=name, estado="intento" if slot is None else "reutilizada", via="pool")
         if slot is None:
             slot = SimpleNamespace(config=dict(config), ready=asyncio.get_running_loop().create_future(),
-                                   stop=asyncio.Event(), failed_at=None, changed=False)
+                                   stop=asyncio.Event(), failed_at=None, changed=False, connected=False, metrics={})
             self.slots[name] = slot
             slot.task = asyncio.create_task(self.connect(name, slot))
+        failure = None
         try:
             async with asyncio.timeout(startup_timeout(config)):
-                return await asyncio.shield(slot.ready)
+                entries = await asyncio.shield(slot.ready)
+            if metrics is not None:
+                metrics.update(slot.metrics)
+            return entries
         except TimeoutError as exc:
+            failure = exc
             if not slot.ready.done():
                 slot.failed_at = time.monotonic()
                 slot.ready.set_exception(exc)
                 slot.ready.exception()
                 slot.task.cancel()
             raise
+        except Exception as exc:
+            failure = exc
+            raise
+        finally:
+            if trace and (slot.connected or failure is not None):
+                state = "exito" if slot.connected else mcp_trace_state(failure)
+                trace("mcp_conexion", servidor=name, estado=state, via="pool")
 
     async def connect(self, name, slot):
         async def incoming(message):
@@ -106,7 +138,8 @@ class McpPool:
             # La misma tarea abre y cierra los contextos de cancelación del SDK.
             open_session = self.open_session or session_for
             async with open_session(name, slot.config, message_handler=incoming) as session:
-                entries = await discover(session, name, slot.config)
+                slot.connected = True
+                entries = await discover(session, name, slot.config, metrics=slot.metrics)
                 proxy = SessionProxy(self, slot, session)
                 slot.ready.set_result({alias: (proxy, server, tool, auto)
                                        for alias, (_, server, tool, auto) in entries.items()})

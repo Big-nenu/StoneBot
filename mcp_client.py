@@ -169,15 +169,18 @@ async def session_for(name, server, *, message_handler=None, stdio_environment=N
                     yield session
 
 
-async def discover(session, name, server, *, include_disabled=False):
+async def discover(session, name, server, *, include_disabled=False, metrics=None):
     tools = {}
     cursor = None
     seen = set()
     disabled = set(server.get("disabled_tools", []))
+    excluded = set() if metrics is not None else None
     while True:
         page = await session.list_tools(cursor=cursor)
         for tool in page.tools:
             if not include_disabled and tool.name in disabled:
+                if excluded is not None:
+                    excluded.add(tool.name)
                 continue
             slug = re.sub(r"[^a-zA-Z0-9_]", "_", tool.name)[:23]
             suffix = hashlib.sha256(tool.name.encode()).hexdigest()[:12]
@@ -186,6 +189,8 @@ async def discover(session, name, server, *, include_disabled=False):
             tools[alias] = (session, name, tool, auto)
         cursor = page.nextCursor
         if not cursor:
+            if metrics is not None:
+                metrics["configuracion"] = len(excluded)
             return tools
         if cursor in seen:
             raise ValueError("El servidor repitió una página de herramientas.")

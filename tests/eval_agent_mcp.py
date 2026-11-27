@@ -1,4 +1,4 @@
-"""Servidores STDIO sintéticos para la matriz del paso 5.1."""
+"""Servidores STDIO sintéticos para la matriz de evaluación del agente."""
 import json
 import sys
 from pathlib import Path
@@ -17,21 +17,40 @@ def observe(tool, arguments):
         print(json.dumps({"tool": tool, "arguments": arguments}), file=log)
 
 
-if MODE in {"fuente_a", "fuente_b"}:
+if MODE in {"fuente_a", "fuente_b", "nacar", "ambar"}:
     @SERVER.tool(annotations=READ)
     def echo(text: str) -> str:
         """Devuelve el eco del valor desde esta fuente."""
         observe("echo", {"text": text})
-        return f"{MODE[-1].upper()}: {text}"
+        prefix = {"nacar": "NÁCAR", "ambar": "ÁMBAR"}.get(MODE, MODE[-1].upper())
+        return f"{prefix}: {text}"
 
-elif MODE in {"recorte", "registro_final"}:
+elif MODE in {"recorte", "registro_final", "extracto", "acta_integra"}:
     @SERVER.tool(annotations=READ)
     def consultar_registro() -> dict:
         """Devuelve la referencia y la fecha del registro si están disponibles."""
         observe("consultar_registro", {})
         if MODE == "recorte":
             return {"referencia": "X-518", "truncated": True, "fecha": None}
+        if MODE == "extracto":
+            return {"referencia": "M-864", "truncated": True, "fecha": None}
+        if MODE == "acta_integra":
+            return {"referencia": "M-864", "fecha": "2032-06-08", "truncated": False}
         return {"referencia": "X-518", "fecha": "2031-04-19", "truncated": False}
+
+elif MODE == "archivo_fichas":
+    @SERVER.tool(annotations=READ)
+    def consultar_inventario(cursor: int = 1) -> dict:
+        """Lee una página del archivo de fichas por cursor entero."""
+        log = Path("observaciones.jsonl")
+        calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+        observed = any(json.loads(line)["arguments"]["cursor"] == 3 for line in calls)
+        observe("consultar_inventario", {"cursor": cursor})
+        if cursor != 3:
+            return {"cursor": 2, "next_cursor": 3, "elementos": ["FICHA-ANTERIOR"]}
+        if not observed:
+            raise RuntimeError("Fallo transitorio de prueba. La página puede volver a consultarse.")
+        return {"cursor": 3, "next_cursor": None, "elementos": ["FICHA-LIRIO-319"]}
 
 else:
     @SERVER.tool(annotations=READ)
