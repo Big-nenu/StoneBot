@@ -1,4 +1,5 @@
 """Validación de rutas de la base de datos y archivos auxiliares de StoneBot."""
+import ctypes
 import os
 import stat
 from pathlib import Path
@@ -22,6 +23,35 @@ def default_root():
     return Path.home() / ".stonebot"
 
 
+_cli_root = None
+
+
+def cli_root():
+    return _cli_root
+
+
+def configure_cli_profile(value=None):
+    global _cli_root
+    path = Path.home() / ".stonebot-cli" if value is None else Path(value)
+    if not path.is_absolute() or str(path).startswith(("//", "\\\\")):
+        raise IsolationError("STONEBOT_HOME debe ser una ruta absoluta local.")
+    if os.name == "nt" and (ctypes.windll.kernel32.GetDriveTypeW(path.anchor) not in (2, 3)
+                            or any(os.path.isreserved(part) for part in path.parts[1:])):
+        raise IsolationError("STONEBOT_HOME debe estar en una unidad local.")
+    expected = Path(os.path.abspath(path))
+    if ".." in path.parts or any(parent.is_symlink() or parent.is_junction() for parent in (path, *path.parents)):
+        raise IsolationError("La carpeta de datos de la CLI está redirigida.")
+    if Path(check_path(expected)) != expected or (expected.exists() and not expected.is_dir()):
+        raise IsolationError("La carpeta de datos de la CLI no es válida.")
+    for protected in (default_root(), *protected_paths()):
+        if _inside(expected, protected) or _inside(protected, expected):
+            raise IsolationError("La carpeta de la CLI se solapa con un perfil protegido.")
+    if _cli_root is not None and _cli_root != expected:
+        raise IsolationError("El proceso ya tiene un perfil de CLI.")
+    _cli_root = expected
+    return expected
+
+
 def protected_paths():
     """Rutas que StoneBot nunca puede abrir: la memoria personal y el codigo original de StoneWave."""
     h = Path.home()
@@ -29,6 +59,8 @@ def protected_paths():
     for name in ("STONEWAVE_DB", "MEMHOLOGRAFIC_DB"):
         if db := os.getenv(name):
             paths.extend(Path(db + suffix) for suffix in ("", "-journal", "-wal", "-shm"))
+    if cli_root() is not None:
+        paths.append(default_root())
     return paths
 
 

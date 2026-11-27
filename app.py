@@ -21,6 +21,7 @@ from attachments import FILE_FILTER, attachment_path, has_chat_attachments
 from chat_markdown import CopyButton, MarkdownText
 from chat_preferences import automatic_memory_enabled, load_instructions, save_automatic_memory, save_instructions
 from chat_session import ChatSession
+from conversation_lock import acquire_conversation_lock
 from chat_titles import generate_title
 from chat_ui import (
     ActivityPanel, AttachmentCard, AttachmentTray, ChatBottomFade, ChatText, ChatTranscript, Composer, ComposerPanel,
@@ -47,7 +48,7 @@ from stonewave_memory import StoneWaveMemory
 from tasks import LABELS as TASK_LABELS, new_task, step_caption, upgrade_task
 from tasks_ui import TaskCorrectionDialog
 from win_caption import apply_native_caption
-from PySide6.QtCore import QEasingCurve, QEvent, QIODevice, QSettings, QVariantAnimation, QSaveFile, QLockFile, QSignalBlocker, QSize, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QEasingCurve, QEvent, QIODevice, QSettings, QVariantAnimation, QSaveFile, QSignalBlocker, QSize, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QActionGroup, QColor, QIcon, QKeySequence, QShortcut, QTextCursor, QTextDocument, QPdfWriter
 from PySide6.QtWidgets import (
     QApplication, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
@@ -1799,11 +1800,8 @@ def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     try:
-        lock_path = data_path("assistant.lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock = QLockFile(str(lock_path))
-        lock.setStaleLockTime(0)
-        if not lock.tryLock(0):
+        lock = acquire_conversation_lock()
+        if lock is None:
             QMessageBox.information(None, "StoneBot", "No se pudo iniciar otra instancia de StoneBot. "
                                     "Si ya está abierto, usa el icono de StoneBot en la bandeja.")
             return 1

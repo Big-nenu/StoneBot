@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 from folder_inventory import PATH
-from stonebot_engine.safety import check_path
+from stonebot_engine.safety import check_path, cli_root
 
 
 def attachment_save_followup(message):
@@ -76,6 +76,8 @@ def markdown_destination(target, arguments):
         raise ValueError("La herramienta necesita una ruta absoluta de Markdown y su contenido.")
     allowed_path = Path(check_path(target))
     destination = Path(check_path(path))
+    if (root := cli_root()) is not None and destination.is_relative_to(root):
+        raise ValueError("El destino está dentro del perfil de StoneBot CLI.")
     if allowed_path != (destination if target.suffix.lower() == ".md" else destination.parent):
         raise ValueError("La ruta del archivo queda fuera del destino indicado por el usuario.")
     if destination.exists():

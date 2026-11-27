@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from stonebot_engine import default_root
-from stonebot_engine.safety import check_path
+from stonebot_engine.safety import check_path, cli_root
 from mcp_credentials import CredentialAccessError, credential_target, delete_key, read_key
 from mcp_permissions import revoke, safe_read
 
@@ -38,8 +38,8 @@ def startup_timeout(server):
 
 
 def data_path(*parts):
-    root = default_root()
-    if root.is_symlink() or root.is_junction():
+    root = cli_root() or default_root()
+    if root.is_symlink() or root.is_junction() or (cli_root() is not None and root.resolve() != root):
         raise ValueError("La carpeta de datos de StoneBot está redirigida.")
     expected = root.resolve().joinpath(*parts)
     if Path(check_path(expected, root)) != expected:
@@ -151,7 +151,7 @@ async def session_for(name, server, *, message_handler=None, stdio_environment=N
         variable = server["token_env"]
         env_token = os.getenv(variable) if variable else None
         try:
-            token = read_key(credential_target(name, server)) or env_token
+            token = env_token if cli_root() is not None else read_key(credential_target(name, server)) or env_token
         except CredentialAccessError:
             if not env_token:
                 raise

@@ -1,6 +1,6 @@
 # Plan del paso 4 · StoneBot CLI
 
-- **Estado** — Propuesta para revisión.
+- **Estado** — Aprobado para implementación.
 - **Fecha** — 26 de noviembre de 2026.
 - **Base** — `refactor/stonebot-core` en `bd351f4`, con los pasos 0 a 3 completos.
 - **Objetivo** — Conversar y continuar tareas desde PowerShell o Windows Terminal con el mismo núcleo que usa StoneBot Desktop. La primera entrega usa Ollama local, texto y un perfil independiente.
@@ -23,6 +23,8 @@ El punto de entrada propuesto es `stonebot_cli.py`. Se ejecuta desde la raíz de
 |---|---|
 | `python -B stonebot_cli.py` | Abre un chat nuevo. La primera entrada válida crea el chat en el perfil de CLI. |
 | `python -B stonebot_cli.py --chat ID` | Abre un chat existente y recupera el proyecto, los mensajes y el estado de la tarea. Un ID desconocido produce un error y no crea un chat. |
+| `--model MODELO` | Selecciona un identificador de Ollama durante la invocación. Precedencia sobre el ajuste del perfil CLI y sin escribir en ningún INI. |
+| `--verbose` | Emite eventos de evaluación en JSON por línea a stderr. La respuesta del chat conserva su salida habitual. |
 | `python -B stonebot_cli.py --help` | Muestra la sintaxis y termina antes de crear el perfil o conectar con el proveedor. |
 | `/ayuda`, `/chats`, `/abrir ID`, `/nuevo`, `/salir` | Ayuda, lista de conversaciones con ID y título, apertura, chat nuevo y salida. Son comandos de la terminal y quedan fuera del historial. |
 | `/tarea OBJETIVO`, `/reanudar [ACLARACIÓN]`, `/cancelar` | Usan la validación y las transiciones compartidas con Desktop. Se aplica el límite de 4 000 caracteres del objetivo. `/cancelar` cierra la tarea mediante el historial y termina sin llamar al modelo. |
@@ -50,16 +52,22 @@ La ayuda identifica los comandos disponibles. Una entrada que comience con un co
 - Usar `is_setup_request()` para detectar las solicitudes de instalación MCP que Desktop intercepta antes de construir el turno. La terminal responde con el aviso de alcance de la CLI y se queda en el prompt.
 - Mientras hay un turno activo, un único lector del terminal atiende las confirmaciones. Ejecutar `Worker.run()` en un hilo de trabajo y pasar los eventos y solicitudes al hilo principal por una cola. El principal responde al pedido de autorización con el mismo diccionario y notifica al trabajador. Al interrumpir o salir, resolver las confirmaciones pendientes por denegación, esperar a que el trabajador termine y cerrar `McpPool`. Una solicitud de pausa no se anuncia como concluida hasta recibir el resultado del motor.
 
+### Evaluación del agente
+
+La traza usa un observador opcional en el motor. Registra rondas y peticiones al proveedor con los nombres de herramientas ofrecidas, las llamadas propuestas con sus argumentos, los resultados del ejecutor y el motivo de cierre. Incluye los reintentos al proveedor y distingue las llamadas propuestas de las ejecutadas, reutilizadas, denegadas u omitidas. El adaptador no reconstruye decisiones del motor.
+
+Serializar únicamente datos de la traza, sin prompt, razonamiento, conversación, credenciales o contenido privado. Mostrar nombres, forma de argumentos y resultados, campos operativos seguros y longitudes. Ocultar por defecto texto libre de argumentos y resultados, incluidos rutas y salida de procesos. La traza es optativa y no se persiste.
+
 ## 4. Subpasos y commits
 
-Verificar la rama y registrar la línea base de **29 suites** del paso 3 antes del primer cambio. Mantener un commit por subpaso y validar todas las suites en cada uno.
+Línea base verificada en `42e28a3` con **29 suites** aprobadas antes del primer cambio de código. Mantener un commit por subpaso y validar todas las suites en cada uno.
 
 | Subpaso | Alcance | Prueba que debe pasar | Commit |
 |---|---|---|---|
 | 4.1 | Añadir la selección de perfil a nivel de conversación. Hacer que `data_path()` use esa raíz y compartir la apertura del bloqueo. Mantener la base experimental y el perfil habitual en sus rutas vigentes. | Raíz por defecto, personalizada e inválida. Dos procesos en perfiles distintos. Rechazo del segundo escritor y de rutas protegidas o redirigidas. | `Isolate CLI conversation profiles` |
 | 4.2 | Extraer a `ChatSession` la carga y recuperación de chats y las decisiones compartidas de entrada para tareas. Mantener las acciones visuales y el tratamiento de adjuntos en Desktop. Conservar la señalización de errores y el orden entre guardar y ejecutar. | Crear, reabrir, reanudar, cancelar y seguir una tarea con casos de paridad. Si falla el guardado del estado de la tarea, no lanzar el turno. | `Share chat opening and task input handling` |
-| 4.3 | Implementar `CliTurnEvents`, el ciclo de ejecución en terminal y el arranque con Ollama, memoria personal desactivada y política de credenciales por perfil. | Aprueba una vez y deniega contra un servidor de prueba. Cancelación con texto parcial, pausa, EOF durante permiso, cierre de conexiones y ausencia de accesos al perfil personal. | `Run shared StoneBot turns in the terminal` |
-| 4.4 | Completar el punto de entrada, los comandos de navegación y la ayuda. Pasar los mensajes por `save_message`, `begin_turn`, el mismo `Worker` y `complete_turn`. Documentar el uso en README. | Abrir otra vez un chat desde un segundo proceso, continuar una tarea y recuperar un encargo interrumpido. Prueba manual de terminal y regresión de Desktop. | `Add StoneBot CLI chat commands and documentation` |
+| 4.3 | Implementar `CliTurnEvents`, el ciclo de ejecución en terminal y el arranque con Ollama, memoria personal desactivada y política de credenciales por perfil. Conectar el observador opcional a las rutas reales del motor. | Aprueba una vez y deniega contra un servidor de prueba. Cancelación con texto parcial, pausa, EOF durante permiso, cierre de conexiones y ausencia de accesos al perfil personal. | `Run shared StoneBot turns in the terminal` |
+| 4.4 | Completar el punto de entrada, los comandos de navegación, `--model`, `--verbose` y la ayuda. Pasar los mensajes por `save_message`, `begin_turn`, el mismo `Worker` y `complete_turn`. Documentar el uso en README. | Abrir otra vez un chat desde un segundo proceso, continuar una tarea y recuperar un encargo interrumpido. Prueba manual de terminal y regresión de Desktop. | `Add StoneBot CLI chat commands and documentation` |
 
 ## 5. Matriz de verificación y salida
 
@@ -70,6 +78,7 @@ Verificar la rama y registrar la línea base de **29 suites** del paso 3 antes d
 | C3 · Perfil | Usar raíces temporales distintas para Desktop y CLI. Colocar marcadores en la raíz de Desktop y la memoria experimental. Verificar que la CLI no lee ni modifica esos marcadores, todos sus archivos internos quedan en la raíz elegida y un segundo escritor termina sin tocar el historial. Probar una junction en Windows y los auxiliares de SQLite. |
 | C4 · Permisos | Un servidor MCP local simulado registra cero ejecuciones ante denegación, EOF o confirmación no interactiva y una ante aprobación. La siguiente solicitud vuelve a preguntar. Los dobles fallan si la CLI intenta leer credenciales de Windows o abrir StoneWave. Los datos sensibles no aparecen en salida ni diagnósticos. |
 | C5 · Interrupción | Verificar chat con y sin texto parcial, interrupción en confirmación y pausa de tarea. La aplicación vuelve al prompt tras cerrar el turno. Una tarea pausada puede reanudarse desde otra invocación. El cierre libera el bloqueo y termina las conexiones. |
+| C7 · Evaluación | Un proveedor simulado verifica modelo explícito, precedencia y ausencia de escritura de ajustes. Comparar turnos con y sin traza y comprobar catálogo, llamadas, argumentos redactados, resultados, rondas y motivos. Un secreto sintético nunca llega a la traza. |
 | C6 · Windows | Probar una conversación con Ollama local en un perfil desechable. Recorrer `/chats`, `/abrir`, `/nuevo` y `/salir`. Confirmar el comportamiento real de Ctrl+C y fin de entrada en terminal. Repetir en Desktop la prueba de bandeja y salida y comprobar que sigue funcionando junto a la CLI con su perfil propio. |
 
 Añadir `tests/test_cli_profile.py` para C3 y `tests/test_stonebot_cli.py` para C1, C2, C4 y C5. Extender `tests/test_chat_session.py` con la paridad de apertura, recuperación y enrutamiento de tareas. Ejecutar cada archivo con `python -B tests/<archivo>.py`. Usar bases temporales, respuestas simuladas, subprocesos para el arranque y un servidor local de prueba para los permisos. La comprobación con Ollama real se hace aparte de la suite automatizada. Registrar por subpaso comandos, resultados y cualquier caso pendiente en este documento. Revisar el estado de Git y publicar los commits de la implementación tras la validación.
@@ -80,7 +89,7 @@ El paso 5 conserva las decisiones sobre enrutamiento, selección de herramientas
 
 ## 7. Lista de avance
 
-- [ ] 4.1 Perfil de conversación y bloqueo
+- [x] 4.1 Perfil de conversación y bloqueo
 - [ ] 4.2 Apertura y entrada de tareas compartidas
 - [ ] 4.3 Adaptador de terminal y permisos
 - [ ] 4.4 Comandos, documentación y verificación de aceptación
