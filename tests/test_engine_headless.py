@@ -14,6 +14,7 @@ from PySide6.QtCore import QCoreApplication
 
 from ai_provider import AISettings
 from chat_execution import ChatExecution
+from cli_turn_runner import trace_payload
 from engine_harness import FakeModel, call, reply, run_turn
 from tasks import new_task
 from turn_worker import Worker, managed_process
@@ -146,11 +147,29 @@ def test_e9_pause_task(root):
     assert not model.requests
 
 
+def test_cli_trace_redacts_and_reports_repeat(root):
+    worker = project_worker(root)
+    secret = "dato confidencial de ejemplo"
+    events = []
+    worker.trace = lambda event, **fields: events.append(trace_payload(event, fields))
+    request = call("read_project_file", path="README.md")
+    model = FakeModel(request, request, reply("Fin."))
+    result = run_turn(worker, model, root / "perfil", approve=True)
+    assert result.outcome()[0][0] == "finished"
+    assert [event["herramientas"] for event in events if event["evento"] == "peticion_modelo"][-1] == []
+    assert events[-1]["motivo"] == "llamada_repetida"
+    [tool_result] = [event for event in events if event["evento"] == "resultado"]
+    assert tool_result["resultado"]["campos"]["estado"] == "ok"
+    assert "README.md" not in json.dumps(events) and "Los informes" not in json.dumps(events)
+    hidden = trace_payload("resultado", {"resultado": secret, "argumentos": {"text": secret, secret: "otro"}})
+    assert secret not in json.dumps(hidden)
+
+
 if __name__ == "__main__":
     for test in (test_e1_plain_reply, test_e2_project_read, test_e3_unknown_tool,
                  test_e4_repeat_closes_without_tools, test_e5_process_denied,
                  test_e6_cancel_while_waiting, test_e7_provider_error, test_e8_tool_round_budget,
-                 test_e9_pause_task):
+                 test_e9_pause_task, test_cli_trace_redacts_and_reports_repeat):
         with TemporaryDirectory() as directory:
             test(Path(directory))
         print(f"PASS {test.__name__}")

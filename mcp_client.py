@@ -139,7 +139,8 @@ async def session_for(name, server, *, message_handler=None, stdio_environment=N
             env.update(stdio_environment)
         params = StdioServerParameters(command=server["command"], args=server["args"], cwd=folder, env=env)
         # pythonw no tiene consola. Algunos servidores escriben en stderr antes de responder.
-        stderr = nullcontext(sys.stderr) if sys.stderr is not None else open(os.devnull, "w")
+        stderr = (nullcontext(sys.stderr) if sys.stderr is not None and cli_root() is None
+                  else open(os.devnull, "w"))
         with stderr as log:
             async with stdio_client(params, errlog=log) as streams:
                 async with ClientSession(*streams, read_timeout_seconds=timedelta(seconds=startup_timeout(server) - 5),

@@ -65,7 +65,7 @@ class ToolLoop:
         self.count_tool_context = count_tool_context
 
     async def run(self, request_round, execute_tool, *, check_pause, on_repeat, after_batch, activity,
-                  before_call=None, after_call=None):
+                  before_call=None, after_call=None, trace=None):
         """Ejecuta rondas hasta obtener una respuesta o alcanzar el límite.
 
         request_round devuelve un mensaje con llamadas, texto final o None para
@@ -93,6 +93,8 @@ class ToolLoop:
                 calls.append((name, arguments, resolved, key))
             if self.max_distinct_calls and all(key in results for _, _, _, key in calls):
                 on_repeat()
+                if trace:
+                    trace("lote_omitido", ronda=index + 1, estado="repetido")
                 finish_without_tools = True
                 continue
 
@@ -101,13 +103,17 @@ class ToolLoop:
                 self.context_chars += len(reply.thinking or "") + len(reply.content or "")
             for position, (name, arguments, resolved, key) in enumerate(calls):
                 check_pause()
+                disposition = "ejecutada"
                 if not self.tools.permits(name):
+                    disposition = "no_disponible"
                     offered = ", ".join(sorted(self.tools.available))
                     result = ToolResult(f"Herramienta desconocida o no disponible. Usa un nombre exacto de esta lista: {offered}.",
                                         reuse=False)
                 elif key in results:
+                    disposition = "reutilizada"
                     result = results[key]
                 elif self.max_distinct_calls and len(results) >= self.max_distinct_calls:
+                    disposition = "limite_de_llamadas"
                     result = ToolResult("StoneBot terminó la fase de herramientas de este turno.", reuse=False)
                     finish_without_tools = True
                 else:
@@ -118,12 +124,20 @@ class ToolLoop:
                         remaining = [item[2] for item in calls[position + 1:] if self.tools.permits(item[0])]
                         step = before_call(resolved, arguments, remaining)
                     if isinstance(step, ToolResult):
+                        disposition = "omitida"
                         result = step
                     else:
                         result = await handler(resolved, arguments)
                         if step is not None:
                             after_call(step, result.answer if isinstance(result, EndTurn) else result.content,
                                        result.status if isinstance(result, ToolResult) else "respuesta recibida")
+                if trace:
+                    if isinstance(result, ToolResult) and result.status == "sin ejecutar" and disposition == "ejecutada":
+                        disposition = "sin_ejecutar"
+                    trace("resultado", ronda=index + 1, posicion=position + 1,
+                          herramienta=resolved if disposition != "no_disponible" else "(no disponible)",
+                          estado=disposition, estado_ejecutor=result.status if isinstance(result, ToolResult) else "cierre",
+                          resultado=result.answer if isinstance(result, EndTurn) else result.content)
                 if isinstance(result, EndTurn):
                     return result.answer
                 if key is not None and result.reuse:

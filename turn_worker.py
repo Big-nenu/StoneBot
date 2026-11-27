@@ -158,8 +158,12 @@ def model_context(prompt_chars, minimum=4096):
 class Worker:
     def __init__(self, messages, pool=None, *, identity_enabled=False, memory=None, task=None, save_task=None,
                  completed_task=None, project=None, save_continuity=None, project_document_path=None, think=None,
-                 capture_memory=False, ai=None, execution=None, events: TurnEvents | None = None):
+                 capture_memory=False, ai=None, execution=None, events: TurnEvents | None = None, trace=None):
         self.events = events if events is not None else NullEvents()
+        self.trace = trace
+        self.trace_reason = "respuesta"
+        self.trace_request = 0
+        self.trace_tools = set()
         self.messages = messages
         self.pool = pool
         self.permission = None
@@ -191,14 +195,22 @@ class Worker:
         self.partial_text = ""
 
     def run(self) -> TurnOutcome:
+        outcome = self._run()
+        if self.trace:
+            self.trace("fin", estado=outcome.kind, motivo=self.trace_reason)
+        return outcome
+
+    def _run(self) -> TurnOutcome:
         try:
             answer = asyncio.run(self.run_chat())
             if self.stop_requested.is_set():
+                self.trace_reason = "detenido"
                 return TurnOutcome("cancelled", partial_text=self.private_answer(self.partial_text.strip()))
             if self.capture_memory and self.memory is not None and self.messages:
                 self.capture_user_memories()
             return TurnOutcome("finished", answer)
         except asyncio.CancelledError:
+            self.trace_reason = "pausa" if self.task is not None else "detenido"
             if self.task is not None:
                 for step in self.task["steps"]:
                     if step["status"] == "running":
@@ -207,11 +219,15 @@ class Worker:
             else:
                 return TurnOutcome("cancelled", partial_text=self.private_answer(self.partial_text.strip()))
         except TaskPaused as exc:
+            self.trace_reason = "pausa"
             return TurnOutcome("finished", self.task_reply("paused", str(exc)))
         except (TurnError, ResponseError) as exc:
+            if self.trace_reason == "respuesta":
+                self.trace_reason = "proveedor" if isinstance(exc, ResponseError) else "error_de_turno"
             self.observe_ranking("mcp", "fallido")
             return TurnOutcome("error", str(exc))
         except Exception as exc:
+            self.trace_reason = "error_interno"
             self.observe_ranking("mcp", "fallido")
             self.events.notice(f"El turno falló ({type(exc).__name__}).")
             return TurnOutcome("error", f"No se pudo completar el turno. Revisa {PROVIDERS[self.ai.provider]} y consulta el diagnóstico.")
@@ -237,6 +253,21 @@ class Worker:
                 loop.call_soon_threadsafe(task.cancel)
 
     async def model_request(self, client, method, *args, internal=False, **kwargs):
+        if not self.trace or method != "chat":
+            return await self._model_request(client, method, *args, internal=internal, **kwargs)
+        names = [tool.__name__ if callable(tool) else tool.function.name for tool in kwargs.get("tools", ())]
+        self.trace_request += 1
+        self.trace_tools.update(names)
+        self.trace("peticion_modelo", peticion=self.trace_request, herramientas=names)
+        response = await self._model_request(client, method, *args, internal=internal, **kwargs)
+        for call in getattr(response.message, "tool_calls", None) or ():
+            name = call.function.name
+            self.trace("llamada_propuesta", peticion=self.trace_request,
+                       herramienta=name if name in self.trace_tools else "(desconocida)",
+                       argumentos=call.function.arguments)
+        return response
+
+    async def _model_request(self, client, method, *args, internal=False, **kwargs):
         handler = getattr(client, f"{method}_async", None) if self.turn_loop is not None else None
         if not inspect.iscoroutinefunction(handler):
             handler = getattr(client, method)
@@ -1472,6 +1503,10 @@ class Worker:
 
             async def request_round(round_index, finishing):
                 nonlocal planning_retried, repairs, cached_summary
+                if self.trace:
+                    self.trace("ronda", ronda=round_index + 1, cierre=finishing)
+                    if finishing and self.trace_reason == "respuesta":
+                        self.trace_reason = "limite_de_rondas"
                 if finishing and local_evidence:
                     return await self.summarize_local_reads(client, messages, local_evidence)
                 previously_compact = bool(compact.archive)
@@ -1531,6 +1566,8 @@ class Worker:
                                                          tools=[], options=options, think=False, **cloud_read_options)
                         self.check_pause()
                         text = (retry.message.content or "").strip()
+                    if not text and self.trace:
+                        self.trace("cierre_sin_texto", motivo=self.trace_reason)
                     return text or "No pude obtener una respuesta final del modelo en este turno."
                 if save_request and not reply.tool_calls:
                     if round_index == 0 and pending:
@@ -1885,6 +1922,8 @@ class Worker:
             catalog.register(memory_tools, execute_memory)
 
             def on_repeat():
+                if self.trace:
+                    self.trace_reason = "llamada_repetida"
                 self.events.activity("El modelo repitió solicitudes de herramientas. Concluyendo el turno.")
                 self.events.notice("Se omitieron llamadas repetidas del modelo. El cierre no ofrece herramientas.")
 
@@ -1916,11 +1955,13 @@ class Worker:
             answer = await loop.run(request_round, execute_control, check_pause=self.check_pause,
                                     on_repeat=on_repeat, after_batch=after_batch, activity=self.events.activity,
                                     before_call=before_call if journal else None,
-                                    after_call=journal.observe if journal else None)
+                                    after_call=journal.observe if journal else None, trace=self.trace)
             if answer is not None:
                 return answer
             if save_request:
                 return "\n\n".join(status.values())
+            if self.trace:
+                self.trace_reason = "limite_de_rondas"
             if self.task is not None:
                 return self.task_limit()
             raise TurnError("StoneBot alcanzó el límite de llamadas a herramientas para este turno.")

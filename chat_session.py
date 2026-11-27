@@ -19,8 +19,8 @@ class TurnPlan:
     worker_kwargs: dict
     warning: str = ""
 
-    def create_worker(self):
-        return Worker(**self.worker_kwargs)
+    def create_worker(self, *, events=None, trace=None):
+        return Worker(**self.worker_kwargs, events=events, trace=trace)
 
 
 @dataclass
