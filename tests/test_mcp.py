@@ -376,7 +376,7 @@ def test_context7_results_are_used_to_finish_after_empty_ollama_response():
     def chat(**kwargs):
         nonlocal rounds
         rounds += 1
-        assert kwargs["options"]["num_ctx"] == (4096 if rounds <= 2 else 8192)
+        assert "num_ctx" not in kwargs["options"]
         transcript = kwargs["messages"]
         if rounds == 4:
             assert kwargs["tools"] == [] and kwargs["think"] is False
@@ -440,10 +440,10 @@ def test_empty_reply_retries_selection_across_active_servers():
         assert set(tools) == {"docs", "web"} and tools["docs"] != tools["web"]
         rounds += 1
         if rounds == 1:
-            assert kwargs["options"]["num_ctx"] == 8192
+            assert "num_ctx" not in kwargs["options"]
             return SimpleNamespace(message=Message(role="assistant", content="", thinking="Buscando una herramienta."))
         if rounds == 2:
-            assert kwargs["think"] is False and kwargs["options"]["num_ctx"] == 8192
+            assert kwargs["think"] is False and "num_ctx" not in kwargs["options"]
             call = Message.ToolCall(function=Message.ToolCall.Function(name=tools["web"], arguments={}))
             return SimpleNamespace(message=Message(role="assistant", tool_calls=[call]))
         assert kwargs["messages"][-1]["content"] == "Fuente web"

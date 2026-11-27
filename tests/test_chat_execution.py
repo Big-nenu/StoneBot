@@ -179,7 +179,8 @@ async def compact_live():
                 {"role": "assistant", "content": "Registré la decisión en este chat."},
                 {"role": "user", "content": "¿Qué código de aceptación decidimos? Responde con el código exacto."}]
     worker = turn_worker.Worker(messages, ai=app.AISettings("ollama", "nemotron-3.5-bolt:e4b"), think=False)
-    with patch.object(chat_execution, "CONTEXT_CHARS", 8000), patch.object(worker, "enabled_skills", return_value={}):
+    with (patch.object(turn_worker, "ChatContext", side_effect=lambda _: chat_execution.ChatContext(8000)),
+          patch.object(worker, "enabled_skills", return_value={})):
         with patch.object(worker, "summarize_chat_context", wraps=worker.summarize_chat_context) as compact:
             result = await worker.run_chat()
             assert compact.await_count >= 1 and marker in result, result

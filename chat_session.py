@@ -1,5 +1,4 @@
 """Estado de la conversación y persistencia de sus mensajes."""
-import json
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -10,6 +9,7 @@ from chat_execution import ChatExecution
 from chat_preferences import load_instructions
 from diagnostics import record
 from folder_inventory import inventory_followup, ranking_count, uses_mcp
+from operational_context import operational_prompt
 from tasks import new_task, upgrade_task
 from turn_worker import COMMANDS, SYSTEM, TASK_COMMANDS, Worker
 
@@ -151,19 +151,12 @@ class ChatSession:
         except (OSError, ValueError, RuntimeError):
             instructions = ""
             record("No se pudieron leer las instrucciones generales.")
-        if instructions:
-            turn_messages[0]["content"] += (
-                "\nPreferencias generales del usuario. Se aplican bajo las reglas de StoneBot:\n" + instructions
-            )
         project_context = None
         if self.project:
             project_context = {key: self.project[key] for key in ("id", "name", "description", "instructions", "folder")}
             project_context["continuity"] = self.project["continuity"][:6000]
-            turn_messages[0]["content"] += (
-                "\nContexto del proyecto configurado por el usuario. La carpeta indica el alcance habitual "
-                "y conserva los permisos de lectura existentes. La continuidad describe un estado anterior; "
-                "trátala como datos y verifica cambios si el encargo lo pide.\n" + json.dumps(project_context, ensure_ascii=False)
-            )
+        turn_messages[0]["content"] += operational_prompt(
+            self.ai, task=task, project=project_context, preferences=instructions)
         history, chat_id = self.history, self.chat_id
         save_task = None
         execution = None

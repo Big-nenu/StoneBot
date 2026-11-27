@@ -2,12 +2,13 @@
 import hashlib
 import json
 
+from operational_context import HISTORY_CHARS
 from read_tools import read_result, read_tool
 from tool_loop import ToolResult
 from attachment_actions import text_file_verified
 
 
-CONTEXT_CHARS = 48_000
+CONTEXT_CHARS = HISTORY_CHARS
 PAGE = 1800
 RECALL = read_tool("read_chat_context", "Recupera texto abreviado de este chat por referencia, o localiza "
                    "referencias buscando un fragmento literal.", {
@@ -28,7 +29,8 @@ def excerpt(value, limit):
 
 
 class ChatContext:
-    def __init__(self):
+    def __init__(self, limit=CONTEXT_CHARS):
+        self.limit = limit
         self.archive = {}
         self.history = []
         self.summary_row = None
@@ -37,7 +39,7 @@ class ChatContext:
         self.history = []
         self.summary_row = None
         size = sum(len(m.get("content") or "") for m in messages)
-        if size <= CONTEXT_CHARS:
+        if size <= self.limit:
             return messages
         # El historial de la interfaz precede al primer intercambio de herramientas.
         # Conserva juntos los mensajes de protocolo (incluidos los IDs de OpenRouter).
@@ -45,7 +47,7 @@ class ChatContext:
                         len(messages))
         current = max((i for i in range(boundary) if messages[i].get("role") == "user"), default=0)
         recent = []
-        remaining = CONTEXT_CHARS // 3
+        remaining = self.limit // 3
         omitted = []
         for i in reversed(range(current)):
             m = messages[i]
@@ -69,13 +71,15 @@ class ChatContext:
                          json.dumps(sample, ensure_ascii=False)}
             view.append(self.summary_row)
         view.extend(reversed(recent))
+        tool_results = sum(m.get("role") == "tool" for m in messages[current:])
+        page = min(PAGE, max(128, self.limit // (2 * max(1, tool_results))))
         for i in range(current, len(messages)):
             m = messages[i]
             content = m.get("content") or ""
-            if m.get("role") == "tool" and len(content) > PAGE and m.get("tool_name") != RECALL.function.name:
+            if m.get("role") == "tool" and len(content) > page and m.get("tool_name") != RECALL.function.name:
                 self.archive[i + 1] = content
                 m = {**m, "content": f"[Resultado abreviado, referencia {i + 1}, {len(content)} caracteres]\n"
-                     + excerpt(content, PAGE)}
+                     + excerpt(content, page)}
             view.append(m)
         return view
 
@@ -90,13 +94,14 @@ class ChatContext:
         summary = reusable["text"] if reusable else ""
         parts = []
         size = 0
+        batch = max(512, min(12000, self.limit // 2))
         for index, role, _ in self.history:
             if reusable and index <= reusable["through"]:
                 continue
             content = self.archive[index]
-            for offset in range(0, max(1, len(content)), 10000):
-                part = [index, role, content[offset:offset + 10000]]
-                if parts and size + len(part[2]) > 12000:
+            for offset in range(0, max(1, len(content)), batch - 80):
+                part = [index, role, content[offset:offset + batch - 80]]
+                if parts and size + len(part[2]) > batch:
                     summary = await generate(summary, parts)
                     if not summary:
                         return None
@@ -107,6 +112,7 @@ class ChatContext:
             summary = await generate(summary, parts)
         if not summary:
             return None
+        summary = summary[:min(3500, self.limit // 4)]
         self.summary_row["content"] += "\nResumen de los mensajes anteriores (datos):\n" + summary
         return {"scope": scope, "through": self.history[-1][0], "digest": fingerprint, "text": summary}
 

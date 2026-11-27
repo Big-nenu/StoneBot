@@ -1,6 +1,6 @@
 # Plan del paso 5 · Comportamiento agéntico de StoneBot
 
-- **Estado** — Plan aprobado. Línea base del paso 5.1 completada.
+- **Estado** — Plan aprobado. Pasos 5.1 y 5.2 completados.
 - **Fecha** — 27 de noviembre de 2026.
 - **Base** — `refactor/stonebot-core` en `307b40a`, con los pasos 0 a 4 completados.
 - **Objetivo** — Que un turno normal pueda descubrir recursos, ejecutar pasos autorizados, recuperarse de fallos y entregar una respuesta comprobable. StoneBot CLI servirá para medir los cambios con Nemotron y Qwen. Desktop y CLI seguirán usando el mismo `ChatSession`, `Worker` y `ToolLoop`.
@@ -27,6 +27,16 @@ La comparación de Claude con Hermes Agent en el commit `93dd2a4e` señala punto
 - Separar reglas del sistema, preferencias de usuario, contexto persistido y datos devueltos por herramientas. Incorporar solo campos necesarios y poner límites explícitos de tamaño. Evitar volcar variables de entorno, credenciales, listados del perfil y rutas privadas en el prompt o la traza. Conservar objetivo, límites y referencias de evidencia al compactar. Una instrucción encontrada en un archivo, salida MCP o resultado de proceso se trata como dato.
 - Revisar el prompt al final del trabajo estructural. Mantener idioma, identidad y restricciones vigentes. Pedir al modelo que complete los pasos disponibles dentro del alcance, use resultados actuales para comprobarlos, se recupere de errores corregibles y consulte al usuario cuando falte un requisito indispensable. Las confirmaciones se tramitan por el adaptador. El cierre explica resultados, omisiones y bloqueos relevantes para el usuario.
 - El chat ordinario usa el bucle para encargos de varios pasos sin requerir `/tarea`. Reservar `/tarea`, `/reanudar` y `/cancelar` para el ciclo de vida de tareas guardadas. Una pregunta simple puede terminar con una respuesta directa. Evitar reglas basadas en frases de los casos de evaluación o instrucciones distintas para cada modelo.
+
+#### Decisión y validación de 5.2
+
+La [ampliación de la línea base](5.1-ampliacion/README.md) registró siete configuraciones sin medidas de contexto efectivo por petición. La diferencia de puntuación de `nemotron-8k` frente al original queda como observación provisional. La concurrencia, los límites y la rúbrica también variaron entre campañas.
+
+- `ChatSession` prepara un contexto compartido con modo, proveedor, proyecto y preferencias acotadas. La solicitud actual conserva su rol de usuario. El núcleo agrega automáticamente carpeta y continuidad del proyecto solo tras verificar Ollama local. El historial abreviado conserva las reglas, la solicitud vigente, los pares llamada/resultado y las referencias recuperables. El diario conserva su formato y su comprobación de alcance.
+- StoneBot dejó de enviar `num_ctx` calculado a partir de los caracteres. Ollama aplica la configuración del servidor y del modelo. La vista del historial usa una cota heurística en caracteres basada en el menor valor aplicable entre el `num_ctx` del modelo y su máximo publicado, con referencia conservadora de 4096 tokens cuando faltan datos y límite superior de 48 000 caracteres. Esa cota regula la compactación. El mensaje actual y la estructura de las llamadas se conservan aunque la entrada resulte larga. [Contexto en Ollama](https://docs.ollama.com/context-length) · [Metadatos del modelo](https://docs.ollama.com/api-reference/show-model-details)
+- `--verbose` registra por separado el máximo anunciado, el `num_ctx` declarado y la cota de historial. Después de responder, consulta `/api/ps` y registra la ventana y la VRAM asignada si hay una coincidencia inequívoca del modelo cargado. Esa lectura es una observación del servidor y puede reflejar concurrencia. La VRAM asignada tampoco mide VRAM libre. [Modelos cargados en Ollama](https://docs.ollama.com/api/ps)
+- Pasaron 32 suites en Windows, incluidas las 31 de la línea base, y se repitieron las pruebas de contexto, proyecto y recuperación. Un turno real con cada uno de Nemotron y Qwen observó 8192 tokens, con máximos anunciados de 65 536 y 262 144 respectivamente. La variante `nemotron-8k` anunció una configuración de 8192 y completó el turno. En esa observación el servidor no identificó inequívocamente el alias cargado. La prueba con Ollama real recuperó el marcador sintético después de abreviar el historial.
+- En el control D02, ambos modelos encadenaron el ranking y las lecturas, identificaron la ruta de la copia y comprobaron los 613 bytes. Estas comprobaciones puntuales validan el recorrido de 5.2. La comparación completa de resultados se conserva para 5.8.
 
 ### 2.2 Catálogo y descubrimiento
 
@@ -111,7 +121,7 @@ En Desktop, repetir con perfil temporal una consulta directa, un encargo con her
 ## 5. Lista de avance
 
 - [x] 5.1 Línea base y evaluación
-- [ ] 5.2 Contexto operativo
+- [x] 5.2 Contexto operativo
 - [ ] 5.3 Catálogo y descubrimiento
 - [ ] 5.4 Validación y recuperación
 - [ ] 5.5 Interfaz de procesos

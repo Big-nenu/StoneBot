@@ -171,6 +171,8 @@ python -B stonebot_cli.py --chat 1 --verbose
 
 Usa un identificador de modelo instalado en Ollama. `--model` selecciona el modelo durante esa invocación. La selección dura hasta salir y el diario vincula cada ejecución al modelo con el que empezó. `--verbose` emite JSON por línea a stderr con rondas, herramientas ofrecidas, llamadas propuestas, estructura de argumentos y resultados, y motivos de cierre. El texto libre de las herramientas, rutas y credenciales quedan ocultos en la traza. Para un diagnóstico interactivo, puedes redirigir stderr a un archivo, teniendo en cuenta que los avisos y las solicitudes de permiso usan ese mismo canal.
 
+StoneBot usa la ventana de contexto que gestiona Ollama. Para cambiarla, configura el servidor o el modelo en Ollama. La traza distingue el máximo anunciado por el modelo, su `num_ctx` configurado y la ventana y VRAM que Ollama informa para el modelo cargado, cuando esos datos están disponibles. La observación del servidor puede reflejar otras peticiones concurrentes. [Ventana de contexto en Ollama](https://docs.ollama.com/context-length)
+
 La CLI usa `%USERPROFILE%\.stonebot-cli` por defecto. Para elegir otra carpeta, asigna una ruta absoluta local a `STONEBOT_HOME` en PowerShell antes de iniciar. Cada perfil tiene su propio historial, ajustes y bloqueo. Usa `/ayuda` para ver los comandos, `/chats` para consultar los ID y `/abrir ID` para cambiar de conversación. `/tarea`, `/reanudar` y `/cancelar` operan sobre el chat activo. Ctrl+C detiene un turno o pausa su tarea. `/salir` cierra la sesión.
 
 Esta versión admite texto con Ollama local. Para probar un servidor MCP, provisiona `mcp_servers.json` en el perfil CLI con el formato validado por `mcp_client.py`. Para HTTP con autenticación, usa la referencia `token_env` a una variable `STONEBOT_MCP_…` de la sesión, según el formato existente. La terminal pide confirmación para las operaciones que la requieren y concede permiso para una sola llamada. [Plan y alcance de StoneBot CLI](docs/05-plan-stonebot-cli.md)
@@ -434,6 +436,7 @@ Después de una llamada, el catálogo del agente conserva las operaciones compat
 | Permisos, exclusiones y recorrido nativo de archivos | [`local_files.py`](local_files.py) y [`local_file_requests.py`](local_file_requests.py). El diálogo está en [`local_files_ui.py`](local_files_ui.py). |
 | Cómo StoneBot abre una conversación y ejecuta un turno desde la terminal | [`stonebot_cli.py`](stonebot_cli.py) y [`cli_turn_runner.py`](cli_turn_runner.py) |
 | Cómo se prepara un turno y se guarda, regenera o restaura una respuesta | [`chat_session.py`](chat_session.py) mantiene la conversación y coordina el historial. |
+| Cómo se prepara y abrevia el contexto que recibe el modelo | [`operational_context.py`](operational_context.py) y [`chat_execution.py`](chat_execution.py) |
 | Cómo SB ejecuta el turno y solicita permisos | [`turn_worker.py`](turn_worker.py) ejecuta el motor. [`turn_events.py`](turn_events.py) define sus eventos y su resultado. |
 | Cómo la ventana recibe los eventos y confirma permisos | [`qt_turn_runner.py`](qt_turn_runner.py) conecta el motor con Qt. |
 | Cómo comprobar el turno de chat sin abrir la ventana | [`tests/test_engine_headless.py`](tests/test_engine_headless.py), con el modelo simulado de [`tests/engine_harness.py`](tests/engine_harness.py) |

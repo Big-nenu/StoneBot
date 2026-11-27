@@ -7,7 +7,6 @@ from dataclasses import dataclass
 class ToolResult:
     content: str
     reuse: bool = True
-    context_chars: int | None = None
     status: str = "respuesta recibida"
 
 
@@ -55,14 +54,11 @@ class TurnTools:
 
 
 class ToolLoop:
-    def __init__(self, messages, *, context_chars, final_round, tools,
-                 max_distinct_calls, count_tool_context):
+    def __init__(self, messages, *, final_round, tools, max_distinct_calls):
         self.messages = messages
-        self.context_chars = context_chars
         self.final_round = final_round
         self.tools = tools
         self.max_distinct_calls = max_distinct_calls
-        self.count_tool_context = count_tool_context
 
     async def run(self, request_round, execute_tool, *, check_pause, on_repeat, after_batch, activity,
                   before_call=None, after_call=None, trace=None):
@@ -99,8 +95,6 @@ class ToolLoop:
                 continue
 
             self.messages.append(reply)
-            if self.count_tool_context:
-                self.context_chars += len(reply.thinking or "") + len(reply.content or "")
             for position, (name, arguments, resolved, key) in enumerate(calls):
                 check_pause()
                 disposition = "ejecutada"
@@ -143,10 +137,6 @@ class ToolLoop:
                 if key is not None and result.reuse:
                     results[key] = result
                 self.messages.append({"role": "tool", "tool_name": name, "content": result.content})
-                if result.context_chars is not None:
-                    self.context_chars += result.context_chars
-                elif self.count_tool_context:
-                    self.context_chars += len(json.dumps(arguments)) + len(result.content)
             answer = after_batch()
             if answer is not None:
                 return answer

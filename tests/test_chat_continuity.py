@@ -102,6 +102,5 @@ def check_continuity(live):
 
 if __name__ == "__main__":
     qt = QApplication([])
-    assert turn_worker.model_context(48_164) == 32_768
     check_continuity("--live" in sys.argv)
     print("PASS: aclaración, reapertura, preferencias de idioma y MCP STDIO.")
