@@ -41,8 +41,10 @@ def exercise(home):
             assert History().path.parent == mcp_client.data_path()
             code = ("import sys; from conversation_lock import acquire_conversation_lock; "
                     "from stonebot_engine.safety import configure_cli_profile; "
-                    "configure_cli_profile(sys.argv[1]); assert acquire_conversation_lock() is None")
-            subprocess.run([sys.executable, "-B", "-c", code, str(mcp_client.data_path())], check=True)
+                    "configure_cli_profile(sys.argv[1]); lock = acquire_conversation_lock(); "
+                    "assert (lock is None) == (sys.argv[2] == 'blocked')")
+            for profile, expected in ((mcp_client.data_path(), "blocked"), (home / "otro", "open")):
+                subprocess.run([sys.executable, "-B", "-c", code, str(profile), expected], check=True, timeout=20)
         finally:
             lock.unlock()
         assert marker.read_text(encoding="utf-8") == "base experimental"

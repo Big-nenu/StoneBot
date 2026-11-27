@@ -38,10 +38,10 @@ def configure_cli_profile(value=None):
     if os.name == "nt" and (ctypes.windll.kernel32.GetDriveTypeW(path.anchor) not in (2, 3)
                             or any(os.path.isreserved(part) for part in path.parts[1:])):
         raise IsolationError("STONEBOT_HOME debe estar en una unidad local.")
-    expected = Path(os.path.abspath(path))
     if ".." in path.parts or any(parent.is_symlink() or parent.is_junction() for parent in (path, *path.parents)):
         raise IsolationError("La carpeta de datos de la CLI está redirigida.")
-    if Path(check_path(expected)) != expected or (expected.exists() and not expected.is_dir()):
+    expected = Path(check_path(path))
+    if expected.exists() and not expected.is_dir():
         raise IsolationError("La carpeta de datos de la CLI no es válida.")
     for protected in (default_root(), *protected_paths()):
         if _inside(expected, protected) or _inside(protected, expected):

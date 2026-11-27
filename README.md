@@ -24,7 +24,7 @@ StoneBot es un asistente personal local. Mantiene continuidad entre sesiones con
 
 La [hoja de ruta de mejora arquitectónica](docs/03-hoja-de-ruta-arquitectura.md) recoge las seis fases del agente, su estado y los criterios de aceptación.
 
-El [plan de StoneBot CLI](docs/05-plan-stonebot-cli.md) documenta la propuesta para usar el núcleo compartido desde la terminal de Windows.
+El [plan de StoneBot CLI](docs/05-plan-stonebot-cli.md) documenta el diseño, el alcance y la verificación de la terminal de Windows.
 
 Las primeras etapas documentan el prototipo original. La configuración vigente está en **Memoria personal en StoneWave**.
 
@@ -159,6 +159,21 @@ La base experimental `%USERPROFILE%\.stonebot\memoria.db` y su CLI se conservan 
 ## Ejecutar y probar
 
 Con Python 3.14, instala `PySide6`, `ollama`, `mcp`, `requests`, `numpy`, `PyYAML`, `markdown-it-py` y `Pygments`. Inicia Ollama local con `nemotron-3.5-bolt:e4b` y el modelo de embeddings que usa tu instalación de SW. Desde el repositorio de SB, inicia `python -B app.py`.
+
+### Chat desde la terminal
+
+Desde la raíz del repositorio, inicia Ollama y ejecuta:
+
+```powershell
+python -B stonebot_cli.py --model nemotron-3.5-bolt:e4b
+python -B stonebot_cli.py --chat 1 --verbose
+```
+
+Usa un identificador de modelo instalado en Ollama. `--model` selecciona el modelo durante esa invocación. La selección dura hasta salir y el diario vincula cada ejecución al modelo con el que empezó. `--verbose` emite JSON por línea a stderr con rondas, herramientas ofrecidas, llamadas propuestas, estructura de argumentos y resultados, y motivos de cierre. El texto libre de las herramientas, rutas y credenciales quedan ocultos en la traza. Para un diagnóstico interactivo, puedes redirigir stderr a un archivo, teniendo en cuenta que los avisos y las solicitudes de permiso usan ese mismo canal.
+
+La CLI usa `%USERPROFILE%\.stonebot-cli` por defecto. Para elegir otra carpeta, asigna una ruta absoluta local a `STONEBOT_HOME` en PowerShell antes de iniciar. Cada perfil tiene su propio historial, ajustes y bloqueo. Usa `/ayuda` para ver los comandos, `/chats` para consultar los ID y `/abrir ID` para cambiar de conversación. `/tarea`, `/reanudar` y `/cancelar` operan sobre el chat activo. Ctrl+C detiene un turno o pausa su tarea. `/salir` cierra la sesión.
+
+Esta versión admite texto con Ollama local. Para probar un servidor MCP, provisiona `mcp_servers.json` en el perfil CLI con el formato validado por `mcp_client.py`. Para HTTP con autenticación, usa la referencia `token_env` a una variable `STONEBOT_MCP_…` de la sesión, según el formato existente. La terminal pide confirmación para las operaciones que la requieren y concede permiso para una sola llamada. [Plan y alcance de StoneBot CLI](docs/05-plan-stonebot-cli.md)
 
 ### Modelo y proveedor
 
@@ -417,6 +432,7 @@ Después de una llamada, el catálogo del agente conserva las operaciones compat
 | La lista de conversaciones o cómo se guardan | [`history_ui.py`](history_ui.py) para la lista y [`history.py`](history.py) para el almacenamiento. |
 | Cuándo SB interpreta que quieres abrir un enlace, leer una carpeta o usar herramientas externas | [`request_routing.py`](request_routing.py) |
 | Permisos, exclusiones y recorrido nativo de archivos | [`local_files.py`](local_files.py) y [`local_file_requests.py`](local_file_requests.py). El diálogo está en [`local_files_ui.py`](local_files_ui.py). |
+| Cómo StoneBot abre una conversación y ejecuta un turno desde la terminal | [`stonebot_cli.py`](stonebot_cli.py) y [`cli_turn_runner.py`](cli_turn_runner.py) |
 | Cómo se prepara un turno y se guarda, regenera o restaura una respuesta | [`chat_session.py`](chat_session.py) mantiene la conversación y coordina el historial. |
 | Cómo SB ejecuta el turno y solicita permisos | [`turn_worker.py`](turn_worker.py) ejecuta el motor. [`turn_events.py`](turn_events.py) define sus eventos y su resultado. |
 | Cómo la ventana recibe los eventos y confirma permisos | [`qt_turn_runner.py`](qt_turn_runner.py) conecta el motor con Qt. |

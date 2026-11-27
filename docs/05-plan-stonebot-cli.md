@@ -1,6 +1,6 @@
 # Plan del paso 4 · StoneBot CLI
 
-- **Estado** — Aprobado para implementación.
+- **Estado** — Implementado en cuatro subpasos.
 - **Fecha** — 26 de noviembre de 2026.
 - **Base** — `refactor/stonebot-core` en `bd351f4`, con los pasos 0 a 3 completos.
 - **Objetivo** — Conversar y continuar tareas desde PowerShell o Windows Terminal con el mismo núcleo que usa StoneBot Desktop. La primera entrega usa Ollama local, texto y un perfil independiente.
@@ -45,7 +45,7 @@ La ayuda identifica los comandos disponibles. Una entrada que comience con un co
 
 ### Permisos y clientes
 
-- El perfil de CLI arranca con Ollama local. Si sus ajustes seleccionan un proveedor fuera del alcance inicial, informar y terminar antes de contactar con él. La construcción de la sesión omite el cliente de StoneWave y el proceso no importa `stonebot_service`. Probar incluso con variables de StoneWave y credenciales de Desktop presentes.
+- El perfil de CLI arranca con Ollama local. Antes del primer turno del proceso, se comprueba en Ollama que el modelo seleccionado esté instalado y sea local. Si sus ajustes seleccionan un proveedor fuera del alcance inicial, informar y terminar antes de contactar con él. La construcción de la sesión omite el cliente de StoneWave y el proceso no importa `stonebot_service`. Probar incluso con variables de StoneWave y credenciales de Desktop presentes.
 - Una CLI nueva no trae servidores MCP habilitados. Para las pruebas y el uso inicial, provisionar la configuración explícitamente con los validadores existentes y dentro de la raíz de CLI. Resolver referencias de autenticación únicamente desde variables declaradas para el servidor en ese proceso. Impedir que el cliente consulte credenciales persistentes de Desktop para la CLI. No almacenar valores de tokens ni añadir un instalador de servidores.
 - `CliTurnEvents.confirm(request)` recibe el diccionario existente, muestra la operación y los argumentos autorizables, con datos sensibles redactados, y admite **permitir una vez** o **denegar**. Solo una respuesta afirmativa explícita concede el permiso. Entrada vacía, negativa, EOF o falta de terminal interactiva deniegan. `remember` queda en `False` en este adaptador. Se siguen aplicando las autorizaciones y validaciones del perfil y de cada herramienta que el núcleo ya hace antes de llamar al adaptador.
 - La CLI no interpreta una entrada como comando de shell. Las herramientas que StoneBot ya ofrece conservan sus controles de privacidad, alcance y autorización. La separación de perfiles delimita los datos internos de StoneBot. Un servidor MCP o programa externo autorizado mantiene los permisos que Windows le da al ejecutarlo.
@@ -83,6 +83,13 @@ Línea base verificada en `42e28a3` con **29 suites** aprobadas antes del primer
 
 Añadir `tests/test_cli_profile.py` para C3 y `tests/test_stonebot_cli.py` para C1, C2, C4 y C5. Extender `tests/test_chat_session.py` con la paridad de apertura, recuperación y enrutamiento de tareas. Ejecutar cada archivo con `python -B tests/<archivo>.py`. Usar bases temporales, respuestas simuladas, subprocesos para el arranque y un servidor local de prueba para los permisos. La comprobación con Ollama real se hace aparte de la suite automatizada. Registrar por subpaso comandos, resultados y cualquier caso pendiente en este documento. Revisar el estado de Git y publicar los commits de la implementación tras la validación.
 
+### Resultados de verificación
+
+- Línea base de 29 suites. Pasaron 30 suites en 4.1, 4.2 y 4.3, y 31 al incorporar las pruebas del punto de entrada en 4.4.
+- El proveedor simulado verificó la precedencia de `--model` y la conservación del INI. El servidor MCP de prueba verificó aprobación, denegación, EOF y entrada no interactiva. La traza registró el cierre por repetición y ocultó el texto sintético de argumentos y resultados.
+- En Windows se ejecutó Ollama con `nemotron-3.5-bolt:e4b` en un perfil temporal. Se recorrieron `/chats`, `/abrir`, `/nuevo` y `/salir`, y una segunda invocación recuperó la respuesta. Ctrl+C devolvió el prompt de una consola nativa durante un turno simulado. Ctrl+Z seguido de Enter cerró la terminal de StoneBot con código 0. La prueba nativa de bandeja verificó ocultar la ventana, reabrirla y salir durante un turno.
+- La recuperación simulada desde la CLI conservó el identificador del diario original y el efecto sin confirmar. Se verificó la bandeja nativa de Desktop mientras la CLI mantenía abierto otro perfil, además del rechazo de un segundo escritor en el mismo perfil.
+
 ## 6. Alcance del siguiente paso
 
 El paso 5 conserva las decisiones sobre enrutamiento, selección de herramientas, reintentos, presupuesto, instrucciones y comportamiento del agente. Este paso solo incorpora una entrada al motor compartido.
@@ -92,4 +99,4 @@ El paso 5 conserva las decisiones sobre enrutamiento, selección de herramientas
 - [x] 4.1 Perfil de conversación y bloqueo
 - [x] 4.2 Apertura y entrada de tareas compartidas
 - [x] 4.3 Adaptador de terminal y permisos
-- [ ] 4.4 Comandos, documentación y verificación de aceptación
+- [x] 4.4 Comandos, documentación y verificación de aceptación
