@@ -1,5 +1,6 @@
 """Herramientas de consulta del agente local."""
 import json
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,12 @@ from local_files import local_path
 
 PAGE_CHARS = 12_000
 MAX_OFFSET = 120_000
+PRIORITY_DIRECTIVE = re.compile(
+    r"\b(?:ignora(?:r)?|omite|olvida|desobedece|descarta|ignore|disregard|override|forget)\b[^\n.!?]*"
+    r"\b(?:instrucciones?|indicaciones?|mensajes?|solicitud|petici[oó]n|instructions?|messages?|prompt|request)\b"
+    r"[^\n.!?]*\b(?:usuario|sistema|previas?|anteriores?|user|system|previous|prior|above)\b"
+    r"|\b(?:ignore|disregard|override|forget)\s+(?:all\s+)?(?:previous|prior|above|system|user)\s+"
+    r"(?:instructions?|messages?|prompts?|requests?)\b", re.I)
 
 
 def read_tool(name, description, properties, required):
@@ -55,13 +62,14 @@ LOCAL_FILES = read_tool(
     "search para filtrar por nombre o extensión e info para consultar propiedades de una ruta. "
     "Para ubicar una carpeta en el perfil de Windows, usa search con target perfil y entry_type folders. "
     "El resultado incluye la ruta base y las entradas relativas para continuar la exploración. "
-    "Para totales elige qué tipo de entradas contar y si hay que recorrer las subcarpetas. "
-    "El resultado indica si el recorrido fue parcial.",
+    "Buscar recorre las subcarpetas por defecto dentro de la raíz autorizada. Para limitar la búsqueda "
+    "a esa carpeta, usa recursive=false. El resultado distingue cobertura del recorrido y lista truncada. "
+    "Si el total no está confirmado, usa coincidencias_observadas como mínimo.",
     {"operation": {"type": "string", "enum": ["count", "list", "search", "info"]},
      "target": LOCAL_TARGET,
      "entry_type": {"type": "string", "enum": ["folders", "files", "all"],
                     "description": "Tipo de entradas. Por defecto incluye archivos y carpetas."},
-     "recursive": {"type": "boolean", "description": "Incluye entradas anidadas. Por defecto, false."},
+     "recursive": {"type": "boolean", "description": "Por defecto true para search y false para las demás operaciones."},
      "name_contains": {"type": "string", "description": "Texto opcional para filtrar por nombre."},
      "extension": {"type": "string", "description": "Extensión opcional, por ejemplo pdf."}},
     ["operation", "target"],
@@ -70,7 +78,8 @@ LOCAL_FILES = read_tool(
 RANK_FILES = read_tool(
     "rank_local_files",
     "Encuentra los archivos de mayor tamaño en una carpeta. Devuelve nombres, rutas y tamaños en bytes "
-    "que puedes usar para continuar el encargo con otras herramientas.",
+    "que puedes usar para continuar el encargo. Para buscar coincidencias de un nombre en otra carpeta, "
+    "usa inspect_local_files con operation=search, target=la otra carpeta y name_contains=el nombre.",
     {"target": LOCAL_TARGET,
      "limit": {"type": "integer", "minimum": 1, "maximum": 999, "description": "Por defecto 5."},
      "recursive": {"type": "boolean", "description": "Incluye subcarpetas por defecto."},
@@ -99,7 +108,7 @@ def local_file_request(arguments, project):
     operation = arguments.get("operation")
     target = arguments.get("target")
     entry_type = arguments.get("entry_type", "all")
-    recursive = arguments.get("recursive", False)
+    recursive = arguments.get("recursive", operation == "search")
     query = arguments.get("name_contains", "")
     extension = arguments.get("extension", "")
     if operation not in ("count", "list", "search", "info") or entry_type not in ("folders", "files", "all"):
@@ -143,3 +152,21 @@ def project_file_path(folder, value):
 
 def read_result(**fields):
     return json.dumps(fields, ensure_ascii=False)
+
+
+def project_text_for_model(result):
+    """Aísla directivas de cambio de prioridad sin alterar la lectura guardada."""
+    try:
+        data = json.loads(result)
+    except (TypeError, ValueError, RecursionError):
+        return None
+    if not isinstance(data, dict) or data.get("estado") != "ok" or not isinstance(data.get("contenido"), str):
+        return None
+    lines = data["contenido"].splitlines(keepends=True)
+    excluded = [index for index, line in enumerate(lines) if PRIORITY_DIRECTIVE.search(line)]
+    if not excluded:
+        return None
+    for index in excluded:
+        lines[index] = "[Directiva de prioridad aislada]\n"
+    data.update(contenido="".join(lines), directivas_aisladas=len(excluded))
+    return read_result(**data)

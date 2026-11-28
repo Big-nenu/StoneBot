@@ -167,6 +167,9 @@ class ChatExecution:
         # con el permiso actual antes de usarlos como evidencia del estado presente.
         steps = [{"herramienta": s["tool"], "estado": s["status"],
                   **({"id_ejecución": s["run_id"]} if s.get("run_id") else {}),
+                  **({"observación_anterior": {key: s["evidence"][key] for key in
+                                               ("observacion", "procedencia", "cobertura", "estado", "codigo", "truncado")
+                                               if key in s["evidence"]}} if s.get("evidence") else {}),
                   "argumentos": excerpt(json.dumps(s["arguments"], ensure_ascii=False), 900) if not s["effect"] else None}
                  for s in self.state["steps"][-10:]]
         last_pages = {}
@@ -235,10 +238,12 @@ class ChatExecution:
         self.persist()
         return step
 
-    def observe(self, step, result, status):
+    def observe(self, step, result, status, evidence=None):
         if step["effect"] and step["status"] == "sin ejecutar":
             status = "sin ejecutar"
         step.update(status=status, result=result)
+        if evidence:
+            step["evidence"] = evidence
         self.persist()
         if step["tool"] == "iniciar_proceso" and step.get("run_id"):
             self.process_positions().setdefault(step["run_id"], 0)

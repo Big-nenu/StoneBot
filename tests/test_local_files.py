@@ -333,8 +333,9 @@ def check_ranking_chat(root, live_model=None):
         data = json.loads(last["content"])
         if last["tool_name"] == "rank_local_files":
             found, = data["entradas"]
-            return tool_call(operation="search", target=str(archive), recursive=True,
-                             name_contains=Path(found["ruta"]).name)
+            return tool_call(operation="search", target=str(archive), name_contains=Path(found["ruta"]).name)
+        assert data["evidencia"]["recursivo"] and data["evidencia"]["cobertura"] == "completa", data
+        assert data["entradas"][0]["tamaño_bytes"] == 0
         return model_answer(data["entradas"][0]["ruta"])
 
     with ExitStack() as stack:

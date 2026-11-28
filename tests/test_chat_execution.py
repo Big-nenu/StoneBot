@@ -37,8 +37,8 @@ def stage(root, phase, live):
         window.ai = app.AISettings("ollama", "nemotron-3.5-bolt:e4b" if live else "simulado")
         if phase == "interrupt":
             persist = chat_execution.ChatExecution.observe
-            def stop_after_commit(execution, step, result, status):
-                persist(execution, step, result, status)
+            def stop_after_commit(execution, step, result, status, evidence=None):
+                persist(execution, step, result, status, evidence)
                 if step["tool"] == "rank_local_files" and "viejo.bin" in result:
                     os._exit(73)  # Corte abrupto después del commit y antes de responder.
             stack.enter_context(patch.object(chat_execution.ChatExecution, "observe", stop_after_commit))
@@ -47,6 +47,7 @@ def stage(root, phase, live):
             _, previous = window.history.execution_context(window.chat_id)
             assert previous[2]["objective"] == objective
             assert "viejo.bin" in previous[2]["steps"][0]["result"]
+            assert previous[2]["steps"][0]["evidence"]["cobertura"] == "completa"
 
         async def model(**request):
             row = request["messages"][-1]

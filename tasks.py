@@ -6,6 +6,7 @@ from pathlib import Path
 from ollama import Tool
 
 from mcp_permissions import permission_signature
+from read_tools import project_text_for_model
 
 
 LABELS = {
@@ -116,6 +117,8 @@ def task_context(task):
         if remaining <= 0:
             break
         full_result = step.get("result", "")
+        if step.get("project_read") == "file" and step["status"] == "response":
+            full_result = project_text_for_model(full_result) or full_result
         result = full_result[:min(4000, remaining)]
         entry = {"herramienta": step["tool"], "estado": STEP_LABELS[step["status"]], "resultado": result}
         if step.get("partial") or len(result) < len(full_result):
@@ -135,12 +138,7 @@ def task_context(task):
                        "pasos_recientes": list(reversed(recent))}, ensure_ascii=False)
 
 
-def completion_evidence(task):
-    reasons = [note for note in task.get("coverage_notes", []) if note != LIMIT_REASON]
-    latest = {step["key"]: step for step in task["steps"]}
-    pages = {(step["resource"], step["arguments"]["offset"], tuple(step["revision"])): step
-             for step in latest.values() if step.get("project_read") == "file" and step.get("revision")
-             and step["status"] == "response"}
+def complete_page_versions(pages):
     complete_files = set()
     for (resource, offset, revision), first in pages.items():
         if offset != 0:
@@ -150,6 +148,16 @@ def completion_evidence(task):
             page = pages.get((resource, next_offset, revision)) if next_offset > page["arguments"]["offset"] else None
         if page and not page.get("partial"):
             complete_files.add((resource, revision))
+    return complete_files
+
+
+def completion_evidence(task):
+    reasons = [note for note in task.get("coverage_notes", []) if note != LIMIT_REASON]
+    latest = {step["key"]: step for step in task["steps"]}
+    pages = {(step["resource"], step["arguments"]["offset"], tuple(step["revision"])): step
+             for step in latest.values() if step.get("project_read") == "file" and step.get("revision")
+             and step["status"] == "response"}
+    complete_files = complete_page_versions(pages)
     evidence = []
     for step in latest.values():
         next_page = step.get("next_offset")
@@ -161,6 +169,8 @@ def completion_evidence(task):
             reasons.append(f"{step_caption(step)}. Falta una lectura verificable.")
         item = {key: value for key, value in step.items() if key != "key"}
         if step.get("project_read") == "file" and step["status"] == "response":
+            if safe_result := project_text_for_model(step.get("result")):
+                item["result"] = safe_result
             version = (step["resource"], tuple(step["revision"]))
             item["cobertura_archivo"] = "completo" if version in complete_files else "parcial"
         if continuation:

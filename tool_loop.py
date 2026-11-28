@@ -1,6 +1,6 @@
 """Iteración del modelo y sus herramientas dentro de un turno."""
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from tool_validation import InvalidToolArguments, validate_arguments
 from turn_budget import INVALID_CODES, TurnLimit
@@ -12,12 +12,30 @@ class ToolResult:
     status: str = "respuesta recibida"
     code: str | None = None
     hint: str = ""
+    evidence: dict | None = None
+    model_content: str | None = None
 
     def model_text(self, *, reused=False):
         notes = ([f"[{self.code}] {self.hint}".rstrip()] if self.code else [self.hint] if self.hint else [])
         if reused:
             notes.append("[SIN_PROGRESO] Se reutilizó la observación anterior. No se ejecutó otra llamada.")
-        return "\n".join([self.content, *notes])
+        content = self.content if self.model_content is None else self.model_content
+        evidence = self.evidence or {}
+        plain_mcp = (evidence.get("procedencia") == "MCP" and evidence.get("estado") == "respuesta recibida"
+                     and evidence.get("cobertura") == "indeterminada" and not evidence.get("efecto"))
+        if evidence and not plain_mcp:
+            try:
+                data = json.loads(content)
+            except (ValueError, RecursionError):
+                data = None
+            if isinstance(data, dict):
+                if evidence.get("procedencia") == "MCP":
+                    data = {"datos": data}
+                content = json.dumps({"evidencia": evidence, **data}, ensure_ascii=False)
+            else:
+                header = json.dumps(evidence, ensure_ascii=False)
+                content = f"Evidencia del ejecutor: {header}\nDatos de la herramienta:\n{content}"
+        return "\n".join([content, *notes])
 
 
 @dataclass(frozen=True)
@@ -95,7 +113,7 @@ class ToolLoop:
         self.cache = cache
 
     async def run(self, request_round, execute_tool, *, check_pause, after_batch, activity,
-                  prepare_call=None, before_call=None, after_call=None, after_tool=None, trace=None):
+                  prepare_call=None, before_call=None, after_call=None, after_tool=None, record_evidence=None, trace=None):
         """Ejecuta rondas hasta obtener una respuesta o alcanzar el límite.
 
         request_round devuelve un mensaje con llamadas, texto final o None para
@@ -177,9 +195,14 @@ class ToolLoop:
                             result = ToolResult("Se agotó el presupuesto antes de completar la llamada.",
                                                 reuse=False, status="sin confirmar" if sent else "sin ejecutar",
                                                 code="PRESUPUESTO_AGOTADO")
+                        if record_evidence and isinstance(result, ToolResult):
+                            evidence = record_evidence(resolved, arguments, result, step)
+                            if evidence:
+                                result = replace(result, evidence=evidence)
                         if step is not None:
                             after_call(step, result.answer if isinstance(result, EndTurn) else result.content,
-                                       result.status if isinstance(result, ToolResult) else "respuesta recibida")
+                                       result.status if isinstance(result, ToolResult) else "respuesta recibida",
+                                       result.evidence if isinstance(result, ToolResult) else None)
                         if after_tool:
                             after_tool(resolved, result)
                     if isinstance(result, ToolResult):
@@ -194,6 +217,7 @@ class ToolLoop:
                           herramienta=resolved if disposition != "no_disponible" else "(no disponible)",
                           estado=disposition, estado_ejecutor=result.status if isinstance(result, ToolResult) else "cierre",
                           codigo=result.code if isinstance(result, ToolResult) else None,
+                          evidencia_observada=result.evidence if isinstance(result, ToolResult) else None,
                           resultado=result.answer if isinstance(result, EndTurn) else result.content)
                 if isinstance(result, EndTurn):
                     return result.answer

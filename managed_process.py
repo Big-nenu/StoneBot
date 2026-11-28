@@ -98,6 +98,7 @@ def inspect_run(folder, run_id, cursor=0, *, cancel=False, lock_timeout=5):
     path = location(folder, run_id)
     if not path.is_file() or type(cursor) is not int or not 0 <= cursor <= 2**63 - 1:
         raise ValueError("Ejecución o cursor desconocido en este chat.")
+    start_cursor = cursor
     with closing(sqlite3.connect(path, timeout=lock_timeout)) as db, db:
         if cancel:
             db.execute("UPDATE job SET cancel=1 WHERE state IN (?,?)", ACTIVE)
@@ -121,7 +122,7 @@ def inspect_run(folder, run_id, cursor=0, *, cancel=False, lock_timeout=5):
     if state in ACTIVE and time.time() - heartbeat > 15:
         state = "sin confirmar"
     return dict(id=run_id, estado=state, codigo=code, inicio_confirmado=confirmed,
-                cancelacion_solicitada=bool(requested), salida="".join(chunks), cursor=cursor,
+                cancelacion_solicitada=bool(requested), salida="".join(chunks), cursor=cursor, cursor_inicio=start_cursor,
                 hay_mas=more, truncada=bool(truncated),
                 parcial=bool(more or truncated or state in (*ACTIVE, "sin confirmar")), error=error)
 

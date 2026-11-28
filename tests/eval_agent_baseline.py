@@ -5,6 +5,7 @@ from contextlib import closing
 import importlib.util
 import json
 import os
+import re
 import site
 import sqlite3
 import subprocess
@@ -178,6 +179,9 @@ def processes(profile):
     return jobs
 
 
+WINDOWS_PROFILE = re.compile(r"(\b[a-z]:[\\/]+users[\\/]+)[^\\/\r\n\"'<>|]+", re.I)
+
+
 def redact_fixture_root(value, root):
     if isinstance(value, dict):
         return {key: redact_fixture_root(item, root) for key, item in value.items()}
@@ -188,6 +192,7 @@ def redact_fixture_root(value, root):
             for _ in range(3):
                 value = value.replace(path, "<fixture>")
                 path = json.dumps(path, ensure_ascii=False)[1:-1]
+        value = WINDOWS_PROFILE.sub(r"\1<perfil>", value)
     return value
 
 

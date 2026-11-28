@@ -24,6 +24,19 @@ import mcp_client
 from ai_provider import AISettings
 
 
+def mcp_tool_text(content):
+    header = "Evidencia del ejecutor: "
+    if content.startswith(header):
+        metadata, text = content.removeprefix(header).split("\nDatos de la herramienta:\n", 1)
+        assert json.loads(metadata)["procedencia"] == "MCP"
+        return text
+    if content.startswith('{"evidencia"'):
+        row = json.loads(content)
+        assert row["evidencia"]["procedencia"] == "MCP"
+        return json.dumps(row["datos"], ensure_ascii=False)
+    return content
+
+
 def example_stdio():
     # El servidor recibe un perfil aislado y no usa el directorio de paquetes de ese perfil.
     packages = str(Path(mcp.__file__).resolve().parents[1])
@@ -141,7 +154,9 @@ def test_cloud_chat_keeps_mcp_out_of_conversation_and_stops_repeated_calls():
         def repeating(**kwargs):
             requests.append(kwargs)
             if not kwargs["tools"]:
-                assert kwargs["messages"][-1]["content"].startswith("Fuente encontrada\n[SIN_PROGRESO]")
+                result = kwargs["messages"][-1]["content"]
+                assert '"efecto": "sin confirmación independiente"' in result
+                assert mcp_tool_text(result).startswith("Fuente encontrada\n[SIN_PROGRESO]")
                 return SimpleNamespace(message=Message(role="assistant", content="Aquí está la fuente."))
             alias, = (spec.function.name for spec in kwargs["tools"] if spec.function.name.startswith("mcp_"))
             arguments = {"query": "PySide6", "max": 1} if len(requests) == 1 else {"max": 1, "query": "PySide6"}
@@ -205,7 +220,7 @@ def test_contextual_source_selection_without_opening_memory_first():
                     assert set(names) == {"query_experiences", "elegir_fuente"}
                     return call("elegir_fuente", fuente=route)
                 if kwargs["messages"][-1]["role"] == "tool":
-                    assert kwargs["messages"][-1]["content"] == "Resultado de la fuente elegida"
+                    assert mcp_tool_text(kwargs["messages"][-1]["content"]) == "Resultado de la fuente elegida"
                     return SimpleNamespace(message=Message(role="assistant", content="Respuesta verificada."))
                 alias, = [name for name, desc in names.items() if f" / {expected_tool.name}." in desc]
                 if route == "web":
@@ -290,7 +305,7 @@ def test_switch_from_memory_to_local_project():
                                    "<parameter=depth> 1 </parameter> </function> </tool_call>"}
         else:
             assert latest["tool_call_id"] == payload["messages"][-2]["tool_calls"][0]["id"]
-            assert latest["content"] == "README.md"
+            assert mcp_tool_text(latest["content"]) == "README.md"
             response = {"content": "Encontré README.md."}
         return {"choices": [{"message": response}]}
 
@@ -383,11 +398,11 @@ def test_context7_results_are_used_to_finish_after_empty_ollama_response():
         if rounds == 4:
             assert kwargs["tools"] == [] and kwargs["think"] is False
             assert len(transcript) == 6, transcript
-            assert transcript[3]["content"] == '{"libraryId": "/qt/pyside6"}'
-            assert transcript[5]["content"] == doc
+            assert json.loads(mcp_tool_text(transcript[3]["content"])) == {"libraryId": "/qt/pyside6"}
+            assert mcp_tool_text(transcript[5]["content"]) == doc
             return SimpleNamespace(message=Message(role="assistant", content="Usa QVBoxLayout.addWidget()."))
         if rounds == 3:
-            assert transcript[-1]["content"] == doc
+            assert mcp_tool_text(transcript[-1]["content"]) == doc
             return SimpleNamespace(done_reason="length",
                                    message=Message(role="assistant", content="", thinking="Revisando los ejemplos."))
         name = names[rounds - 1]
@@ -395,7 +410,7 @@ def test_context7_results_are_used_to_finish_after_empty_ollama_response():
         query = "PySide6"
         if rounds == 2:
             assert transcript[-1]["role"] == "tool"
-            query = json.loads(transcript[-1]["content"])["libraryId"]
+            query = json.loads(mcp_tool_text(transcript[-1]["content"]))["libraryId"]
         call = Message.ToolCall(function=Message.ToolCall.Function(name=tool.function.name, arguments={"query": query}))
         return SimpleNamespace(message=Message(role="assistant", tool_calls=[call]))
 
@@ -408,7 +423,8 @@ def test_context7_results_are_used_to_finish_after_empty_ollama_response():
           patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=chat)),
           patch.object(worker, "confirm_external", confirm)):
         outputs.append(finished_text(worker))
-    assert outputs == ["Usa QVBoxLayout.addWidget()."] and rounds == 4
+    assert outputs[0].endswith("Usa QVBoxLayout.addWidget().") and rounds == 4
+    assert "efecto sin confirmación independiente" in outputs[0]
     assert [call.args[1] for call in confirm.await_args_list] == names
     assert [call.args for call in session.call_tool.await_args_list] == [
         ("resolve-library-id", {"query": "PySide6"}),
@@ -448,7 +464,7 @@ def test_empty_reply_retries_selection_across_active_servers():
             assert kwargs["think"] is False and "num_ctx" not in kwargs["options"]
             call = Message.ToolCall(function=Message.ToolCall.Function(name=tools["web"], arguments={}))
             return SimpleNamespace(message=Message(role="assistant", tool_calls=[call]))
-        assert kwargs["messages"][-1]["content"] == "Fuente web"
+        assert mcp_tool_text(kwargs["messages"][-1]["content"]) == "Fuente web"
         return SimpleNamespace(message=Message(role="assistant", content="Encontré una fuente."))
 
     worker = app.Worker([{"role": "user", "content": "Busca en la web. " + "Referencia previa. " * 400}])
@@ -465,7 +481,7 @@ def test_empty_reply_retries_selection_across_active_servers():
           patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=chat)),
           patch.object(worker, "confirm_external", confirm)):
         outputs.append(finished_text(worker))
-    assert outputs == ["Encontré una fuente."]
+    assert outputs[0].endswith("Encontré una fuente.")
     confirm.assert_awaited_once_with("web", "search", {})
     fixtures["web"].call_tool.assert_awaited_once_with("search", {})
     fixtures["docs"].call_tool.assert_not_awaited()
@@ -538,7 +554,8 @@ def test_stdio_chat_and_permissions():
                   patch("stonebot_engine.safety.protected_paths", return_value=[protected]),
                   patch.object(worker, "confirm_external", confirm)):
                 outputs.append(finished_text(worker))
-            assert outputs == ["Terminado"]
+            assert outputs[0].endswith("Terminado") and "efecto denegado" in outputs[0]
+            assert "efecto sin confirmación independiente" in outputs[0]
             assert confirm.await_count == 2
             assert personal.read_text(encoding="utf-8") == "datos de prueba"
             assert marker.read_text(encoding="utf-8") == "aprobado"
@@ -563,7 +580,7 @@ def test_stdio_chat_and_permissions():
             with (patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=stale_call)),
                   patch.object(worker, "confirm_external", confirm)):
                 outputs.append(finished_text(worker))
-            assert outputs == ["Terminado", "Excluida"]
+            assert outputs[-1] == "Excluida"
             assert confirm.await_count == 2 and marker.read_text(encoding="utf-8") == "aprobado"
             manage("revoke-read", "example", "echo")
             assert mcp_client.load_servers()["example"]["read_tools"] == []

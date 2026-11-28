@@ -154,7 +154,7 @@ async def execute(name, arguments, journal, confirm, check_pause, *, wait_ms, re
                 cursor = arguments.get("cursor", positions[run_id])
                 if name == QUERY and not managed_process.location(folder, run_id).is_file():
                     result = dict(id=run_id, estado="sin confirmar", codigo=None, inicio_confirmado=None,
-                                  cancelacion_solicitada=False, salida="", cursor=cursor,
+                                  cancelacion_solicitada=False, salida="", cursor=cursor, cursor_inicio=cursor,
                                   hay_mas=False, truncada=False, parcial=True, error="Registro aún no disponible.")
                 else:
                     result = await asyncio.to_thread(managed_process.inspect_run, folder, run_id, cursor,

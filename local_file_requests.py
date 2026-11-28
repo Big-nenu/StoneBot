@@ -138,15 +138,24 @@ def inspect_path(service, request, check_pause):
         total += 1
         if request.operation == "count":
             return False
-        results.append({"ruta": str(entry.relative_to(path)),
-                        "tipo": "carpeta" if directory else "archivo"})
-        return len(results) > RESULT_LIMIT
+        if len(results) < RESULT_LIMIT:
+            item = {"ruta": str(entry.relative_to(path)), "tipo": "carpeta" if directory else "archivo"}
+            if not directory:
+                item["tamaño_bytes"] = _info.st_size
+            results.append(item)
+        return False
 
     _, skipped, partial = service.scan(path, request.recursive, check_pause, collect)
-    evidence = {"ruta": str(path), "total": total, "recursivo": request.recursive,
-                "parcial": bool(partial or skipped), "límite_alcanzado": partial, "omitidas": skipped}
+    incomplete = bool(partial or skipped)
+    truncated = request.operation != "count" and len(results) < total
+    evidence = {"ruta": str(path), "operacion": request.operation,
+                "filtro_nombre": request.query or None, "filtro_extension": request.extension or None,
+                "tipo_entrada": request.entry_type, "total": None if incomplete else total,
+                "coincidencias_observadas": total, "recursivo": request.recursive,
+                "cobertura": "parcial" if incomplete else "completa", "parcial": incomplete or truncated,
+                "truncado": truncated, "cursor_siguiente": None, "límite_alcanzado": partial, "omitidas": skipped}
     if request.operation != "count":
-        evidence["entradas"] = sorted(results[:RESULT_LIMIT], key=lambda item: item["ruta"].casefold())
+        evidence["entradas"] = sorted(results, key=lambda item: item["ruta"].casefold())
     return evidence
 
 
@@ -163,12 +172,15 @@ def file_answer(service, request, check_pause):
     if listing:
         details = "\n".join(listing)
     else:
-        details = "No encontré coincidencias." if request.operation == "search" else "No hay elementos para mostrar."
+        details = ("No observé coincidencias en la parte revisada." if evidence["parcial"] else
+                   "No encontré coincidencias." if request.operation == "search" else "No hay elementos para mostrar.")
     summary = f"{OPERATIONS[request.operation]} en `{path}`\n\n{details}"
     if evidence["parcial"]:
         summary += "\n\n**Revisión parcial.**"
         if evidence["límite_alcanzado"]:
-            summary += " Se alcanzó un límite de recorrido o resultados."
+            summary += " Se alcanzó un límite de recorrido."
+        if evidence["truncado"]:
+            summary += f" Se muestran {len(listing)} de {evidence['coincidencias_observadas']} coincidencias observadas."
         if evidence["omitidas"]:
             summary += f" Se omitieron {evidence['omitidas']} entradas excluidas, inaccesibles o redirigidas."
     return summary

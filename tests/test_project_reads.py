@@ -80,8 +80,11 @@ async def check_project_read(folder, *, select_source=False, mention_stonewave=F
         index = -2 if rounds == 2 else -1
         last = json.loads(kwargs["messages"][index]["content"])
         if rounds == 2:
-            assert last == {"estado": "ok", "archivo": "README.md", "contenido": "Los informes se entregan en PDF.",
-                            "parcial": False, "desplazamiento_siguiente": None}, last
+            assert last["estado"] == "ok" and last["archivo"] == "README.md", last
+            assert last["contenido"] == "Los informes se entregan en PDF." and last["fin_de_archivo"], last
+            assert last["evidencia"] == {"procedencia": "archivo del proyecto", "estado": "ok",
+                                         "cobertura": "completa", "truncado": False,
+                                         "cursor_siguiente": None, "observacion": 1}, last
             return reply("search_stonewave_memory", text=last["contenido"])
         assert last["estado"] == "ok" and "Markdown" in last["contenido"]
         return SimpleNamespace(message=Message(role="assistant", content="El README dice PDF y StoneWave dice Markdown."))
@@ -165,7 +168,9 @@ async def check_read_failures(folder):
     first = json.loads(await worker.read_project_file({"path": "largo.txt"}))
     assert first["parcial"] and first["desplazamiento_siguiente"] == PAGE_CHARS
     last = json.loads(await worker.read_project_file({"path": "largo.txt", "offset": PAGE_CHARS}))
-    assert last["contenido"] == "fin" and not last["parcial"]
+    assert last["contenido"] == "fin" and last["fin_de_archivo"] and last["cobertura"] == "parcial"
+    assert not last["truncado"] and last["desplazamiento_siguiente"] is None
+    assert not worker.evidence.pages["largo.txt", PAGE_CHARS, worker.evidence.file_versions["largo.txt"]]["partial"]
 
     cloud = worker_for(folder, memory, provider="openrouter")
     async def cloud_model(**kwargs):

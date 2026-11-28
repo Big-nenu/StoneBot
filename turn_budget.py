@@ -157,7 +157,9 @@ class TurnBudget:
         text = result.content.strip()
         if not text:
             return
-        self.partial |= result.code == "CURSOR_ESTANCADO"
+        evidence = result.evidence or {}
+        self.partial |= (result.code == "CURSOR_ESTANCADO" or evidence.get("cobertura") == "parcial"
+                         or evidence.get("truncado") is True)
         if text.startswith("{") and len(text) <= 8000:
             try:
                 data = json.loads(text)

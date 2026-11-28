@@ -1,6 +1,6 @@
 # Plan del paso 5 · Comportamiento agéntico de StoneBot
 
-- **Estado** — Pasos 5.1, 5.2, 5.2.1, 5.3A, 5.4, 5.6 y 5.5 completados. Siguiente paso planificado 5.7.
+- **Estado** — Pasos 5.1, 5.2, 5.2.1, 5.3A, 5.4, 5.6, 5.5 y 5.7 implementados. Quedan pendientes 5.3B, condicionado a evidencia, y 5.8.
 - **Fecha** — 27 de noviembre de 2026.
 - **Base** — `refactor/stonebot-core` en `307b40a`, con los pasos 0 a 4 completados.
 - **Objetivo** — Que un turno normal pueda descubrir recursos, ejecutar pasos autorizados, recuperarse de fallos y entregar una respuesta comprobable. StoneBot CLI servirá para medir los cambios con Nemotron y Qwen. Desktop y CLI seguirán usando el mismo `ChatSession`, `Worker` y `ToolLoop`.
@@ -115,6 +115,8 @@ Priorizar resultados difíciles de malinterpretar: cobertura completa/parcial ex
 - Reutilizar las comprobaciones de cobertura de tareas guardadas y aplicar comprobaciones equivalentes en chat cuando el encargo dependa de una lectura, un cálculo externo o un efecto. Separar datos observados, inferencias y partes desconocidas. El cierre ordinario puede citar una fuente, un archivo autorizado, una página o un ID de ejecución cuando sea pertinente. Verificar contra resultados de herramientas cualquier afirmación de operación realizada.
 - La comprobación distingue salida de proceso de código de terminación, una lectura parcial de una cobertura completa y una respuesta MCP de un efecto confirmado independientemente. Un acto denegado, pendiente, cancelado o sin confirmación conserva ese estado al responder y al reabrir. Aplicar los cambios de historial de forma compatible con registros de los pasos previos.
 
+El [informe de 5.7](13-evidencia-y-respuesta.md) registra el contrato de evidencia, las regresiones y los resultados con Nemotron y Qwen, incluidos los fallos de selección de alcance observados.
+
 ## 3. Dependencias y subpasos
 
 Usar `307b40a` como referencia reproducible. Registrar las 31 suites existentes antes de modificar el núcleo y mantener un commit por subpaso. E3, E4 y E8 caracterizan el tratamiento anterior de errores, repetición y presupuesto. Conservar esas observaciones en la línea base y actualizar las expectativas cuando cambie el contrato correspondiente. Mantener las regresiones de permisos, privacidad, persistencia, pausa, aislamiento y bandeja.
@@ -166,6 +168,6 @@ En Desktop, repetir con perfil temporal una consulta directa, un encargo con her
 - [x] 5.4 Validación y recuperación
 - [x] 5.6 Presupuesto y cierre
 - [x] 5.5 Interfaz de procesos
-- [ ] 5.7 Evidencia y respuesta
+- [x] 5.7 Evidencia y respuesta
 - [ ] 5.3B Registro y alias (condicional)
 - [ ] 5.8 Prompt y evaluación final

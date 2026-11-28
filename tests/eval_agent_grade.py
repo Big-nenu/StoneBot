@@ -76,9 +76,16 @@ def structured_results(steps):
 
 
 def trail_contains(results, accepted):
-    entries = [(str(entry.get("ruta", "")).replace(chr(92), "/").lower(), entry.get("tamaño_bytes"))
-               for result in results if not result.get("parcial") and not result.get("límite_alcanzado")
-               for entry in result.get("entradas", [])]
+    entries = []
+    for result in results:
+        if result.get("parcial") or result.get("límite_alcanzado"):
+            continue
+        base = str(result.get("ruta", "")).replace("\\", "/").rstrip("/")
+        for entry in result.get("entradas", []):
+            path = str(entry.get("ruta", "")).replace("\\", "/")
+            if base and not path.startswith(("/", "<fixture>")) and not re.match(r"^[a-zA-Z]:/", path):
+                path = f"{base}/{path}"
+            entries.append((path.lower(), entry.get("tamaño_bytes")))
     return all(any((path == suffix or path.endswith('/' + suffix)) and size == found for path, found in entries)
                for suffix, size in accepted)
 
@@ -128,7 +135,11 @@ def grade(row):
                        and a.get("parcial") is True and b.get("parcial") is True
                        and a.get("elementos") == b.get("elementos") == ["PÁGINA-INICIAL"]
                        for a, b in zip(entries, entries[1:]))
-        if repeated and row["cierre"].get("estado") == "finished":
+        stalled = (any(page.get("cursor") == page.get("next_cursor") == 1 and page.get("parcial") is True
+                       and page.get("elementos") == ["PÁGINA-INICIAL"] for page in entries)
+                   and any(event.get("codigo") == "CURSOR_ESTANCADO" and event.get("evidencia_observada")
+                           and matches(event.get("herramienta"), *expected) for event in trace))
+        if (repeated or stalled) and row["cierre"].get("estado") == "finished":
             return verdict("revision_manual", "Cursor repetido comprobado. Verificar cierre parcial sin inventar un total.")
         return missing("Faltó observar el cursor repetido en la fuente esperada.")
     if case in {"D02", "V01", "V08"}:

@@ -16,9 +16,12 @@ operation path target cwd argv offset cursor limit recursive name_contains id es
 cancelacion_solicitada parcial desplazamiento_siguiente count total source fuente arguments content text
 query output salida entradas archivo mensaje run_id shell truncado estado_archivo
 programa argumentos accion espera_ms inicio_confirmado hay_mas truncada
+cobertura procedencia observacion cursor_siguiente coincidencias_observadas recursivo omitidas efecto
+cursor_inicio directivas_aisladas continuacion inicio fin_de_archivo
 """.split())
 NUMERIC_KEYS = {"offset", "cursor", "limit", "count", "total", "codigo", "desplazamiento_siguiente", "espera_ms"}
-FLAG_KEYS = {"recursive", "cancelacion_solicitada", "parcial", "truncado", "inicio_confirmado", "hay_mas", "truncada"}
+FLAG_KEYS = {"recursive", "recursivo", "cancelacion_solicitada", "parcial", "truncado", "inicio_confirmado", "hay_mas", "truncada",
+             "fin_de_archivo"}
 STATUS_VALUES = {"ok", "error", "terminado", "cancelado", "fallido", "en ejecución", "preparando", "ejecutando",
                  "sin confirmar", "sin ejecutar"}
 SECRET_KEY = re.compile(r"token|secret|pass(?:word|wd)?|clave|contras|authorization|cookie|api.?key|credential", re.I)
@@ -37,6 +40,16 @@ def trace_value(value, key=None, depth=0):
     if key in NUMERIC_KEYS and type(value) is int:
         return value
     if key == "estado" and isinstance(value, str) and value in STATUS_VALUES:
+        return value
+    if key in {"observacion", "coincidencias_observadas", "omitidas", "cursor_inicio", "inicio", "directivas_aisladas"} and type(value) is int:
+        return value
+    if key == "cobertura" and value in ("completa", "parcial", "indeterminada"):
+        return value
+    if key == "procedencia" and value in ("archivos locales", "archivo del proyecto", "supervisor de Windows", "MCP"):
+        return value
+    if key == "efecto" and value in ("verificado", "denegado", "sin ejecutar", "sin confirmar", "sin confirmación independiente"):
+        return value
+    if key == "continuacion" and value == "cursor repetido":
         return value
     if key == "accion" and isinstance(value, str) and value in {"listar", "consultar", "cancelar"}:
         return value
@@ -80,6 +93,8 @@ def trace_payload(event, fields):
             except (ValueError, RecursionError):
                 pass
         fields["resultado"] = trace_value(raw)
+    if "evidencia_observada" in fields:
+        fields["evidencia_observada"] = trace_value(fields["evidencia_observada"])
     if "herramientas" in fields:
         fields["herramientas"] = [safe_trace_name(name) for name in fields["herramientas"]]
     for name in ("servidor", "herramienta"):
