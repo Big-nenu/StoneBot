@@ -143,3 +143,64 @@ def requests_external_tools(messages):
         return False
     question = messages[-2]["content"].rstrip()
     return question.endswith("?") and bool(EXTERNAL_CLARIFICATION.search(question.rsplit("¿", 1)[-1]))
+
+
+# Señales de modo para el cierre. Las pruebas de ejecución siguen viniendo del motor.
+EFFECT_ACTIONS = frozenset("""
+ejecuta ejecutar ejecutes inicia iniciar corre correr run launch cancela cancelar
+crea crear create guarda guardar sobrescribe borra borrar elimina eliminar modifica modificar edita
+envía enviar manda publica publicar instala instalar copia mueve renombra
+write save delete remove modify send publish install copy move rename
+""".split())
+EFFECT_CLAIMS = frozenset("""
+ejecuté ejecutado ejecutada ejecutó inicié iniciado inició lancé lanzado
+guardé guardado guardada guardó escribí escrito escribió eliminé eliminado eliminó
+borré borrado borró modifiqué modificado modificó envié enviado envió publiqué publicado
+instalé instalado instaló cancelé cancelado canceló renombré renombrado completé completó
+executed launched started saved written wrote deleted removed modified sent published installed cancelled completed
+""".split())
+OPERATION_NOUNS = frozenset("""
+operación operaciones acción acciones proceso procesos programa comando script prueba pruebas
+fichero archivo archivos carpeta carpetas directorio cambio cambios efecto tarea
+operation action process program command script file files folder change effect task
+""".split())
+
+
+def words(text):
+    return "".join(ch if ch.isalpha() else " " for ch in text.casefold()).split()
+
+
+def effect_request(messages):
+    if not messages or messages[-1].get("role") != "user":
+        return False
+    tokens = words(messages[-1].get("content") or "")
+    qualifiers = {"no", "not", "nunca", "never", "cómo", "como", "how"}
+    standalone = {"ejecuta", "ejecutar", "run", "launch", "publica", "envía"}
+    for index, token in enumerate(tokens[:8]):
+        if token in EFFECT_ACTIONS and not qualifiers.intersection(tokens[:index]):
+            if token in standalone or OPERATION_NOUNS.intersection(tokens[index + 1:]):
+                return True
+    return False
+
+
+def effect_claim(text):
+    """Señal secundaria para aseveraciones espontáneas en conversación libre."""
+    clauses = text.translate(str.maketrans({mark: "\n" for mark in ".?!;¿¡"})).splitlines()
+    for clause in clauses:
+        tokens = words(clause)
+        for index, token in enumerate(tokens):
+            if token not in EFFECT_CLAIMS:
+                continue
+            nearby = tokens[max(0, index - 4):index + 5]
+            if OPERATION_NOUNS.intersection(nearby) and not {"no", "not", "nunca", "never", "sin"}.intersection(
+                    tokens[max(0, index - 3):index]):
+                return True
+    return False
+
+
+def complete_scope_requested(messages):
+    if not messages or messages[-1].get("role") != "user":
+        return False
+    tokens = set(words(messages[-1].get("content") or ""))
+    return bool(tokens & OPERATION_NOUNS and
+                tokens & {"todas", "todos", "totalidad", "completo", "completa", "exhaustivo", "all", "entire"})

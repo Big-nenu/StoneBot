@@ -56,7 +56,7 @@ from read_tools import (
 )
 from request_routing import (
     LOCAL_READ_TOOLS, SELECT_SOURCE, TURN_SOURCES, WEB_LINK_TOOLS, referenced_web_link, requested_web_link,
-    requests_external_tools, requests_local_read, requests_memory,
+    complete_scope_requested, effect_claim, effect_request, requests_external_tools, requests_local_read, requests_memory,
 )
 from stonebot_engine.safety import IsolationError
 from stonewave_activity import (
@@ -205,17 +205,27 @@ class Worker:
         self.partial_text = ""
         self.evidence = Evidence()
         self.calls = CallLedger()
+        self.provider_replied = False
 
     def run(self) -> TurnOutcome:
         self.evidence = Evidence()
         self.calls = CallLedger()
+        self.provider_replied = False
         outcome = self._run()
         if outcome.kind in {"finished", "cancelled"}:
             text = outcome.partial_text if outcome.kind == "cancelled" else outcome.text
             steps = self.execution.state["steps"] if self.execution else []
-            if self.closing_guard():
-                text = self.guard_summary()
-                observed = self.evidence.answer("", steps, stopped=outcome.kind == "cancelled", preserve=True)
+            recovered = self.calls.recovered_observations()
+            missing_evidence = self.missing_execution_evidence(text)
+            unknown_coverage = self.provider_replied and self.coverage_unconfirmed()
+            if missing_evidence and self.trace:
+                self.trace("cierre_sin_evidencia_operativa")
+            if self.closing_guard() or missing_evidence or unknown_coverage:
+                text = self.guard_summary(missing_evidence=missing_evidence)
+                if unknown_coverage:
+                    text += "\n\nLa evidencia disponible no acredita el alcance completo solicitado."
+                observed = self.evidence.answer("", steps, stopped=outcome.kind == "cancelled", preserve=True,
+                                                include_partial_excerpts=False, recovered=recovered)
                 if observed:
                     if self.evidence.process_only():
                         text = observed + "\n\n" + text
@@ -223,7 +233,8 @@ class Worker:
                         text += "\n\n" + observed
             else:
                 text = self.evidence.answer(text, steps, stopped=outcome.kind == "cancelled",
-                                            preserve=self.task is not None or self.budget.reason is not None)
+                                            preserve=self.task is not None or self.budget.reason is not None,
+                                            recovered=recovered)
             text = self.private_answer(text)
             outcome = (replace(outcome, partial_text=text) if outcome.kind == "cancelled"
                        else replace(outcome, text=text))
@@ -245,24 +256,45 @@ class Worker:
         return self.last_outcome
 
     def closing_guard(self):
-        return self.calls.blocked() or bool(self.execution and self.execution.unconfirmed())
+        return (self.calls.blocked() or bool(self.execution and self.execution.unconfirmed())
+                or (self.task is None and self.incomplete_observation()))
 
-    def guard_summary(self):
+    def incomplete_observation(self):
+        return self.evidence.partial(self.calls.recovered_observations()) or self.calls.partial_without_observation()
+
+    def coverage_unconfirmed(self):
+        return (self.task is None and self.calls.has_evidence() and complete_scope_requested(self.messages)
+                and not self.calls.has_complete_observation())
+
+    def missing_execution_evidence(self, text):
+        if not self.provider_replied or not text:
+            return False
+        plain = text.removeprefix(RESULT_HEADER).strip()
+        clarification = plain.startswith("¿") and plain.endswith("?") and plain.count("¿") == 1
+        if not self.calls.has_verified_effect():
+            if effect_claim(text) or (effect_request(self.messages) and not clarification):
+                return True
+        external = not has_chat_attachments(self.messages) and requests_external_tools(self.messages)
+        recorded_read = any(step.get("status") == "response" for step in (self.task or {}).get("steps", []))
+        return bool(external and not (recorded_read or self.calls.has_evidence()) and not clarification)
+
+    def guard_summary(self, *, missing_evidence=False):
         reason = self.trace_reason
         labels = {"presupuesto_agotado": "Se agotó el presupuesto de ejecución del turno.",
                   "sin_progreso": "Detuve el turno porque las últimas rondas no aportaron evidencia nueva.",
                   "proveedor": "Falló el proveedor antes de completar el turno."}
-        report = self.calls.rendered(pending_effects=bool(self.execution and self.execution.unconfirmed()))
+        report = self.calls.rendered(pending_effects=bool(self.execution and self.execution.unconfirmed()),
+                                     missing_evidence=missing_evidence)
         if reason in labels:
             report = labels[reason] + "\n\n" + report
         if self.task is not None and self.task["status"] == "paused":
-            report += "\n\nUsa /reanudar para continuar con los resultados guardados."
+            report = "La tarea quedó pausada.\n\n" + report + "\n\nUsa /reanudar para continuar con los resultados guardados."
         return report
 
     def evidence_state(self):
         if self.execution and self.execution.unconfirmed():
             return "sin_confirmar"
-        if (self.evidence.partial() or self.budget.partial and not self.evidence.observations
+        if (self.incomplete_observation() or self.budget.partial and not self.evidence.observations
                 or any(step.get("partial") for step in (self.task or {}).get("steps", []))):
             return "parcial"
         if self.budget.observed or any(step.get("status") == "response" for step in (self.task or {}).get("steps", [])):
@@ -402,12 +434,12 @@ class Worker:
 
     async def model_request(self, client, method, *args, internal=False, trace_mcp=None, closing=False, **kwargs):
         self.budget.request(closing=closing)
+        names = [tool.__name__ if callable(tool) else tool.function.name for tool in kwargs.get("tools", ())]
         if not self.trace or method != "chat":
             response = await self.bounded_model_request(client, method, args, internal, closing, kwargs)
             if method == "chat":
-                self.admit_proposals(response.message, closing)
+                self.admit_proposals(response.message, closing, names, internal=internal)
             return response
-        names = [tool.__name__ if callable(tool) else tool.function.name for tool in kwargs.get("tools", ())]
         self.trace_request += 1
         self.trace_tools.update(names)
         context = self.ollama_context
@@ -429,7 +461,7 @@ class Worker:
             self.trace("tokens_modelo", peticion=self.trace_request,
                        tokens_entrada=counts[0] if type(counts[0]) is int and counts[0] >= 0 else None,
                        tokens_salida=counts[1] if type(counts[1]) is int and counts[1] >= 0 else None)
-        self.admit_proposals(response.message, closing)
+        self.admit_proposals(response.message, closing, names, internal=internal)
         if self.ollama_context is not None:
             self.trace("contexto_ollama", peticion=self.trace_request, **await observed_context(self.ai.model))
         return response
@@ -446,11 +478,13 @@ class Worker:
         except (ConnectionError, httpx.HTTPError) as exc:
             raise ProviderUnavailable from exc
 
-    def admit_proposals(self, reply, closing):
+    def admit_proposals(self, reply, closing, offered=(), *, internal=False):
+        if not internal and getattr(reply, "content", None):
+            self.provider_replied = True
         calls = getattr(reply, "tool_calls", None) or ()
         admitted = self.budget.proposals_for(len(calls), closing=closing)
         first = len(self.calls.entries) + 1
-        self.calls.propose(calls, admitted)
+        self.calls.propose(calls, admitted, offered)
         if self.trace:
             for number, call in enumerate(calls, first):
                 name = call.function.name
@@ -479,7 +513,9 @@ class Worker:
         return await handler(*args, **kwargs)
 
     def update_partial(self, text):
-        if self.closing_guard() or text.lstrip().startswith(("<tool", "<function")):
+        unsupported_effect = not self.calls.has_verified_effect() and (effect_request(self.messages) or effect_claim(text))
+        if (self.closing_guard() or self.coverage_unconfirmed() or unsupported_effect
+                or text.lstrip().startswith(("<tool", "<function"))):
             text = ""
         text = self.private_answer(text)
         if text != self.partial_text:
@@ -629,8 +665,12 @@ class Worker:
         if status == "paused":
             self.observe_ranking("mcp", "parcial")
             return self.task_reply("paused", "La tarea sigue pendiente.\n\n" + text)
-        if self.closing_guard():
-            return self.task_reply("paused", self.guard_summary())
+        missing_evidence = self.missing_execution_evidence(text)
+        if (status == "completed" and not self.calls.has_evidence()
+                and not any(step["status"] == "response" for step in self.task["steps"])):
+            missing_evidence = True
+        if self.closing_guard() or missing_evidence:
+            return self.task_reply("paused", self.guard_summary(missing_evidence=missing_evidence))
         if status != "completed":
             return self.task_reply(status, text)
         if "project_read_project_id" in self.task and await self.refresh_project_file_reads():
@@ -904,6 +944,8 @@ class Worker:
         key = project_checkpoint_key(name, arguments)
         previous = next((step for step in reversed(self.task["steps"]) if step["key"] == key), None)
         if previous is not None and previous["status"] == "response":
+            if is_file and previous.get("revision"):
+                self.evidence.file_page(json.loads(previous["result"]), tuple(previous["revision"]))
             self.events.activity(f"Recuperé una lectura guardada · {previous['tool']}.")
             return previous["result"]
         step = {"key": key, "tool": "Archivo del proyecto" if is_file else "StoneWave",
@@ -917,6 +959,7 @@ class Worker:
             result, revision = await self.read_project_page(arguments)
             if revision is not None:
                 step["revision"] = revision
+                self.evidence.file_page(json.loads(result), tuple(revision))
         else:
             result = await tool.execute(arguments)
         data = json.loads(result)
@@ -1092,6 +1135,7 @@ class Worker:
             except ResumeChatWork as request:
                 self.execution.resume(self.messages[-1]["content"], request.args[0])
                 request.args[1].state = CONTROL
+                request.args[1].kind = "control"
                 return self.private_answer(await self.execute_turn())
         except StartSavedTask as request:
             self.task = new_task(str(request))
@@ -1104,6 +1148,7 @@ class Worker:
                 raise TurnError(str(exc)) from exc
             if request.receipt is not None:
                 request.receipt.state = CONTROL
+                request.receipt.kind = "control"
             self.events.task_started(self.task)
             return self.private_answer(await self.execute_turn(promoted=True))
 

@@ -85,12 +85,12 @@ class Evidence:
                 previous_end = end
         return CONTROL_CHARS.sub("", "".join(delivered)).strip("\r\n")
 
-    def limitations(self):
+    def limitations(self, recovered=()):
         latest = {}
         complete_files = complete_page_versions(self.pages)
         for name, fields, data in self.observations:
             source = fields["procedencia"]
-            if name in PROCESS_NAMES:
+            if name in PROCESS_NAMES or fields["observacion"] in recovered:
                 continue
             if source == "archivo del proyecto" and data.get("archivo"):
                 file = data["archivo"]
@@ -104,9 +104,9 @@ class Evidence:
         return [(fields, partial) for fields, partial in latest.values() if partial or fields.get("efecto") in
                 {"sin confirmación independiente", "sin confirmar", "denegado"}]
 
-    def partial(self):
+    def partial(self, recovered=()):
         latest = {fields["id"]: fields for name, fields, _ in self.observations if name in PROCESS_NAMES and "id" in fields}
-        return any(partial for _, partial in self.limitations()) or any(
+        return any(partial for _, partial in self.limitations(recovered)) or any(
             fields.get("cobertura") == "parcial" for fields in latest.values())
 
     def process_only(self):
@@ -117,7 +117,7 @@ class Evidence:
             fields["procedencia"] == "MCP" and fields.get("cobertura") == "parcial" and not fields.get("efecto")
             for _, fields, _ in self.observations)
 
-    def answer(self, text, steps, *, stopped, preserve):
+    def answer(self, text, steps, *, stopped, preserve, include_partial_excerpts=True, recovered=()):
         process = [(fields, data) for name, fields, data in self.observations if name in PROCESS_NAMES]
         latest = {fields["id"]: fields for fields, _ in process if "id" in fields}
         reports = []
@@ -153,7 +153,7 @@ class Evidence:
                                else "La operación de proceso quedó sin ejecutar.")
         if reports and self.process_only() and not (stopped or preserve):
             return "\n\n".join(dict.fromkeys(reports))
-        for fields, partial in self.limitations()[-5:]:
+        for fields, partial in self.limitations(recovered)[-5:]:
             line = f"Observación {fields['observacion']} · {fields['procedencia']}"
             if partial:
                 line += " · datos parciales"
@@ -168,7 +168,8 @@ class Evidence:
             reports.append(line + ".")
         if not stopped and self.partial_mcp_only():
             reports.append("La cobertura del conjunto y su total quedan sin verificar.")
-            excerpts = dict.fromkeys(data["extracto"] for _, _, data in self.observations if data.get("extracto"))
+            excerpts = (dict.fromkeys(data["extracto"] for _, _, data in self.observations if data.get("extracto"))
+                        if include_partial_excerpts else {})
             for excerpt in list(excerpts)[-3:]:
                 reports.append("Extracto recibido\n\n" + "\n".join(
                     "    " + row for row in CONTROL_CHARS.sub("", excerpt).splitlines()))

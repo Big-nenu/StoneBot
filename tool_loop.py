@@ -2,7 +2,7 @@
 import json
 from dataclasses import dataclass, replace
 
-from tool_execution import LIMIT, OBSERVED, OMITTED, REUSED, UNCONFIRMED, VERIFIED, execution_state, with_metadata
+from tool_execution import FAILED, LIMIT, OMITTED, REUSED, UNCONFIRMED, with_metadata
 from tool_validation import InvalidToolArguments, validate_arguments
 from turn_budget import INVALID_CODES, TurnLimit
 
@@ -167,9 +167,11 @@ class ToolLoop:
             repairing = False
             for position, (name, arguments, resolved, key, call) in enumerate(calls):
                 check_pause()
-                receipt = self.ledger.take(call) if self.ledger else None
+                receipt = self.ledger.take(call, trusted_name=resolved if self.tools.permits(name) else None) if self.ledger else None
                 step = None
                 disposition = "ejecutada"
+                if receipt and self.tools.permits(name):
+                    receipt.tool = resolved
                 if not self.tools.permits(name):
                     disposition = "no_disponible"
                     result = self.tools.validate(name, {})
@@ -195,7 +197,7 @@ class ToolLoop:
                         result = step
                     else:
                         if receipt:
-                            receipt.state = UNCONFIRMED
+                            receipt.state, receipt.kind = UNCONFIRMED, "operacion"
                         try:
                             result = await handler(resolved, arguments)
                         except TurnLimit as exc:
@@ -225,18 +227,14 @@ class ToolLoop:
                             budget.observe(resolved, result, arguments)
                 if receipt:
                     if isinstance(result, EndTurn):
-                        receipt.state = result.execution_state
+                        receipt.state, receipt.kind = result.execution_state, "operacion"
                     else:
                         origin = result.execution
-                        receipt.code = result.code
                         if disposition == "reutilizada" and origin:
                             receipt.state, receipt.reused_from = REUSED, origin["llamada"]
+                            receipt.kind, receipt.coverage = origin["clase"], origin["cobertura"]
                         else:
-                            receipt.state = execution_state(resolved, result, disposition, step)
-                            if receipt.state in {OBSERVED, VERIFIED} and not (
-                                    result.evidence and result.evidence.get("procedencia") == "supervisor de Windows"):
-                                receipt.excerpt = (result.model_content if result.model_content is not None
-                                                   else result.content)[:1200]
+                            self.ledger.finish(receipt, resolved, arguments, result, disposition, step)
                         result = replace(result, execution=receipt.metadata())
                 if trace:
                     if isinstance(result, ToolResult) and result.status == "sin ejecutar" and disposition == "ejecutada":
@@ -251,7 +249,8 @@ class ToolLoop:
                           resultado=result.answer if isinstance(result, EndTurn) else result.content)
                 if isinstance(result, EndTurn):
                     return result.answer
-                if key is not None and result.reuse and disposition != "reutilizada":
+                retryable_read = receipt and receipt.state == FAILED and receipt.kind == "operacion"
+                if key is not None and result.reuse and not retryable_read and disposition != "reutilizada":
                     results[key] = result
                 repairing |= result.code in INVALID_CODES
                 self.messages.append({"role": "tool", "tool_name": name,
