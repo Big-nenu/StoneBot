@@ -1,0 +1,193 @@
+serie	bloque	revision	caso	modelo	intento	calificacion	causa	exit	timeout	motivo	evidencia	peticiones	llamadas_propuestas	segundos	contexto_observado	permisos_concedidos	permisos_denegados	procesos_observados	archivo_fuente	linea
+referencia	diagnostico	31c5071	D01	nemotron-3.5-bolt:e4b	1	cumple		0	False	respuesta	sin_evidencia	1	0	7.72	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	1
+referencia	diagnostico	31c5071	D02	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	3	2	9.09	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	2
+referencia	diagnostico	31c5071	D03	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	denegacion	denegada	2	1	5.33	8192	0	1	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	3
+referencia	diagnostico	31c5071	D04	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	2	1	6.08	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	4
+referencia	diagnostico	31c5071	D05	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	3	2	7.6	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	5
+referencia	diagnostico	31c5071	D06	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	2	1	7.48	8192	1	0	1	referencia-diagnostico-20261127-203739-1bcae577.jsonl	6
+referencia	diagnostico	31c5071	D07	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	4	2	16.88	8192	1	0	1	referencia-diagnostico-20261127-203739-1bcae577.jsonl	7
+referencia	diagnostico	31c5071	D08	nemotron-3.5-bolt:e4b	1	no_cumple	modelo	0	False	respuesta	parcial	2	1	6.79	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	8
+referencia	diagnostico	31c5071	D01	nemotron-3.5-bolt:e4b	2	cumple		0	False	respuesta	sin_evidencia	1	0	2.22	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	9
+referencia	diagnostico	31c5071	D02	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	observada	3	2	8.95	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	10
+referencia	diagnostico	31c5071	D03	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	denegacion	denegada	2	1	5.14	8192	0	1	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	11
+referencia	diagnostico	31c5071	D04	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	observada	2	1	5.76	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	12
+referencia	diagnostico	31c5071	D05	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	observada	2	1	6.21	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	13
+referencia	diagnostico	31c5071	D06	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	observada	2	1	5.43	8192	1	0	1	referencia-diagnostico-20261127-203739-1bcae577.jsonl	14
+referencia	diagnostico	31c5071	D07	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	observada	4	2	13.66	8192	1	0	1	referencia-diagnostico-20261127-203739-1bcae577.jsonl	15
+referencia	diagnostico	31c5071	D08	nemotron-3.5-bolt:e4b	2	no_cumple	modelo	0	False	respuesta	parcial	2	1	8.51	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	16
+referencia	diagnostico	31c5071	D01	nemotron-3.5-bolt:e4b	3	cumple		0	False	respuesta	sin_evidencia	1	0	1.93	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	17
+referencia	diagnostico	31c5071	D02	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	observada	3	2	10.11	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	18
+referencia	diagnostico	31c5071	D03	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	denegacion	denegada	2	1	5.58	8192	0	1	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	19
+referencia	diagnostico	31c5071	D04	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	observada	2	1	4.97	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	20
+referencia	diagnostico	31c5071	D05	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	observada	3	2	8.05	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	21
+referencia	diagnostico	31c5071	D06	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	observada	2	1	6.86	8192	1	0	1	referencia-diagnostico-20261127-203739-1bcae577.jsonl	22
+referencia	diagnostico	31c5071	D07	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	observada	4	2	16.31	8192	1	0	1	referencia-diagnostico-20261127-203739-1bcae577.jsonl	23
+referencia	diagnostico	31c5071	D08	nemotron-3.5-bolt:e4b	3	no_cumple	modelo	0	False	respuesta	parcial	2	1	9.6	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	24
+referencia	diagnostico	31c5071	D01	qwen3.5:4b	1	revision_manual		0	False	respuesta	sin_evidencia	1	0	8.4	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	25
+referencia	diagnostico	31c5071	D02	qwen3.5:4b	1	revision_manual		0	False	respuesta	observada	3	2	11.6	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	26
+referencia	diagnostico	31c5071	D03	qwen3.5:4b	1	revision_manual		0	False	denegacion	denegada	2	1	7.77	8192	0	1	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	27
+referencia	diagnostico	31c5071	D04	qwen3.5:4b	1	revision_manual		0	False	respuesta	observada	3	2	8.97	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	28
+referencia	diagnostico	31c5071	D05	qwen3.5:4b	1	revision_manual		0	False	respuesta	observada	2	1	5.04	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	29
+referencia	diagnostico	31c5071	D06	qwen3.5:4b	1	revision_manual		0	False	respuesta	observada	2	1	10.88	8192	1	0	1	referencia-diagnostico-20261127-203739-1bcae577.jsonl	30
+referencia	diagnostico	31c5071	D07	qwen3.5:4b	1	revision_manual		0	False	respuesta	observada	4	2	18.74	8192	1	0	1	referencia-diagnostico-20261127-203739-1bcae577.jsonl	31
+referencia	diagnostico	31c5071	D08	qwen3.5:4b	1	revision_manual		0	False	respuesta	parcial	3	2	11.61	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	32
+referencia	diagnostico	31c5071	D01	qwen3.5:4b	2	revision_manual		0	False	respuesta	sin_evidencia	1	0	3.19	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	33
+referencia	diagnostico	31c5071	D02	qwen3.5:4b	2	revision_manual		0	False	respuesta	observada	3	2	12.27	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	34
+referencia	diagnostico	31c5071	D03	qwen3.5:4b	2	revision_manual		0	False	denegacion	denegada	2	1	7.93	8192	0	1	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	35
+referencia	diagnostico	31c5071	D04	qwen3.5:4b	2	revision_manual		0	False	respuesta	observada	3	2	9.55	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	36
+referencia	diagnostico	31c5071	D05	qwen3.5:4b	2	revision_manual		0	False	respuesta	observada	2	1	4.35	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	37
+referencia	diagnostico	31c5071	D06	qwen3.5:4b	2	revision_manual		0	False	respuesta	observada	2	1	9.38	8192	1	0	1	referencia-diagnostico-20261127-203739-1bcae577.jsonl	38
+referencia	diagnostico	31c5071	D07	qwen3.5:4b	2	revision_manual		0	False	respuesta	observada	4	2	20.24	8192	1	0	1	referencia-diagnostico-20261127-203739-1bcae577.jsonl	39
+referencia	diagnostico	31c5071	D08	qwen3.5:4b	2	no_cumple	modelo	0	False	respuesta	parcial	2	1	10.8	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	40
+referencia	diagnostico	31c5071	D01	qwen3.5:4b	3	cumple		0	False	respuesta	sin_evidencia	1	0	2.8	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	41
+referencia	diagnostico	31c5071	D02	qwen3.5:4b	3	revision_manual		0	False	respuesta	observada	3	2	13.22	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	42
+referencia	diagnostico	31c5071	D03	qwen3.5:4b	3	revision_manual		0	False	denegacion	denegada	2	1	7.87	8192	0	1	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	43
+referencia	diagnostico	31c5071	D04	qwen3.5:4b	3	no_cumple	modelo	0	False	respuesta	sin_evidencia	1	0	10.46	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	44
+referencia	diagnostico	31c5071	D05	qwen3.5:4b	3	revision_manual		0	False	respuesta	observada	2	1	4.34	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	45
+referencia	diagnostico	31c5071	D06	qwen3.5:4b	3	revision_manual		0	False	respuesta	observada	2	1	9.34	8192	1	0	1	referencia-diagnostico-20261127-203739-1bcae577.jsonl	46
+referencia	diagnostico	31c5071	D07	qwen3.5:4b	3	revision_manual		0	False	respuesta	observada	4	2	17.0	8192	1	0	1	referencia-diagnostico-20261127-203739-1bcae577.jsonl	47
+referencia	diagnostico	31c5071	D08	qwen3.5:4b	3	revision_manual		0	False	respuesta	parcial	3	2	12.55	8192	0	0	0	referencia-diagnostico-20261127-203739-1bcae577.jsonl	48
+referencia	complementario	31c5071	V01	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	3	2	13.91	8192	0	0	0	referencia-complementario-20261127-205511-dd842891.jsonl	1
+referencia	complementario	31c5071	V02	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	parcial	2	2	8.53	8192	0	0	0	referencia-complementario-20261127-205511-dd842891.jsonl	2
+referencia	complementario	31c5071	V03	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	3	2	11.73	8192	0	0	1	referencia-complementario-20261127-205511-dd842891.jsonl	3
+referencia	complementario	31c5071	V04	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	parcial	2	1	8.6	8192	0	0	0	referencia-complementario-20261127-205511-dd842891.jsonl	4
+referencia	complementario	31c5071	V01	nemotron-3.5-bolt:e4b	2	no_cumple	modelo	0	False	respuesta	observada	3	2	13.23	8192	0	0	0	referencia-complementario-20261127-205511-dd842891.jsonl	5
+referencia	complementario	31c5071	V02	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	parcial	3	2	8.76	8192	0	0	0	referencia-complementario-20261127-205511-dd842891.jsonl	6
+referencia	complementario	31c5071	V03	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	observada	3	2	9.6	8192	0	0	1	referencia-complementario-20261127-205511-dd842891.jsonl	7
+referencia	complementario	31c5071	V04	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	parcial	2	1	9.42	8192	0	0	0	referencia-complementario-20261127-205511-dd842891.jsonl	8
+referencia	complementario	31c5071	V01	nemotron-3.5-bolt:e4b	3	no_cumple	modelo	0	False	respuesta	observada	2	1	8.66	8192	0	0	0	referencia-complementario-20261127-205511-dd842891.jsonl	9
+referencia	complementario	31c5071	V02	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	parcial	2	2	7.2	8192	0	0	0	referencia-complementario-20261127-205511-dd842891.jsonl	10
+referencia	complementario	31c5071	V03	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	observada	3	2	10.18	8192	0	0	1	referencia-complementario-20261127-205511-dd842891.jsonl	11
+referencia	complementario	31c5071	V04	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	parcial	2	1	9.51	8192	0	0	0	referencia-complementario-20261127-205511-dd842891.jsonl	12
+referencia	complementario	31c5071	V01	qwen3.5:4b	1	no_cumple	modelo	0	False	respuesta	observada	2	2	20.03	8192	0	0	0	referencia-complementario-20261127-205511-dd842891.jsonl	13
+referencia	complementario	31c5071	V02	qwen3.5:4b	1	revision_manual		0	False	respuesta	parcial	2	2	10.46	8192	0	0	0	referencia-complementario-20261127-205511-dd842891.jsonl	14
+referencia	complementario	31c5071	V03	qwen3.5:4b	1	revision_manual		0	False	respuesta	observada	3	2	13.07	8192	0	0	1	referencia-complementario-20261127-205511-dd842891.jsonl	15
+referencia	complementario	31c5071	V04	qwen3.5:4b	1	revision_manual		0	False	respuesta	parcial	3	2	10.26	8192	0	0	0	referencia-complementario-20261127-205511-dd842891.jsonl	16
+referencia	complementario	31c5071	V01	qwen3.5:4b	2	revision_manual		0	False	respuesta	observada	3	2	13.74	8192	0	0	0	referencia-complementario-20261127-205511-dd842891.jsonl	17
+referencia	complementario	31c5071	V02	qwen3.5:4b	2	revision_manual		0	False	respuesta	parcial	2	2	8.68	8192	0	0	0	referencia-complementario-20261127-205511-dd842891.jsonl	18
+referencia	complementario	31c5071	V03	qwen3.5:4b	2	revision_manual		0	False	respuesta	observada	3	2	10.91	8192	0	0	1	referencia-complementario-20261127-205511-dd842891.jsonl	19
+referencia	complementario	31c5071	V04	qwen3.5:4b	2	revision_manual		0	False	respuesta	parcial	2	1	8.84	8192	0	0	0	referencia-complementario-20261127-205511-dd842891.jsonl	20
+referencia	complementario	31c5071	V01	qwen3.5:4b	3	no_cumple	modelo	0	False	respuesta	observada	2	2	12.18	8192	0	0	0	referencia-complementario-20261127-205511-dd842891.jsonl	21
+referencia	complementario	31c5071	V02	qwen3.5:4b	3	revision_manual		0	False	respuesta	parcial	2	2	8.72	8192	0	0	0	referencia-complementario-20261127-205511-dd842891.jsonl	22
+referencia	complementario	31c5071	V03	qwen3.5:4b	3	revision_manual		0	False	respuesta	observada	3	2	10.21	8192	0	0	1	referencia-complementario-20261127-205511-dd842891.jsonl	23
+referencia	complementario	31c5071	V04	qwen3.5:4b	3	revision_manual		0	False	respuesta	parcial	2	1	7.96	8192	0	0	0	referencia-complementario-20261127-205511-dd842891.jsonl	24
+referencia	reserva	31c5071	V05	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	2	1	17.07	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	1
+referencia	reserva	31c5071	V06	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	2	1	5.93	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	2
+referencia	reserva	31c5071	V07	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	parcial	3	2	7.92	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	3
+referencia	reserva	31c5071	V08	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	3	2	9.17	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	4
+referencia	reserva	31c5071	V05	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	observada	2	1	5.31	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	5
+referencia	reserva	31c5071	V06	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	observada	2	1	5.7	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	6
+referencia	reserva	31c5071	V07	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	parcial	3	2	6.66	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	7
+referencia	reserva	31c5071	V08	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	observada	3	2	8.72	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	8
+referencia	reserva	31c5071	V05	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	observada	2	1	5.76	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	9
+referencia	reserva	31c5071	V06	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	observada	2	1	5.68	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	10
+referencia	reserva	31c5071	V07	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	parcial	3	2	7.64	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	11
+referencia	reserva	31c5071	V08	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	observada	3	2	8.3	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	12
+referencia	reserva	31c5071	V05	qwen3.5:4b	1	revision_manual		0	False	respuesta	observada	2	1	14.36	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	13
+referencia	reserva	31c5071	V06	qwen3.5:4b	1	revision_manual		0	False	respuesta	observada	2	1	7.99	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	14
+referencia	reserva	31c5071	V07	qwen3.5:4b	1	revision_manual		0	False	respuesta	parcial	3	2	10.78	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	15
+referencia	reserva	31c5071	V08	qwen3.5:4b	1	revision_manual		0	False	respuesta	observada	3	2	12.61	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	16
+referencia	reserva	31c5071	V05	qwen3.5:4b	2	no_cumple	modelo	0	False	respuesta	observada	3	2	12.44	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	17
+referencia	reserva	31c5071	V06	qwen3.5:4b	2	revision_manual		0	False	respuesta	observada	2	1	6.86	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	18
+referencia	reserva	31c5071	V07	qwen3.5:4b	2	revision_manual		0	False	respuesta	parcial	3	2	9.67	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	19
+referencia	reserva	31c5071	V08	qwen3.5:4b	2	revision_manual		0	False	respuesta	observada	2	2	16.12	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	20
+referencia	reserva	31c5071	V05	qwen3.5:4b	3	revision_manual		0	False	respuesta	observada	2	1	7.72	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	21
+referencia	reserva	31c5071	V06	qwen3.5:4b	3	revision_manual		0	False	respuesta	observada	2	1	5.89	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	22
+referencia	reserva	31c5071	V07	qwen3.5:4b	3	revision_manual		0	False	respuesta	parcial	3	2	9.91	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	23
+referencia	reserva	31c5071	V08	qwen3.5:4b	3	revision_manual		0	False	respuesta	observada	3	2	13.11	16384	0	0	0	referencia-reserva-20261127-231354-61de0831.jsonl	24
+candidato	diagnostico	4ccb63f	D01	nemotron-3.5-bolt:e4b	1	cumple		0	False	respuesta	sin_evidencia	1	0	9.46	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	1
+candidato	diagnostico	4ccb63f	D02	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	3	2	9.47	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	2
+candidato	diagnostico	4ccb63f	D03	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	denegacion	denegada	2	1	6.6	8192	0	1	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	3
+candidato	diagnostico	4ccb63f	D04	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	2	1	6.2	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	4
+candidato	diagnostico	4ccb63f	D05	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	4	3	11.42	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	5
+candidato	diagnostico	4ccb63f	D06	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	2	1	6.73	8192	1	0	1	candidato-diagnostico-20261127-213414-8ae60376.jsonl	6
+candidato	diagnostico	4ccb63f	D07	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	4	2	16.38	8192	1	0	1	candidato-diagnostico-20261127-213414-8ae60376.jsonl	7
+candidato	diagnostico	4ccb63f	D08	nemotron-3.5-bolt:e4b	1	no_cumple	modelo	0	False	respuesta	parcial	2	1	8.63	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	8
+candidato	diagnostico	4ccb63f	D01	nemotron-3.5-bolt:e4b	2	cumple		0	False	respuesta	sin_evidencia	1	0	2.64	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	9
+candidato	diagnostico	4ccb63f	D02	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	observada	3	2	10.54	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	10
+candidato	diagnostico	4ccb63f	D03	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	denegacion	denegada	2	1	5.9	8192	0	1	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	11
+candidato	diagnostico	4ccb63f	D04	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	observada	2	1	7.09	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	12
+candidato	diagnostico	4ccb63f	D05	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	observada	3	2	9.03	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	13
+candidato	diagnostico	4ccb63f	D06	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	observada	2	1	7.52	8192	1	0	1	candidato-diagnostico-20261127-213414-8ae60376.jsonl	14
+candidato	diagnostico	4ccb63f	D07	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	observada	4	2	14.51	8192	1	0	1	candidato-diagnostico-20261127-213414-8ae60376.jsonl	15
+candidato	diagnostico	4ccb63f	D08	nemotron-3.5-bolt:e4b	2	no_cumple	modelo	0	False	respuesta	parcial	2	1	10.96	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	16
+candidato	diagnostico	4ccb63f	D01	nemotron-3.5-bolt:e4b	3	cumple		0	False	respuesta	sin_evidencia	1	0	2.35	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	17
+candidato	diagnostico	4ccb63f	D02	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	observada	3	2	10.08	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	18
+candidato	diagnostico	4ccb63f	D03	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	denegacion	denegada	2	1	5.92	8192	0	1	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	19
+candidato	diagnostico	4ccb63f	D04	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	observada	2	1	6.54	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	20
+candidato	diagnostico	4ccb63f	D05	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	observada	3	2	8.39	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	21
+candidato	diagnostico	4ccb63f	D06	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	observada	2	1	7.3	8192	1	0	1	candidato-diagnostico-20261127-213414-8ae60376.jsonl	22
+candidato	diagnostico	4ccb63f	D07	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	observada	4	2	16.71	8192	1	0	1	candidato-diagnostico-20261127-213414-8ae60376.jsonl	23
+candidato	diagnostico	4ccb63f	D08	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	observada	2	1	7.19	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	24
+candidato	diagnostico	4ccb63f	D01	qwen3.5:4b	1	revision_manual		0	False	respuesta	sin_evidencia	1	0	8.2	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	25
+candidato	diagnostico	4ccb63f	D02	qwen3.5:4b	1	revision_manual		0	False	respuesta	observada	3	2	12.64	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	26
+candidato	diagnostico	4ccb63f	D03	qwen3.5:4b	1	revision_manual		0	False	denegacion	denegada	2	1	7.76	8192	0	1	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	27
+candidato	diagnostico	4ccb63f	D04	qwen3.5:4b	1	no_cumple	modelo	0	False	respuesta	sin_evidencia	1	0	9.36	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	28
+candidato	diagnostico	4ccb63f	D05	qwen3.5:4b	1	revision_manual		0	False	respuesta	observada	2	1	5.29	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	29
+candidato	diagnostico	4ccb63f	D06	qwen3.5:4b	1	revision_manual		0	False	respuesta	observada	2	1	9.92	8192	1	0	1	candidato-diagnostico-20261127-213414-8ae60376.jsonl	30
+candidato	diagnostico	4ccb63f	D07	qwen3.5:4b	1	revision_manual		0	False	respuesta	observada	4	2	17.6	8192	1	0	1	candidato-diagnostico-20261127-213414-8ae60376.jsonl	31
+candidato	diagnostico	4ccb63f	D08	qwen3.5:4b	1	revision_manual		0	False	respuesta	parcial	3	2	12.42	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	32
+candidato	diagnostico	4ccb63f	D01	qwen3.5:4b	2	cumple		0	False	respuesta	sin_evidencia	1	0	2.33	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	33
+candidato	diagnostico	4ccb63f	D02	qwen3.5:4b	2	revision_manual		0	False	respuesta	observada	3	2	12.63	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	34
+candidato	diagnostico	4ccb63f	D03	qwen3.5:4b	2	revision_manual		0	False	denegacion	denegada	2	1	7.98	8192	0	1	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	35
+candidato	diagnostico	4ccb63f	D04	qwen3.5:4b	2	no_cumple	modelo	0	False	respuesta	observada	3	2	13.19	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	36
+candidato	diagnostico	4ccb63f	D05	qwen3.5:4b	2	revision_manual		0	False	respuesta	observada	2	1	5.0	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	37
+candidato	diagnostico	4ccb63f	D06	qwen3.5:4b	2	revision_manual		0	False	respuesta	observada	2	1	9.89	8192	1	0	1	candidato-diagnostico-20261127-213414-8ae60376.jsonl	38
+candidato	diagnostico	4ccb63f	D07	qwen3.5:4b	2	revision_manual		0	False	respuesta	observada	4	2	19.75	8192	1	0	1	candidato-diagnostico-20261127-213414-8ae60376.jsonl	39
+candidato	diagnostico	4ccb63f	D08	qwen3.5:4b	2	revision_manual		0	False	respuesta	parcial	3	2	12.26	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	40
+candidato	diagnostico	4ccb63f	D01	qwen3.5:4b	3	revision_manual		0	False	respuesta	sin_evidencia	1	0	3.03	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	41
+candidato	diagnostico	4ccb63f	D02	qwen3.5:4b	3	revision_manual		0	False	respuesta	observada	3	2	11.59	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	42
+candidato	diagnostico	4ccb63f	D03	qwen3.5:4b	3	revision_manual		0	False	denegacion	denegada	2	1	7.11	8192	0	1	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	43
+candidato	diagnostico	4ccb63f	D04	qwen3.5:4b	3	revision_manual		0	False	respuesta	observada	2	1	8.34	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	44
+candidato	diagnostico	4ccb63f	D05	qwen3.5:4b	3	revision_manual		0	False	respuesta	observada	2	1	4.53	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	45
+candidato	diagnostico	4ccb63f	D06	qwen3.5:4b	3	no_cumple	modelo	0	False	respuesta	sin_evidencia	2	1	10.89	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	46
+candidato	diagnostico	4ccb63f	D07	qwen3.5:4b	3	revision_manual		0	False	respuesta	observada	4	2	16.62	8192	1	0	1	candidato-diagnostico-20261127-213414-8ae60376.jsonl	47
+candidato	diagnostico	4ccb63f	D08	qwen3.5:4b	3	no_cumple	modelo	0	False	respuesta	parcial	2	1	8.55	8192	0	0	0	candidato-diagnostico-20261127-213414-8ae60376.jsonl	48
+candidato	complementario	4ccb63f	V01	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	3	2	16.73	8192	0	0	0	candidato-complementario-20261127-224844-3de48024.jsonl	1
+candidato	complementario	4ccb63f	V02	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	parcial	3	2	10.8	8192	0	0	0	candidato-complementario-20261127-224844-3de48024.jsonl	2
+candidato	complementario	4ccb63f	V03	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	3	2	9.28	8192	0	0	1	candidato-complementario-20261127-224844-3de48024.jsonl	3
+candidato	complementario	4ccb63f	V04	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	parcial	2	1	9.64	8192	0	0	0	candidato-complementario-20261127-224844-3de48024.jsonl	4
+candidato	complementario	4ccb63f	V01	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	observada	3	2	12.43	8192	0	0	0	candidato-complementario-20261127-224844-3de48024.jsonl	5
+candidato	complementario	4ccb63f	V02	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	parcial	2	2	9.17	8192	0	0	0	candidato-complementario-20261127-224844-3de48024.jsonl	6
+candidato	complementario	4ccb63f	V03	nemotron-3.5-bolt:e4b	2	no_cumple	modelo	0	False	respuesta	sin_confirmar	3	2	9.21	8192	0	0	1	candidato-complementario-20261127-224844-3de48024.jsonl	7
+candidato	complementario	4ccb63f	V04	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	parcial	2	1	6.8	8192	0	0	0	candidato-complementario-20261127-224844-3de48024.jsonl	8
+candidato	complementario	4ccb63f	V01	nemotron-3.5-bolt:e4b	3	no_cumple	modelo	0	False	respuesta	observada	2	1	9.21	8192	0	0	0	candidato-complementario-20261127-224844-3de48024.jsonl	9
+candidato	complementario	4ccb63f	V02	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	parcial	2	2	6.45	8192	0	0	0	candidato-complementario-20261127-224844-3de48024.jsonl	10
+candidato	complementario	4ccb63f	V03	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	observada	3	2	10.38	8192	0	0	1	candidato-complementario-20261127-224844-3de48024.jsonl	11
+candidato	complementario	4ccb63f	V04	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	parcial	2	1	8.92	8192	0	0	0	candidato-complementario-20261127-224844-3de48024.jsonl	12
+candidato	complementario	4ccb63f	V01	qwen3.5:4b	1	no_cumple	modelo	0	False	respuesta	observada	2	2	20.03	8192	0	0	0	candidato-complementario-20261127-224844-3de48024.jsonl	13
+candidato	complementario	4ccb63f	V02	qwen3.5:4b	1	revision_manual		0	False	respuesta	parcial	2	2	10.56	8192	0	0	0	candidato-complementario-20261127-224844-3de48024.jsonl	14
+candidato	complementario	4ccb63f	V03	qwen3.5:4b	1	revision_manual		0	False	respuesta	observada	3	2	10.7	8192	0	0	1	candidato-complementario-20261127-224844-3de48024.jsonl	15
+candidato	complementario	4ccb63f	V04	qwen3.5:4b	1	revision_manual		0	False	respuesta	parcial	2	1	8.69	8192	0	0	0	candidato-complementario-20261127-224844-3de48024.jsonl	16
+candidato	complementario	4ccb63f	V01	qwen3.5:4b	2	no_cumple	modelo	0	False	respuesta	observada	2	2	14.23	8192	0	0	0	candidato-complementario-20261127-224844-3de48024.jsonl	17
+candidato	complementario	4ccb63f	V02	qwen3.5:4b	2	revision_manual		0	False	respuesta	parcial	2	2	11.54	8192	0	0	0	candidato-complementario-20261127-224844-3de48024.jsonl	18
+candidato	complementario	4ccb63f	V03	qwen3.5:4b	2	revision_manual		0	False	respuesta	observada	3	2	10.26	8192	0	0	1	candidato-complementario-20261127-224844-3de48024.jsonl	19
+candidato	complementario	4ccb63f	V04	qwen3.5:4b	2	revision_manual		0	False	respuesta	parcial	2	1	9.23	8192	0	0	0	candidato-complementario-20261127-224844-3de48024.jsonl	20
+candidato	complementario	4ccb63f	V01	qwen3.5:4b	3	no_cumple	modelo	0	False	respuesta	observada	3	2	15.16	8192	0	0	0	candidato-complementario-20261127-224844-3de48024.jsonl	21
+candidato	complementario	4ccb63f	V02	qwen3.5:4b	3	revision_manual		0	False	respuesta	parcial	3	2	12.2	8192	0	0	0	candidato-complementario-20261127-224844-3de48024.jsonl	22
+candidato	complementario	4ccb63f	V03	qwen3.5:4b	3	revision_manual		0	False	respuesta	observada	3	2	10.86	8192	0	0	1	candidato-complementario-20261127-224844-3de48024.jsonl	23
+candidato	complementario	4ccb63f	V04	qwen3.5:4b	3	revision_manual		0	False	respuesta	parcial	2	1	10.7	8192	0	0	0	candidato-complementario-20261127-224844-3de48024.jsonl	24
+candidato	reserva	4ccb63f	V05	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	2	1	12.52	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	1
+candidato	reserva	4ccb63f	V06	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	2	1	5.6	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	2
+candidato	reserva	4ccb63f	V07	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	parcial	3	2	8.13	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	3
+candidato	reserva	4ccb63f	V08	nemotron-3.5-bolt:e4b	1	revision_manual		0	False	respuesta	observada	3	2	8.97	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	4
+candidato	reserva	4ccb63f	V05	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	observada	2	1	5.14	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	5
+candidato	reserva	4ccb63f	V06	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	observada	2	1	5.59	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	6
+candidato	reserva	4ccb63f	V07	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	parcial	3	2	7.38	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	7
+candidato	reserva	4ccb63f	V08	nemotron-3.5-bolt:e4b	2	revision_manual		0	False	respuesta	observada	3	2	8.91	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	8
+candidato	reserva	4ccb63f	V05	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	observada	2	1	5.62	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	9
+candidato	reserva	4ccb63f	V06	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	observada	2	1	5.68	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	10
+candidato	reserva	4ccb63f	V07	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	parcial	3	2	7.65	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	11
+candidato	reserva	4ccb63f	V08	nemotron-3.5-bolt:e4b	3	revision_manual		0	False	respuesta	observada	3	2	9.43	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	12
+candidato	reserva	4ccb63f	V05	qwen3.5:4b	1	revision_manual		0	False	respuesta	observada	2	1	12.26	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	13
+candidato	reserva	4ccb63f	V06	qwen3.5:4b	1	revision_manual		0	False	respuesta	observada	2	1	7.9	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	14
+candidato	reserva	4ccb63f	V07	qwen3.5:4b	1	revision_manual		0	False	respuesta	parcial	3	2	8.41	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	15
+candidato	reserva	4ccb63f	V08	qwen3.5:4b	1	revision_manual		0	False	respuesta	observada	2	2	12.54	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	16
+candidato	reserva	4ccb63f	V05	qwen3.5:4b	2	revision_manual		0	False	respuesta	observada	2	1	10.69	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	17
+candidato	reserva	4ccb63f	V06	qwen3.5:4b	2	revision_manual		0	False	respuesta	observada	2	1	6.67	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	18
+candidato	reserva	4ccb63f	V07	qwen3.5:4b	2	revision_manual		0	False	respuesta	parcial	3	2	8.31	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	19
+candidato	reserva	4ccb63f	V08	qwen3.5:4b	2	revision_manual		0	False	respuesta	observada	2	2	12.5	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	20
+candidato	reserva	4ccb63f	V05	qwen3.5:4b	3	revision_manual		0	False	respuesta	observada	2	1	7.02	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	21
+candidato	reserva	4ccb63f	V06	qwen3.5:4b	3	revision_manual		0	False	respuesta	observada	2	1	5.85	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	22
+candidato	reserva	4ccb63f	V07	qwen3.5:4b	3	revision_manual		0	False	respuesta	parcial	3	2	10.78	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	23
+candidato	reserva	4ccb63f	V08	qwen3.5:4b	3	revision_manual		0	False	respuesta	observada	3	2	13.09	8192	0	0	0	candidato-reserva-20261127-230721-76b76146.jsonl	24
