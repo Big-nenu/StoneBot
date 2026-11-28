@@ -58,7 +58,7 @@ def demo(root, stage, *, live=False):
                     assert len(call["messages"]) == 2
                     assert turn_worker.EXPERIENCES_TOOL in call["tools"]
                     return request("query_experiences", {"busqueda": "demo echo"})
-                row, = json.loads(last["content"])
+                row, = json.loads(last["content"])["datos"]
                 assert row["evidencia_actual"]["tipo"] == "hecho observado"
                 assert row["evidencia_actual"]["id"] == 1
                 assert payload not in last["content"]
@@ -77,7 +77,7 @@ def demo(root, stage, *, live=False):
                     if stage == "registrar" and f"Eco MCP: {payload}" in last["content"]:
                         verified.append(last["content"])
                     elif stage == "recuperar" and last.get("tool_name") == "query_experiences":
-                        items = json.loads(last["content"])
+                        items = json.loads(last["content"])["datos"]
                         if any(item["evidencia_actual"]["id"] == 1 for item in items):
                             verified.append(last["content"])
                 return client.chat(**call)
@@ -101,7 +101,7 @@ def demo(root, stage, *, live=False):
             if stage == "registrar":
                 if not live:
                     assert "devolvió" in send("Prueba el servidor demo con echo.")
-                    assert "rechazó" in send("/aprender Haz una llamada inválida a demo echo.")
+                    assert "inválidos" in send("/aprender Haz una llamada inválida a demo echo.")
                     assert not db.exists()
                 result = send(f"/aprender Usa la herramienta MCP echo del servidor demo con el texto exacto {payload}. "
                               "Explica el resultado y qué queda sin comprobar.")

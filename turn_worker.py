@@ -70,6 +70,7 @@ from tasks import (
     checkpoint_key, completion_evidence, invalidate_project_reads, new_task, project_checkpoint_key,
     step_caption, task_context, upgrade_task,
 )
+from tool_execution import CONTROL, OBSERVED, CallLedger
 from tool_loop import EndTurn, ToolLoop, ToolResult, TurnTools
 from turn_budget import BudgetLimits, ProviderUnavailable, REPAIRS, TurnBudget, TurnLimit
 from turn_evidence import Evidence
@@ -148,7 +149,9 @@ class TaskPaused(TurnError):
 
 
 class StartSavedTask(Exception):
-    pass
+    def __init__(self, objective, receipt=None):
+        super().__init__(objective)
+        self.receipt = receipt
 
 
 class ResumeChatWork(Exception):
@@ -201,17 +204,31 @@ class Worker:
         self.ollama_context = None
         self.partial_text = ""
         self.evidence = Evidence()
+        self.calls = CallLedger()
 
     def run(self) -> TurnOutcome:
         self.evidence = Evidence()
+        self.calls = CallLedger()
         outcome = self._run()
         if outcome.kind in {"finished", "cancelled"}:
             text = outcome.partial_text if outcome.kind == "cancelled" else outcome.text
             steps = self.execution.state["steps"] if self.execution else []
-            text = self.private_answer(self.evidence.answer(text, steps, stopped=outcome.kind == "cancelled",
-                                                           preserve=self.task is not None or self.budget.reason is not None))
+            if self.closing_guard():
+                text = self.guard_summary()
+                observed = self.evidence.answer("", steps, stopped=outcome.kind == "cancelled", preserve=True)
+                if observed:
+                    if self.evidence.process_only():
+                        text = observed + "\n\n" + text
+                    else:
+                        text += "\n\n" + observed
+            else:
+                text = self.evidence.answer(text, steps, stopped=outcome.kind == "cancelled",
+                                            preserve=self.task is not None or self.budget.reason is not None)
+            text = self.private_answer(text)
             outcome = (replace(outcome, partial_text=text) if outcome.kind == "cancelled"
                        else replace(outcome, text=text))
+        if outcome.kind == "error" and self.closing_guard():
+            outcome = replace(outcome, text=self.private_answer(self.guard_summary()))
         if outcome.kind == "finished" and self.trace_reason == "respuesta":
             if self.operation_denied:
                 self.trace_reason = "denegacion"
@@ -220,10 +237,27 @@ class Worker:
                                      "paused": "bloqueo"}.get(self.task["status"], "respuesta")
         evidence = self.evidence_state()
         if self.trace:
+            for entry in self.calls.entries:
+                self.trace("ejecucion_propuesta", **entry.metadata())
             self.trace("presupuesto_turno", **self.budget.snapshot())
             self.trace("fin", estado=outcome.kind, motivo=self.trace_reason, evidencia=evidence)
         self.last_outcome = replace(outcome, reason=self.trace_reason, evidence=evidence)
         return self.last_outcome
+
+    def closing_guard(self):
+        return self.calls.blocked() or bool(self.execution and self.execution.unconfirmed())
+
+    def guard_summary(self):
+        reason = self.trace_reason
+        labels = {"presupuesto_agotado": "Se agotó el presupuesto de ejecución del turno.",
+                  "sin_progreso": "Detuve el turno porque las últimas rondas no aportaron evidencia nueva.",
+                  "proveedor": "Falló el proveedor antes de completar el turno."}
+        report = self.calls.rendered(pending_effects=bool(self.execution and self.execution.unconfirmed()))
+        if reason in labels:
+            report = labels[reason] + "\n\n" + report
+        if self.task is not None and self.task["status"] == "paused":
+            report += "\n\nUsa /reanudar para continuar con los resultados guardados."
+        return report
 
     def evidence_state(self):
         if self.execution and self.execution.unconfirmed():
@@ -395,14 +429,9 @@ class Worker:
             self.trace("tokens_modelo", peticion=self.trace_request,
                        tokens_entrada=counts[0] if type(counts[0]) is int and counts[0] >= 0 else None,
                        tokens_salida=counts[1] if type(counts[1]) is int and counts[1] >= 0 else None)
+        self.admit_proposals(response.message, closing)
         if self.ollama_context is not None:
             self.trace("contexto_ollama", peticion=self.trace_request, **await observed_context(self.ai.model))
-        for call in getattr(response.message, "tool_calls", None) or ():
-            name = call.function.name
-            self.trace("llamada_propuesta", peticion=self.trace_request,
-                       herramienta=name if name in self.trace_tools else "(desconocida)",
-                       argumentos=call.function.arguments)
-        self.admit_proposals(response.message, closing)
         return response
 
     async def bounded_model_request(self, client, method, args, internal, closing, kwargs):
@@ -420,6 +449,14 @@ class Worker:
     def admit_proposals(self, reply, closing):
         calls = getattr(reply, "tool_calls", None) or ()
         admitted = self.budget.proposals_for(len(calls), closing=closing)
+        first = len(self.calls.entries) + 1
+        self.calls.propose(calls, admitted)
+        if self.trace:
+            for number, call in enumerate(calls, first):
+                name = call.function.name
+                self.trace("llamada_propuesta", peticion=self.trace_request, llamada=number,
+                           herramienta=name if name in self.trace_tools else "(desconocida)",
+                           argumentos=call.function.arguments)
         if admitted < len(calls):
             reply.tool_calls = calls[:admitted]
             if closing:
@@ -442,7 +479,7 @@ class Worker:
         return await handler(*args, **kwargs)
 
     def update_partial(self, text):
-        if text.lstrip().startswith(("<tool", "<function")):
+        if self.closing_guard() or text.lstrip().startswith(("<tool", "<function")):
             text = ""
         text = self.private_answer(text)
         if text != self.partial_text:
@@ -592,6 +629,8 @@ class Worker:
         if status == "paused":
             self.observe_ranking("mcp", "parcial")
             return self.task_reply("paused", "La tarea sigue pendiente.\n\n" + text)
+        if self.closing_guard():
+            return self.task_reply("paused", self.guard_summary())
         if status != "completed":
             return self.task_reply(status, text)
         if "project_read_project_id" in self.task and await self.refresh_project_file_reads():
@@ -1052,6 +1091,7 @@ class Worker:
                 return self.private_answer(await self.execute_turn())
             except ResumeChatWork as request:
                 self.execution.resume(self.messages[-1]["content"], request.args[0])
+                request.args[1].state = CONTROL
                 return self.private_answer(await self.execute_turn())
         except StartSavedTask as request:
             self.task = new_task(str(request))
@@ -1062,6 +1102,8 @@ class Worker:
             except TaskPaused as exc:
                 self.task = None
                 raise TurnError(str(exc)) from exc
+            if request.receipt is not None:
+                request.receipt.state = CONTROL
             self.events.task_started(self.task)
             return self.private_answer(await self.execute_turn(promoted=True))
 
@@ -1787,7 +1829,7 @@ class Worker:
                 limit_tools(local_reads)
             if uncertain_effect:
                 limit_to_verification()
-            loop = ToolLoop(messages, tools=catalog, budget=self.budget, cache=ordinary_turn)
+            loop = ToolLoop(messages, tools=catalog, budget=self.budget, cache=ordinary_turn, ledger=self.calls)
 
             async def request_round(round_index, finishing):
                 nonlocal planning_retried, cached_summary
@@ -1915,6 +1957,7 @@ class Worker:
                         can_repair = self.budget.repairs < REPAIRS and task_calls < 12 and not self.budget.stop_work()
                         repair_messages = messages if can_repair else None
                         if reporting:
+                            self.calls.control(calls[0])
                             fields = calls[0].function.arguments
                             reported_status = REPORT_STATES.get(fields.get("estado"))
                             answer = fields.get("mensaje")
@@ -1942,7 +1985,8 @@ class Worker:
                                 not isinstance(catalog.validate(call.function.name, call.function.arguments), ToolResult)):
                             if self.budget.dispatch(RESUME.function.name):
                                 self.budget.progress.add(("control", RESUME.function.name))
-                                raise ResumeChatWork(call.function.arguments.get("refresh_first", True) is True)
+                                raise ResumeChatWork(call.function.arguments.get("refresh_first", True) is True,
+                                                     self.calls.take(call))
                 if skill_spec and catalog.permits(local_skills.LOAD_SKILL) and any(
                         call.function.name == local_skills.LOAD_SKILL and
                         not isinstance(catalog.validate(call.function.name, call.function.arguments), ToolResult)
@@ -1966,6 +2010,7 @@ class Worker:
                                 not isinstance(catalog.validate(call.function.name, call.function.arguments), ToolResult)):
                             selected = call.function.arguments.get("fuente")
                             if isinstance(selected, str) and selected in TURN_SOURCES and self.budget.dispatch(SELECT_SOURCE.function.name):
+                                self.calls.control(call)
                                 self.budget.progress.add(("fuente", selected))
                                 self.events.activity(f"Fuente seleccionada · {TURN_SOURCES[selected]}.")
                                 return await self.chat_with_tools(client, routing_messages, skills, source=selected)
@@ -1976,6 +2021,7 @@ class Worker:
                             objective = call.function.arguments.get("objetivo")
                             if (isinstance(objective, str) and 0 < len(objective.strip()) <= 4000
                                     and self.budget.dispatch(START_TASK.function.name)):
+                                self.calls.control(call)
                                 self.budget.progress.add(("control", START_TASK.function.name))
                                 raise StartSavedTask(objective.strip())
                 return reply
@@ -1987,7 +2033,8 @@ class Worker:
                 self.private_read |= tool.private
                 self.used_external_source = True
                 if tool.private and (self.ai.cloud or not await self.verify_local_ollama()):
-                    return ToolResult(read_result(estado="error", mensaje="Esta consulta requiere Ollama local."))
+                    return ToolResult(read_result(estado="error", mensaje="Esta consulta requiere Ollama local."),
+                                      reuse=False, status="sin ejecutar", code="DESTINO_BLOQUEADO")
                 if self.task is not None:
                     if task_calls >= 12:
                         return EndTurn(self.task_limit())
@@ -2015,23 +2062,27 @@ class Worker:
                 nonlocal registered_read_started
                 registered_read_started = True
                 if not self.ai.cloud and not await self.verify_local_ollama():
-                    return ToolResult("La actividad personal requiere Ollama local.")
+                    return ToolResult("La actividad personal requiere Ollama local.", reuse=False, status="sin ejecutar",
+                                      code="DESTINO_BLOQUEADO")
                 result = await self.read_activity(name, arguments)
                 if not self.share_memory:
-                    return EndTurn(result)
+                    return EndTurn(result, OBSERVED)
                 return ToolResult(result)
 
             async def execute_skill(name, arguments):
                 nonlocal skill_loaded
                 skill_loaded = True
                 limit_tools(skill_scope)
-                return ToolResult(self.load_turn_skill(arguments, skills))
+                result = self.load_turn_skill(arguments, skills)
+                return ToolResult(result, status="error de lectura" if json.loads(result).get("estado") == "error"
+                                  else "respuesta recibida")
 
             async def execute_external(external_name, arguments):
                 nonlocal used_mcp, task_calls, uncertain_effect
                 _, server_name, tool, _ = external[external_name]
                 if skill_loaded and not safe_read(tool, arguments):
-                    return ToolResult("La Skill solo dispone de lecturas autorizadas.", reuse=False)
+                    return ToolResult("La Skill solo dispone de lecturas autorizadas.", reuse=False,
+                                      status="sin ejecutar", code="DESTINO_BLOQUEADO")
                 used_mcp = True
                 if visibility:
                     self.used_external_source = True
@@ -2258,27 +2309,36 @@ class Worker:
 
             async def execute_memory(name, arguments):
                 if save_request and "memory" not in pending:
-                    return ToolResult("El guardado ya se resolvió.", reuse=False)
+                    return ToolResult("El guardado ya se resolvió.", reuse=False, status="sin ejecutar", code="EFECTO_YA_REGISTRADO")
                 self.permission = None
-                outcome = "respuesta recibida"
+                transport = []
+                rejected = []
+                sent = False
+
+                def on_start():
+                    nonlocal sent
+                    if journal:
+                        journal.dispatched()
+                    sent = True
+
                 try:
                     confirm = self.confirm_memory
                     if used_mcp and name in {"inject_memory", "update_memory"}:
                         confirm = self.confirm_external
-                    if journal:
-                        transport = []
-                        result = await call_external(memory_tools[name], arguments, confirm,
-                                                     on_start=journal.dispatched, on_result=transport.append)
-                        step = journal.state["steps"][-1]
-                        if step["effect"]:
-                            outcome = step["status"]
-                            if transport == ["response"] and confirmed_change(name, arguments, result):
-                                outcome = "confirmada por StoneWave"
-                    else:
-                        result = await call_external(memory_tools[name], arguments, confirm)
+                    result = await call_external(memory_tools[name], arguments, confirm, on_start=on_start,
+                                                 on_result=transport.append, on_rejected=rejected.append)
+                except (TaskPaused, TurnLimit):
+                    raise
                 except Exception as exc:
                     result = f"No se pudo usar StoneWave. {connection_error(exc)}"
-                    outcome = journal.state["steps"][-1]["status"] if journal else "sin confirmar"
+                read = name in {"get_context", "query_memory", "list_memories", "bridge_memory", "conclusion_history"}
+                if not sent:
+                    outcome = "sin ejecutar"
+                elif not read:
+                    outcome = ("confirmada por StoneWave" if transport == ["response"] and
+                               confirmed_change(name, arguments, result) else "sin confirmar")
+                else:
+                    outcome = "respuesta recibida" if transport == ["response"] else "error de lectura"
                 if save_request:
                     if result.startswith(SAVED):
                         status["memory"] = ("**Memoria.** La información ya estaba guardada." if result.startswith("=")
@@ -2287,31 +2347,29 @@ class Worker:
                         pending.discard("memory")
                     else:
                         status["memory"] = "**Memoria.** StoneWave no confirmó el guardado."
-                return ToolResult(result, status=outcome)
+                return ToolResult(result, status=outcome, code=rejected[0] if rejected else None)
 
             async def execute_control(name, arguments):
                 if local_markdown and name == LOCAL_MARKDOWN.function.name and "markdown" in pending:
                     result, finished = await self.save_local_markdown(save_request["target"], arguments,
                                                                       journal.dispatched if journal else None)
-                    status["markdown"] = f"**Archivo.** {result}"
+                    status["markdown"] = f"**Archivo.** {result.content}"
                     if finished:
                         pending.discard("markdown")
-                    if journal:
-                        state = journal.state["steps"][-1]["status"]
-                        return ToolResult(result, status="verificada en disco" if result.startswith("Guardado y verificado") else state)
-                elif self.task is not None:
-                    result = "Herramienta no disponible en la tarea. Para informar el estado, haz una llamada separada."
-                elif not save_request and name == query_experiences.__name__:
+                    return result
+                if self.task is not None:
+                    return ToolResult("Herramienta no disponible en la tarea. Para informar el estado, haz una llamada separada.",
+                                      reuse=False, status="sin ejecutar", code="HERRAMIENTA_NO_DISPONIBLE")
+                if not save_request and name == query_experiences.__name__:
                     try:
-                        result = query_experiences(**arguments)
+                        return ToolResult(query_experiences(**arguments))
                     except (TypeError, ValueError, OSError, RuntimeError, sqlite3.Error):
-                        result = "No se pudieron consultar las experiencias de StoneBot."
-                else:
-                    result = "Herramienta desconocida o no disponible."
-                    if local_read:
-                        self.events.notice(f"MCP lectura local. Herramienta solicitada no disponible: {name!r:.100}.")
-                        result += " Usa un nombre exacto de esta lista: " + ", ".join(external) + "."
-                return ToolResult(result)
+                        return ToolResult("No se pudieron consultar las experiencias de StoneBot.", status="error de lectura")
+                result = "Herramienta desconocida o no disponible."
+                if local_read:
+                    self.events.notice(f"MCP lectura local. Herramienta solicitada no disponible: {name!r:.100}.")
+                    result += " Usa un nombre exacto de esta lista: " + ", ".join(external) + "."
+                return ToolResult(result, reuse=False, status="sin ejecutar", code="HERRAMIENTA_NO_DISPONIBLE")
 
             async def execute_process(name, arguments):
                 nonlocal registered_read_started
@@ -2417,7 +2475,7 @@ class Worker:
                                     after_batch=after_batch, activity=self.events.activity,
                                     prepare_call=prepare_call, before_call=before_call, after_tool=after_tool,
                                     after_call=journal.observe if journal else None,
-                                    record_evidence=self.evidence.record,
+                                    describe_result=self.evidence.record,
                                     trace=trace_result if self.trace else None)
             if answer is not None:
                 return answer
@@ -2642,11 +2700,12 @@ class Worker:
         try:
             destination = markdown_destination(target, arguments)
         except (OSError, ValueError, RuntimeError, TypeError) as exc:
-            return str(exc), False
+            return ToolResult(str(exc), reuse=False, status="sin ejecutar", code="ARGUMENTOS_INVALIDOS"), False
         if not destination.parent.is_dir():
-            return "La carpeta indicada no está disponible.", True
+            return ToolResult("La carpeta indicada no está disponible.", reuse=False, status="sin ejecutar"), True
         if not await self.confirm_external("StoneBot", "guardar Markdown", arguments, local=True):
-            return "La escritura no fue autorizada.", True
+            return ToolResult("La escritura no fue autorizada.", reuse=False, status="sin ejecutar",
+                              code="OPERACION_DENEGADA"), True
         staged = None
         try:
             destination = markdown_destination(target, arguments)
@@ -2661,17 +2720,18 @@ class Worker:
             else:
                 os.link(staged, destination)
         except FileExistsError:
-            return "El archivo ya existe. Elige otro nombre para conservarlo.", True
+            return ToolResult("El archivo ya existe. Elige otro nombre para conservarlo.", reuse=False,
+                              status="sin ejecutar"), True
         except (OSError, ValueError, RuntimeError):
-            return "No pude completar el guardado local.", True
+            return ToolResult("No pude completar el guardado local.", reuse=False, status="sin confirmar"), True
         finally:
             if staged is not None:
                 with suppress(OSError):
                     staged.unlink(missing_ok=True)
         if not text_file_verified(destination, arguments["content"]):
-            return "No pude verificar el contenido del archivo.", True
+            return ToolResult("No pude verificar el contenido del archivo.", reuse=False, status="sin confirmar"), True
         self.events.activity("Markdown guardado y verificado en disco.")
-        return f"Guardado y verificado en `{destination}`.", True
+        return ToolResult(f"Guardado y verificado en `{destination}`.", reuse=False, status="verificada en disco"), True
 
     async def confirm_external(self, server, tool, arguments, *, local=False):
         if self.operation_denied:

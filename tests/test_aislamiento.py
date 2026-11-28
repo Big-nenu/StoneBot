@@ -246,7 +246,7 @@ def test_worker_usa_stonewave_sin_abrir_la_base_local():
             }]))
         assert remembered not in messages[0]["content"]
         if isinstance(messages[-1], dict) and messages[-1]["role"] == "tool":
-            assert messages[-1]["content"] == remembered
+            assert messages[-1]["content"].splitlines()[0] == remembered
             return SimpleNamespace(message=Message(role="assistant", content=remembered))
         if "telescopio" in messages[-1]["content"]:
             return SimpleNamespace(message=Message(role="assistant", tool_calls=[{

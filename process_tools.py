@@ -141,7 +141,7 @@ async def execute(name, arguments, journal, confirm, check_pause, *, wait_ms, re
                 details = (managed_process.description(folder, run_id)
                            if name == CANCEL else arguments)
                 if not await confirm("Terminal de Windows", name, details, local=True):
-                    return ToolResult("Operación denegada.", reuse=False, status="sin ejecutar")
+                    return ToolResult("Operación denegada.", reuse=False, status="sin ejecutar", code="OPERACION_DENEGADA")
                 check_pause()
                 if name == START and resolved_command(arguments) != arguments:
                     raise ValueError("Cambió el programa o directorio autorizado.")

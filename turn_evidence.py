@@ -40,7 +40,7 @@ class Evidence:
         if name in PROCESS_NAMES:
             fields = {"procedencia": "supervisor de Windows", "estado": data.get("estado", result.status),
                       "codigo": data.get("codigo")}
-            if result.content == "Operación denegada.":
+            if result.code == "OPERACION_DENEGADA":
                 fields["efecto"] = "denegado"
             for key in ("id", "inicio_confirmado", "cursor", "hay_mas", "truncada", "cancelacion_solicitada"):
                 if key in data:

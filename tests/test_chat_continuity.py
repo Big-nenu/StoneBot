@@ -68,7 +68,7 @@ def check_continuity(live):
                           if getattr(tool, "function", None) and tool.function.name.startswith("mcp_ejemplo_echo_"))
                 reply = Message(role="assistant", tool_calls=[{"function": dict(name=alias, arguments={"text": challenge})}])
             else:
-                assert rows[-1]["content"] == f"Eco MCP: {challenge}"
+                assert rows[-1]["content"].splitlines()[0] == f"Eco MCP: {challenge}"
                 reply = Message(role="assistant", content=f"Eco confirmado. Recibí {challenge}.")
             return SimpleNamespace(message=reply)
 

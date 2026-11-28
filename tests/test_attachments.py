@@ -527,7 +527,7 @@ async def test_save_from_capture(root):
     worker = app.Worker([])
     worker.confirm_external = AsyncMock()
     response, _ = await worker.save_local_markdown(root, {"path": str(existing), "content": "Otro texto"})
-    assert "ya existe" in response and existing.read_text(encoding="utf-8") == payload
+    assert "ya existe" in response.content and existing.read_text(encoding="utf-8") == payload
     worker.confirm_external.assert_not_called()
     assert attachment_save_request([original, {"role": "user", "content": "¿Qué sabes de Excel?"},
                                         {"role": "assistant", "content": "Puedo leer hojas."},

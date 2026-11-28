@@ -101,7 +101,8 @@ def test_permissions_and_trace(root):
             name = next(name for name in offered if name.startswith("mcp_example_mark_"))
             return call(name, text=SECRET)
         status, output, stderr = invoke(root, ["--verbose"], stdin, model)
-        assert status == 0 and "Terminado." in output, (output, stderr)
+        assert status == 0 and "Terminado." not in output, (output, stderr)
+        assert ("pendiente de comprobación" if approved else "permiso denegado") in output
         assert marker.exists() == approved
         assert observed and ("Marca escrita" in observed[-1]) == approved
         events = [json.loads(line) for line in stderr.splitlines() if line.startswith('{"evento":')]

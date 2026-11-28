@@ -115,7 +115,7 @@ Priorizar resultados difíciles de malinterpretar: cobertura completa/parcial ex
 - Reutilizar las comprobaciones de cobertura de tareas guardadas y aplicar comprobaciones equivalentes en chat cuando el encargo dependa de una lectura, un cálculo externo o un efecto. Separar datos observados, inferencias y partes desconocidas. El cierre ordinario puede citar una fuente, un archivo autorizado, una página o un ID de ejecución cuando sea pertinente. Verificar contra resultados de herramientas cualquier afirmación de operación realizada.
 - La comprobación distingue salida de proceso de código de terminación, una lectura parcial de una cobertura completa y una respuesta MCP de un efecto confirmado independientemente. Un acto denegado, pendiente, cancelado o sin confirmación conserva ese estado al responder y al reabrir. Aplicar los cambios de historial de forma compatible con registros de los pasos previos.
 
-El [informe de 5.7](13-evidencia-y-respuesta.md) registra el contrato de evidencia, las regresiones y los resultados con Nemotron y Qwen, incluidos los fallos de selección de alcance observados.
+El [informe de 5.7](13-evidencia-y-respuesta.md) registra el contrato de evidencia, las regresiones y los resultados con Nemotron y Qwen, incluidos los fallos de selección de alcance observados. La [ampliación del registro](16-registro-y-compuerta-5.7.md) cubre las propuestas rechazadas antes del ejecutor y el cierre determinista. La evaluación con modelos de esta ampliación queda pendiente.
 
 ## 3. Dependencias y subpasos
 

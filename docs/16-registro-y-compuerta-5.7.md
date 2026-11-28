@@ -14,3 +14,17 @@
 - Proveedor simulado con texto incorrecto tras validación, límites, omisiones, denegación, reutilización, fallo, efecto incierto y ejecución verificada. Incluir una tanda mixta y un turno interrumpido. Revisar estado emitido, texto final, diario y número de despachos.
 - Regresiones de Desktop, CLI, permisos, aislamiento, privacidad, continuidad, supervisor y presupuesto. Usar los mismos ejecutores y controles de autorización.
 - Conservar los resultados históricos de 5.8. La matriz con Ollama queda fuera de esta ampliación y 5.8 permanece abierto.
+
+## Implementación
+
+Cada petición se registra antes de recortar la tanda. `ejecucion_propuesta` enlaza el estado final con el número de `llamada_propuesta`. El evento `resultado` incluye ese número cuando el bucle procesa la llamada. Los resultados en JSON conservan el formato estructurado y llevan el objeto `ejecucion`. Los resultados de texto llevan el estado del motor por separado. Los errores previos al despacho quedan fuera del diario de efectos.
+
+La compuerta es conservadora en tandas mixtas. Si el turno contiene una propuesta fallida o incierta, muestra las observaciones disponibles con su procedencia y conserva los datos confirmados sin publicar la síntesis libre del modelo. También distingue un proceso activo, una cancelación observada y un código de salida distinto de cero. Aplicar un control de conversación o reutilizar una observación queda registrado, con su alcance correspondiente. Las confirmaciones, la recuperación del diario y los límites del presupuesto mantienen sus mecanismos anteriores.
+
+La compuerta toma decisiones sobre las propuestas del turno y los efectos pendientes de su diario. Conserva resultados comprobados de una tanda mixta con su procedencia. La referencia de una llamada describe lo observado en ese momento. Una consulta posterior puede aportar un estado más reciente.
+
+## Verificación de la ampliación
+
+Pasaron las 38 suites de Windows con `python -B`, Qt fuera de pantalla, descubrimiento MCP activo y conexiones a Ollama bloqueadas. `test_execution_gate.py` simuló un proveedor que declara éxito tras propuestas inválidas, limitadas, omitidas, denegadas, fallidas o sin confirmación. Cubrió además la reutilización, la interrupción en el ejecutor, los controles de tarea, el estado activo y la cancelación de procesos, y el contraste con un efecto verificado.
+
+La prueba de paridad de la rama de evidencias de 5.8 pasó con esta revisión. Desktop y CLI coincidieron en la consulta directa, cadena, autorización, denegación, interrupción, pausa, reanudación y reapertura. El prompt común conserva el texto de la referencia. La comparación de modelos con Ollama y el cierre de 5.8 quedan pendientes.

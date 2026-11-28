@@ -2,6 +2,7 @@
 import json
 from dataclasses import dataclass, replace
 
+from tool_execution import LIMIT, OBSERVED, OMITTED, REUSED, UNCONFIRMED, VERIFIED, execution_state, with_metadata
 from tool_validation import InvalidToolArguments, validate_arguments
 from turn_budget import INVALID_CODES, TurnLimit
 
@@ -14,6 +15,7 @@ class ToolResult:
     hint: str = ""
     evidence: dict | None = None
     model_content: str | None = None
+    execution: dict | None = None
 
     def model_text(self, *, reused=False):
         notes = ([f"[{self.code}] {self.hint}".rstrip()] if self.code else [self.hint] if self.hint else [])
@@ -35,12 +37,15 @@ class ToolResult:
             else:
                 header = json.dumps(evidence, ensure_ascii=False)
                 content = f"Evidencia del ejecutor: {header}\nDatos de la herramienta:\n{content}"
+        if self.execution:
+            return with_metadata(content, self.execution, notes)
         return "\n".join([content, *notes])
 
 
 @dataclass(frozen=True)
 class EndTurn:
     answer: str
+    execution_state: str = LIMIT
 
 
 class TurnTools:
@@ -106,14 +111,15 @@ class TurnTools:
 
 
 class ToolLoop:
-    def __init__(self, messages, *, tools, budget, cache=True):
+    def __init__(self, messages, *, tools, budget, cache=True, ledger=None):
         self.messages = messages
         self.tools = tools
         self.budget = budget
         self.cache = cache
+        self.ledger = ledger
 
     async def run(self, request_round, execute_tool, *, check_pause, after_batch, activity,
-                  prepare_call=None, before_call=None, after_call=None, after_tool=None, record_evidence=None, trace=None):
+                  prepare_call=None, before_call=None, after_call=None, after_tool=None, describe_result=None, trace=None):
         """Ejecuta rondas hasta obtener una respuesta o alcanzar el límite.
 
         request_round devuelve un mensaje con llamadas, texto final o None para
@@ -152,15 +158,17 @@ class ToolLoop:
                     resolved, arguments = prepare_call(resolved, arguments)
                 key = ((resolved, json.dumps(arguments, sort_keys=True))
                        if self.cache and not isinstance(arguments, ToolResult) else None)
-                calls.append((name, arguments, resolved, key))
-            if calls and all(key in results for _, _, _, key in calls):
+                calls.append((name, arguments, resolved, key, call))
+            if calls and all(key in results for _, _, _, key, _ in calls):
                 if trace:
                     trace("lote_omitido", ronda=index + 1, estado="repetido")
 
             self.messages.append(reply)
             repairing = False
-            for position, (name, arguments, resolved, key) in enumerate(calls):
+            for position, (name, arguments, resolved, key, call) in enumerate(calls):
                 check_pause()
+                receipt = self.ledger.take(call) if self.ledger else None
+                step = None
                 disposition = "ejecutada"
                 if not self.tools.permits(name):
                     disposition = "no_disponible"
@@ -178,7 +186,6 @@ class ToolLoop:
                 else:
                     handler = self.tools.handlers.get(resolved, execute_tool)
                     activity(f"El modelo solicitó {resolved}.")
-                    step = None
                     if before_call:
                         remaining = [item[2] for item in calls[position + 1:]
                                      if self.tools.permits(item[0]) and not isinstance(item[1], ToolResult)]
@@ -187,6 +194,8 @@ class ToolLoop:
                         disposition = "omitida"
                         result = step
                     else:
+                        if receipt:
+                            receipt.state = UNCONFIRMED
                         try:
                             result = await handler(resolved, arguments)
                         except TurnLimit as exc:
@@ -195,8 +204,12 @@ class ToolLoop:
                             result = ToolResult("Se agotó el presupuesto antes de completar la llamada.",
                                                 reuse=False, status="sin confirmar" if sent else "sin ejecutar",
                                                 code="PRESUPUESTO_AGOTADO")
-                        if record_evidence and isinstance(result, ToolResult):
-                            evidence = record_evidence(resolved, arguments, result, step)
+                        except BaseException:
+                            if receipt and step and step["status"] == "sin ejecutar":
+                                receipt.state = OMITTED
+                            raise
+                        if describe_result and isinstance(result, ToolResult):
+                            evidence = describe_result(resolved, arguments, result, step)
                             if evidence:
                                 result = replace(result, evidence=evidence)
                         if step is not None:
@@ -210,6 +223,21 @@ class ToolLoop:
                             budget.refund_dispatch(resolved)
                         else:
                             budget.observe(resolved, result, arguments)
+                if receipt:
+                    if isinstance(result, EndTurn):
+                        receipt.state = result.execution_state
+                    else:
+                        origin = result.execution
+                        receipt.code = result.code
+                        if disposition == "reutilizada" and origin:
+                            receipt.state, receipt.reused_from = REUSED, origin["llamada"]
+                        else:
+                            receipt.state = execution_state(resolved, result, disposition, step)
+                            if receipt.state in {OBSERVED, VERIFIED} and not (
+                                    result.evidence and result.evidence.get("procedencia") == "supervisor de Windows"):
+                                receipt.excerpt = (result.model_content if result.model_content is not None
+                                                   else result.content)[:1200]
+                        result = replace(result, execution=receipt.metadata())
                 if trace:
                     if isinstance(result, ToolResult) and result.status == "sin ejecutar" and disposition == "ejecutada":
                         disposition = "sin_ejecutar"
@@ -217,11 +245,13 @@ class ToolLoop:
                           herramienta=resolved if disposition != "no_disponible" else "(no disponible)",
                           estado=disposition, estado_ejecutor=result.status if isinstance(result, ToolResult) else "cierre",
                           codigo=result.code if isinstance(result, ToolResult) else None,
+                          llamada=receipt.number if receipt else None,
+                          estado_motor=receipt.state if receipt else None,
                           evidencia_observada=result.evidence if isinstance(result, ToolResult) else None,
                           resultado=result.answer if isinstance(result, EndTurn) else result.content)
                 if isinstance(result, EndTurn):
                     return result.answer
-                if key is not None and result.reuse:
+                if key is not None and result.reuse and disposition != "reutilizada":
                     results[key] = result
                 repairing |= result.code in INVALID_CODES
                 self.messages.append({"role": "tool", "tool_name": name,

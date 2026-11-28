@@ -61,7 +61,9 @@ def test_e3_unknown_tool(root):
     assert name not in model.requests[0]["tools"]
     [result] = tool_results(model, 1, name)
     assert result.startswith("Herramienta desconocida o no disponible")
-    assert events.outcome() == [("finished", "Continué el turno.")], events.events
+    [(kind, answer)] = events.outcome()
+    assert kind == "finished" and "fuera del catálogo vigente" in answer
+    assert "Continué el turno." not in answer
 
 
 def test_e4_repeat_closes_without_tools(root):

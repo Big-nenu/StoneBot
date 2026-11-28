@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import mcp
-from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
+from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool, ToolAnnotations
 from ollama import Message
 
 import turn_worker
@@ -25,15 +25,19 @@ from ai_provider import AISettings
 
 
 def mcp_tool_text(content):
+    content = "\n".join(line for line in content.split("\n") if not line.startswith("Estado del motor: "))
     header = "Evidencia del ejecutor: "
     if content.startswith(header):
         metadata, text = content.removeprefix(header).split("\nDatos de la herramienta:\n", 1)
         assert json.loads(metadata)["procedencia"] == "MCP"
         return text
-    if content.startswith('{"evidencia"'):
+    if content.startswith(('{"evidencia"', '{"ejecucion"')):
         row = json.loads(content)
-        assert row["evidencia"]["procedencia"] == "MCP"
-        return json.dumps(row["datos"], ensure_ascii=False)
+        row.pop("ejecucion", None)
+        if "evidencia" in row:
+            assert row["evidencia"]["procedencia"] == "MCP"
+            row = row["datos"]
+        return json.dumps(row, ensure_ascii=False)
     return content
 
 
@@ -375,7 +379,7 @@ def test_context7_results_are_used_to_finish_after_empty_ollama_response():
     doc = ("### QVBoxLayout: usa addWidget() para añadir controles.\n" * 160)[:8000]
     session = SimpleNamespace(
         list_tools=AsyncMock(return_value=ListToolsResult(tools=[
-            Tool(name=name, inputSchema=schema) for name in names
+            Tool(name=name, inputSchema=schema, annotations=ToolAnnotations(readOnlyHint=True)) for name in names
         ])),
         call_tool=AsyncMock(side_effect=[
             CallToolResult(content=[], structuredContent={"libraryId": "/qt/pyside6"}),
@@ -424,7 +428,6 @@ def test_context7_results_are_used_to_finish_after_empty_ollama_response():
           patch.object(worker, "confirm_external", confirm)):
         outputs.append(finished_text(worker))
     assert outputs[0].endswith("Usa QVBoxLayout.addWidget().") and rounds == 4
-    assert "efecto sin confirmación independiente" in outputs[0]
     assert [call.args[1] for call in confirm.await_args_list] == names
     assert [call.args for call in session.call_tool.await_args_list] == [
         ("resolve-library-id", {"query": "PySide6"}),
@@ -436,7 +439,7 @@ def test_empty_reply_retries_selection_across_active_servers():
     fixtures = {
         name: SimpleNamespace(
             list_tools=AsyncMock(return_value=ListToolsResult(tools=[
-                Tool(name="search", inputSchema={"type": "object"}),
+                Tool(name="search", inputSchema={"type": "object"}, annotations=ToolAnnotations(readOnlyHint=True)),
             ])),
             call_tool=AsyncMock(return_value=CallToolResult(content=[TextContent(type="text", text="Fuente web")])),
         )
@@ -554,8 +557,8 @@ def test_stdio_chat_and_permissions():
                   patch("stonebot_engine.safety.protected_paths", return_value=[protected]),
                   patch.object(worker, "confirm_external", confirm)):
                 outputs.append(finished_text(worker))
-            assert outputs[0].endswith("Terminado") and "efecto denegado" in outputs[0]
-            assert "efecto sin confirmación independiente" in outputs[0]
+            assert "permiso denegado" in outputs[0] and "pendiente de comprobación" in outputs[0]
+            assert "Terminado" not in outputs[0]
             assert confirm.await_count == 2
             assert personal.read_text(encoding="utf-8") == "datos de prueba"
             assert marker.read_text(encoding="utf-8") == "aprobado"
@@ -580,7 +583,7 @@ def test_stdio_chat_and_permissions():
             with (patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=stale_call)),
                   patch.object(worker, "confirm_external", confirm)):
                 outputs.append(finished_text(worker))
-            assert outputs[-1] == "Excluida"
+            assert "fuera del catálogo vigente" in outputs[-1]
             assert confirm.await_count == 2 and marker.read_text(encoding="utf-8") == "aprobado"
             manage("revoke-read", "example", "echo")
             assert mcp_client.load_servers()["example"]["read_tools"] == []
