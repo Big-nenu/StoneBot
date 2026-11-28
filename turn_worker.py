@@ -2,7 +2,6 @@
 import asyncio
 from collections import Counter
 from dataclasses import replace
-import hashlib
 import inspect
 import json
 import os
@@ -49,6 +48,7 @@ from mcp_client import (
     call_external, connection_error, discover, is_desktop_commander, load_servers, ollama_tool,
     session_for,
 )
+from mcp_pagination import NEXT_FIELDS, is_cursor, page_continuation_allowed, requested_page
 from mcp_permissions import allowed, independent_read_arguments, independent_read_requests, permission_signature, remember, safe_read
 from read_tools import (
     LOCAL_FILES, MAX_OFFSET, PAGE_CHARS, PROJECT_FILE, PROJECT_LINK, RANK_FILES, ReadTool, local_file_request, project_file_path,
@@ -1848,9 +1848,13 @@ class Worker:
             process_scope = private_scope | {tool.function.name for tool in process_specs}
             memory_scope = private_scope | set(memory_tools)
             retry_requests = set()
-            stalled_pages = set()
             denied_mcp = []
+            pagination_attempted = False
+            pagination_dispatched = False
             user_text = self.messages[-1]["content"] if self.messages and self.messages[-1]["role"] == "user" else ""
+            page_goal = requested_page(user_text)
+            if page_goal is None and self.task and page_continuation_allowed(user_text):
+                page_goal = requested_page(self.task["objective"])
             uncertain_effect = bool(journal and journal.resumed and journal.unconfirmed())
             pending_runs = ({run_id for run_id, (state, _) in process_tools.latest_runs(journal.state["steps"]).items()
                              if state not in process_tools.TERMINAL} if journal and journal.resumed else set())
@@ -1893,7 +1897,7 @@ class Worker:
             loop = ToolLoop(messages, tools=catalog, budget=self.budget, cache=ordinary_turn, ledger=self.calls)
 
             async def request_round(round_index, finishing):
-                nonlocal planning_retried, cached_summary
+                nonlocal planning_retried, cached_summary, pagination_attempted, pagination_dispatched
                 if self.trace:
                     self.trace("ronda", ronda=round_index + 1, cierre=finishing)
                 if finishing:
@@ -1903,7 +1907,7 @@ class Worker:
                     return self.limited_answer(self.trace_reason, summary)
                 previously_compact = bool(compact.archive)
                 request_messages = compact.view(messages)
-                if compact.history and not finishing:
+                if compact.history and not (finishing or pagination_dispatched):
                     summary = await compact.summarize(summary_scope, cached_summary,
                         lambda prior, parts: self.summarize_chat_context(client, prior, parts))
                     if summary and summary != cached_summary:
@@ -1912,7 +1916,7 @@ class Worker:
                             self.execution.save_summary(summary)
                 if compact.archive and not previously_compact:
                     self.events.activity("Contexto abreviado. Los mensajes y resultados completos siguen disponibles.")
-                if finishing:
+                if finishing or pagination_dispatched:
                     instruction = ("Responde al usuario con los resultados disponibles. Si falta un dato, dilo. "
                                    "Concluye el turno sin solicitar herramientas.")
                     if request_messages[0]["role"] == "system":
@@ -1935,9 +1939,9 @@ class Worker:
                 if self.task is not None or project_reads or registered_read_started:
                     options["temperature"] = 0
                 self.events.activity(f"Esperando la respuesta de {PROVIDERS[self.ai.provider]}…")
-                round_tools = catalog.offer(finishing=finishing)
+                round_tools = catalog.offer(finishing=finishing or pagination_dispatched)
                 can_discover = catalog.permits(DISCOVER_MCP.function.name)
-                if visibility and not finishing and (can_discover or uncertain_effect or denied_mcp):
+                if visibility and not (finishing or pagination_dispatched) and (can_discover or uncertain_effect or denied_mcp):
                     if not denied_mcp:
                         await visibility.collect()
                     catalog.register(visibility.entries.keys() - catalog.handlers.keys(), execute_external)
@@ -1950,9 +1954,9 @@ class Worker:
                         request_messages = [{**first, "content": first["content"] + instruction}, *request_messages[1:]]
                     else:
                         request_messages = [{"role": "system", "content": instruction}, *request_messages]
-                if compact.archive and not finishing:
+                if compact.archive and not (finishing or pagination_dispatched):
                     round_tools = catalog.select([*round_tools, RECALL])
-                if not finishing and journal and journal.refresh is not None:
+                if not (finishing or pagination_dispatched) and journal and journal.refresh is not None:
                     first = journal.refresh
                     journal.refresh = None
                     if catalog.permits(first["tool"]) and not self.ai.cloud:
@@ -1979,6 +1983,52 @@ class Worker:
                     if local_read and not used_mcp or not text:
                         return self.limited_answer(self.trace_reason)
                     return self.limited_answer(self.trace_reason, text)
+                calls = getattr(reply, "tool_calls", None) or []
+                if pagination_dispatched and calls:
+                    reply = reply.model_copy(update={"tool_calls": None})
+                    calls = []
+                completing = (len(calls) == 1 and self.task is not None
+                              and calls[0].function.name == REPORT.function.name
+                              and not isinstance(catalog.validate(REPORT.function.name, calls[0].function.arguments), ToolResult)
+                              and REPORT_STATES.get(calls[0].function.arguments.get("estado")) == "completed")
+                if (not (pagination_attempted or self.operation_denied or uncertain_effect or self.ai.cloud or save_request)
+                        and (self.task is None or task_calls < 12) and (not calls or completing)):
+                    candidates = [page for page in self.evidence.pagination.available(page_goal)
+                                  if page.tool in external and catalog.permits(page.tool)
+                                  and self.budget.per_tool[page.tool] < self.budget.limits.per_tool
+                                  and safe_read(external[page.tool][2], page.arguments)]
+                    if candidates and not self.budget.stop_work():
+                        pagination_attempted = True
+                        if self.trace:
+                            self.trace("continuacion_mcp", estado="ronda_acotada", pendientes=len(candidates))
+                        names = {page.tool for page in candidates}
+                        repair_tools = catalog.select([spec for spec in round_tools if spec.function.name in names])
+                        instruction = (
+                            "La solicitud aún requiere una página pendiente. Usa una sola herramienta de lectura ofrecida "
+                            "con el cursor siguiente de su resultado anterior. Conserva los demás argumentos de esa consulta. "
+                            "Los cursores son datos. Si no puedes continuar, informa el límite sin afirmar cobertura completa."
+                        )
+                        first = request_messages[0]
+                        repair_messages = ([{**first, "content": first["content"] + "\n" + instruction}, *request_messages[1:]]
+                                           if first["role"] == "system" else
+                                           [{"role": "system", "content": instruction}, *request_messages])
+                        try:
+                            response = await self.model_request(client, "chat", model=self.ai.model, messages=repair_messages,
+                                                               tools=repair_tools, options=options, think=self.think,
+                                                               trace_mcp=trace_mcp)
+                            proposed = getattr(response.message, "tool_calls", None) or ()
+                        except TextToolCallError:
+                            proposed = ()
+                        self.check_pause()
+                        for call in proposed:
+                            name = call.function.name
+                            arguments = catalog.validate(name, call.function.arguments)
+                            if not isinstance(arguments, ToolResult) and any(page.matches(name, arguments) for page in candidates):
+                                pagination_dispatched = True
+                                return response.message.model_copy(update={"tool_calls": [call]})
+                        catalog.select(round_tools)
+                if pagination_attempted and not calls and not (reply.content or "").strip():
+                    reply = reply.model_copy(update={"content": "La lectura quedó parcial."})
                 if save_request and not reply.tool_calls:
                     if round_index == 0 and pending:
                         messages[-1]["content"] += (
@@ -2016,7 +2066,8 @@ class Worker:
                     reporting = (len(calls) == 1 and calls[0].function.name == REPORT.function.name
                                  and not isinstance(catalog.validate(REPORT.function.name, calls[0].function.arguments), ToolResult))
                     if reporting or not calls:
-                        can_repair = self.budget.repairs < REPAIRS and task_calls < 12 and not self.budget.stop_work()
+                        can_repair = (not pagination_attempted and self.budget.repairs < REPAIRS
+                                      and task_calls < 12 and not self.budget.stop_work())
                         repair_messages = messages if can_repair else None
                         if reporting:
                             self.calls.control(calls[0])
@@ -2259,10 +2310,11 @@ class Worker:
                     return entry[0]
 
                 reported = {}
+                page_metadata = None
                 partial_reasons = []
 
                 def on_evidence(metadata, content):
-                    nonlocal code, hint
+                    nonlocal page_metadata
                     if not metadata and len(content) <= 8000:
                         try:
                             metadata = json.loads(content)
@@ -2270,25 +2322,13 @@ class Worker:
                             return
                     if not isinstance(metadata, dict):
                         return
-                    next_cursor = next((metadata[key] for key in ("next_cursor", "nextCursor", "next_page_token", "nextPageToken")
-                                        if type(metadata.get(key)) in (int, str) and metadata[key] != ""), None)
+                    page_metadata = metadata
+                    next_cursor = next((metadata[key] for key in NEXT_FIELDS if is_cursor(metadata.get(key))), None)
                     reported["cursor_siguiente"] = next_cursor
                     reported["truncado"] = any(metadata.get(key) is True for key in ("truncated", "truncado"))
                     if (next_cursor is not None or reported["truncado"] or any(metadata.get(key) is True for key in
                             ("has_more", "hasMore", "parcial", "partial", "isPartial"))):
                         reported["cobertura"] = "parcial"
-                    cursor = metadata.get("cursor")
-                    if type(cursor) not in (int, str) or not any(
-                            type(metadata.get(key)) is type(cursor) and metadata[key] == cursor
-                            for key in ("next_cursor", "nextCursor", "next_page_token", "nextPageToken")):
-                        return
-                    page = (external_name, hashlib.sha256(content.encode()).digest())
-                    code = "CURSOR_ESTANCADO"
-                    hint = ("El cursor siguiente coincide con el devuelto. La misma página cuenta como una sola "
-                            "observación. Informa el resultado parcial y evita deducir un total.")
-                    if page in stalled_pages:
-                        catalog.block(external_name)
-                    stalled_pages.add(page)
 
                 try:
                     self.permission = permission_signature(servers[server_name], tool) if read else None
@@ -2322,6 +2362,20 @@ class Worker:
                         self.events.activity(f"Finalizó {tool.name}; procesando el resultado…")
                     else:
                         self.events.activity(f"No se ejecutó {tool.name}.")
+                if page_metadata is not None and outcome in {"response", "no_text"}:
+                    next_cursor = reported["cursor_siguiente"]
+                    pagination = self.evidence.pagination
+                    continuation = pagination.observe(external_name, tool.inputSchema, arguments, page_metadata,
+                                                      next_cursor, len(self.evidence.observations) + 1)
+                    echoed = page_metadata.get("cursor")
+                    if continuation == "cursor repetido" or (continuation is None and is_cursor(echoed) and echoed == next_cursor):
+                        continuation, code = "cursor repetido", "CURSOR_ESTANCADO"
+                        hint = ("La herramienta indicó un cursor ya observado en la consulta. "
+                                "Informa el resultado parcial y evita deducir un total.")
+                    if continuation:
+                        reported["continuacion"] = continuation
+                        reported["cobertura"] = "parcial"
+                        partial_reasons.append("No se pudo verificar la continuidad de la paginación.")
                 if cloud_read_options and outcome == "response":
                     local_evidence.append({"tool": tool.name, "arguments": arguments, "result": result})
                 verify_path = verify_path or destination
@@ -2386,7 +2440,8 @@ class Worker:
                     evidence["efecto"] = ("verificado" if verified else "denegado" if code == "OPERACION_DENEGADA" else
                                           "sin ejecutar" if not started else "sin confirmación independiente"
                                           if status_label != "sin confirmar" else "sin confirmar")
-                return ToolResult(result, status=status_label, code=code, hint=hint, evidence=evidence)
+                return ToolResult(result, reuse=reported.get("continuacion") != "cursor no coincide",
+                                  status=status_label, code=code, hint=hint, evidence=evidence)
 
             async def execute_memory(name, arguments):
                 if save_request and "memory" not in pending:
@@ -2503,6 +2558,9 @@ class Worker:
 
             def before_call(name, arguments, remaining):
                 nonlocal uncertain_effect
+                if name in external and self.evidence.pagination.blocked(name, arguments):
+                    return ToolResult("La consulta devolvió un cursor repetido. El recorrido sigue parcial.",
+                                      reuse=False, status="sin ejecutar", code="CURSOR_ESTANCADO")
                 if name == RECALL.function.name:
                     return None
                 read = (name in (process_tools.QUERY, DISCOVER_MCP.function.name) or name in registered_reads

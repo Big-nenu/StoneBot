@@ -3,6 +3,7 @@ import json
 import re
 
 from local_files import RESULT_HEADER
+from mcp_pagination import McpPagination
 from process_tools import PROCESS_NAMES, TERMINAL, latest_runs
 from tasks import complete_page_versions
 
@@ -23,6 +24,7 @@ def structured(content):
 class Evidence:
     def __init__(self):
         self.observations = []
+        self.pagination = McpPagination()
         self.pages = {}
         self.file_versions = {}
 
@@ -159,10 +161,15 @@ class Evidence:
                 line += " · datos parciales"
                 if fields.get("truncado"):
                     line += " · resultado truncado"
-                if fields.get("cursor_siguiente") is not None:
+                continued = self.pagination.resolved.get(fields["observacion"])
+                if continued:
+                    line += f" · continuación observada en la observación {continued} · cobertura del conjunto sin verificar"
+                elif fields.get("cursor_siguiente") is not None:
                     line += " · hay una continuación indicada por la herramienta"
                 if fields.get("continuacion") == "cursor repetido":
                     line += " · cursor repetido; el recorrido quedó sin verificar"
+                if fields.get("continuacion") == "cursor no coincide":
+                    line += " · el cursor devuelto difiere del solicitado"
             if fields.get("efecto"):
                 line += f" · efecto {fields['efecto']}"
             reports.append(line + ".")

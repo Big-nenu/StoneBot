@@ -17,6 +17,7 @@ from ai_provider import AISettings
 from mcp_permissions import independent_read_requests
 from mcp_pool import McpPool
 from mcp_visibility import DISCOVER, McpVisibility
+from turn_budget import BudgetLimits, TurnBudget
 from turn_events import NullEvents
 from turn_worker import Worker
 
@@ -250,9 +251,96 @@ async def test_independent_read_after_denial():
             pool.close()
 
 
+
+async def test_bounded_mcp_pagination():
+    schema = {"type": "object", "properties": {"cursor": {"type": "integer", "default": 1},
+              "filter": {"type": "string"}}, "required": ["filter"], "additionalProperties": False}
+    definitions = [Tool(name="inventario", inputSchema=schema, annotations=ToolAnnotations(readOnlyHint=True)),
+                   tool("publicar")]
+
+    class PaginationApprovals(Approvals):
+        async def confirm(self, request):
+            self.confirmations.append(request["arguments"]["cursor"])
+            request["approved"] = request["arguments"]["cursor"] == 1
+
+    for scenario in ("recuperada", "presupuesto", "consulta_distinta", "primera_pagina", "ciclo", "permiso"):
+        dispatched = []
+        confirmations = PaginationApprovals()
+        request_tools = []
+        aliases = {}
+
+        async def invoke(name, arguments):
+            assert name == "inventario"
+            dispatched.append(arguments)
+            cursor = arguments["cursor"]
+            if scenario == "recuperada" and len(dispatched) == 1:
+                return SimpleNamespace(content=[], structuredContent={"retryable": True}, isError=True)
+            following = 2 if cursor == 1 else 1 if scenario == "ciclo" else None
+            data = {"cursor": cursor, "next_cursor": following, "items": [f"Dato de la página {cursor}"]}
+            return SimpleNamespace(content=[SimpleNamespace(type="text", text=json.dumps(data))],
+                                   structuredContent=data, isError=False)
+
+        session = SimpleNamespace(list_tools=AsyncMock(return_value=SimpleNamespace(tools=definitions, nextCursor=None)),
+                                  call_tool=invoke)
+
+        @asynccontextmanager
+        async def open_session(*_args, **_kwargs):
+            yield session
+
+        async def chat(**request):
+            names = [spec.function.name for spec in request["tools"] if not callable(spec)]
+            request_tools.append(names)
+            if len(request_tools) == 1:
+                aliases.update({name.split("_")[2]: name for name in names if name.startswith("mcp_")})
+                return response((aliases["inventario"], {"cursor": 1, "filter": "alfa"}))
+            if len(request_tools) == 2:
+                return response(final="La lectura terminó.")
+            if len(request_tools) == 3:
+                assert names == [aliases["inventario"]]
+                scope = "beta" if scenario == "consulta_distinta" else "alfa"
+                return response((aliases["publicar"], {}),
+                                (aliases["inventario"], {"cursor": 2, "filter": scope}),
+                                (aliases["inventario"], {"cursor": 3, "filter": "alfa"}))
+            assert len(request_tools) == 4 and not names
+            return response(final="Información de la página solicitada.")
+
+        pool = McpPool(open_session=open_session)
+        text = "Lee la primera página del inventario." if scenario == "primera_pagina" else "Lee la segunda página del inventario."
+        messages = [MESSAGES[0], {"role": "user", "content": text}]
+        try:
+            sources = {"sierra": {**SERVER, "read_tools": [] if scenario == "permiso" else ["inventario"]}}
+            with (patch.dict("os.environ", {"STONEBOT_DISCOVER_MCP": "1"}),
+                  patch("turn_worker.load_servers", return_value=sources),
+                  patch("turn_worker.allowed", return_value=False),
+                  patch("turn_worker.requests_external_tools", return_value=False)):
+                worker = Worker(messages, pool=pool, events=confirmations)
+                worker.local_ollama = True
+                if scenario == "presupuesto":
+                    worker.budget = TurnBudget(BudgetLimits(requests=3))
+                await worker.chat_with_tools(SimpleNamespace(chat=chat), list(messages), {})
+            report = worker.evidence.answer("", [], stopped=False, preserve=True)
+            if scenario in {"recuperada", "ciclo"}:
+                assert len(request_tools) == 4
+                assert [item["cursor"] for item in dispatched] == ([1, 1, 2] if scenario == "recuperada" else [1, 2])
+                assert worker.evidence.pagination.resolved == {1: 2}
+                assert "continuación observada" in report and "cobertura del conjunto sin verificar" in report
+                assert worker.evidence.partial()
+                if scenario == "ciclo":
+                    assert "cursor repetido" in report
+            else:
+                rounds = {"consulta_distinta": 3, "permiso": 4}
+                assert len(request_tools) == rounds.get(scenario, 2)
+                assert len(dispatched) == 1 and not worker.evidence.pagination.resolved
+                assert "hay una continuación" in report
+            assert confirmations.confirmations == ([1, 2] if scenario == "permiso" else [])
+        finally:
+            pool.close()
+
+
 if __name__ == "__main__":
     asyncio.run(test_shared_worker())
     asyncio.run(test_independent_read_after_denial())
+    asyncio.run(test_bounded_mcp_pagination())
     asyncio.run(test_bounded_catalog())
     asyncio.run(test_hidden_tool_is_offered_next_round())
     print("PASS: manifiesto, catálogo acotado, permisos y privacidad de MCP")

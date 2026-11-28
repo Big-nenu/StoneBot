@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from cli_turn_runner import trace_payload
 from local_file_requests import inspect_path
 from local_files import LocalFiles, load_settings
+from mcp_pagination import requested_page
 from read_tools import local_file_request, project_text_for_model
 from tool_loop import ToolResult
 from turn_evidence import Evidence
@@ -104,6 +105,50 @@ def test_project_directives():
     assert json.loads(model.model_text())["contenido"] == safe["contenido"]
 
 
+
+def test_mcp_cursor_chains():
+    evidence = Evidence()
+    schema = {"type": "object", "properties": {"pageToken": {"type": "string"}, "filter": {"type": "string"}}}
+    pagination = evidence.pagination
+
+    def observe(tool, query, cursor, following, *, echo=None):
+        arguments = {"filter": query}
+        if cursor is not None:
+            arguments["pageToken"] = cursor
+        number = len(evidence.observations) + 1
+        reason = pagination.observe(tool, schema, arguments, {"pageToken": echo}, following, number)
+        fields = {"procedencia": "MCP", "estado": "respuesta recibida", "cursor_siguiente": following,
+                  "cobertura": "parcial" if following is not None or reason else "indeterminada"}
+        if reason:
+            fields["continuacion"] = reason
+        return evidence.record(tool, arguments, ToolResult("Datos", evidence=fields), None)
+
+    assert requested_page("Recupera la tercera página.") == 3
+    assert requested_page("Recorre todas las páginas.") == "all"
+    assert requested_page("Lee solo la página 1.") == 1
+    assert requested_page("Sin paginación, muestra una muestra.") is None
+    assert requested_page("No abras la segunda página. Resume los datos actuales.") is None
+    a, b = "token-a", "token-b"
+    observe("mcp_catalogo", "alfa", None, a)
+    assert pagination.available(2)[0].arguments == {"filter": "alfa", "pageToken": a}
+    observe("mcp_catalogo", "beta", a, None)
+    observe("mcp_otro", "alfa", a, None)
+    assert not pagination.resolved
+    invalid = observe("mcp_catalogo", "alfa", a, None, echo=b)
+    assert invalid["continuacion"] == "cursor no coincide" and not pagination.resolved
+    observe("mcp_catalogo", "alfa", a, b)
+    assert pagination.resolved == {1: 5}
+    assert not pagination.available(2)
+    assert pagination.available(3)[0].cursor == b
+    last = observe("mcp_catalogo", "alfa", b, a)
+    assert last["continuacion"] == "cursor repetido" and not pagination.available("all")
+    assert pagination.blocked("mcp_catalogo", {"filter": "alfa", "pageToken": b})
+    assert not pagination.blocked("mcp_catalogo", {"filter": "beta", "pageToken": b})
+    answer = evidence.answer("", [], stopped=False, preserve=True)
+    assert "continuación observada en la observación 5 · cobertura del conjunto sin verificar" in answer
+    assert "cursor repetido" in answer
+
+
 if __name__ == "__main__":
     with TemporaryDirectory() as folder:
         test_scan(Path(folder).resolve())
@@ -111,5 +156,6 @@ if __name__ == "__main__":
     test_process()
     test_unverified()
     test_stalled_page()
+    test_mcp_cursor_chains()
     test_project_directives()
     print("PASS: cobertura, páginas por revisión, código del supervisor y redacción de evidencia.")
