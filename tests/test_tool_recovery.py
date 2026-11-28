@@ -14,6 +14,7 @@ from engine_harness import call, reply
 from mcp_client import call_external
 from read_tools import read_tool
 from tool_loop import ToolLoop, ToolResult, TurnTools
+from turn_budget import BudgetLimits, TurnBudget
 from turn_events import RecordingEvents
 from turn_worker import Worker
 
@@ -132,8 +133,8 @@ async def test_corrected_round():
             return call("leer", cursor="04").message
         return "Hecho."
 
-    loop = ToolLoop(messages, final_round=3, tools=catalog, max_distinct_calls=4)
-    assert await loop.run(request, dispatched, check_pause=lambda: None, on_repeat=lambda: None,
+    loop = ToolLoop(messages, tools=catalog, budget=TurnBudget(BudgetLimits()))
+    assert await loop.run(request, dispatched, check_pause=lambda: None,
                           after_batch=lambda: None, activity=lambda _: None, before_call=recorded) == "Hecho."
     dispatched.assert_awaited_once_with("leer", {"cursor": 4})
     recorded.assert_called_once_with("leer", {"cursor": 4}, [])

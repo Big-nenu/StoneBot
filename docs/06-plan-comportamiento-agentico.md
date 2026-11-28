@@ -1,6 +1,6 @@
 # Plan del paso 5 · Comportamiento agéntico de StoneBot
 
-- **Estado** — Pasos 5.1, 5.2, 5.2.1, 5.3A y 5.4 completados. Siguiente paso planificado 5.6.
+- **Estado** — Pasos 5.1, 5.2, 5.2.1, 5.3A, 5.4 y 5.6 completados. Siguiente paso planificado 5.5.
 - **Fecha** — 27 de noviembre de 2026.
 - **Base** — `refactor/stonebot-core` en `307b40a`, con los pasos 0 a 4 completados.
 - **Objetivo** — Que un turno normal pueda descubrir recursos, ejecutar pasos autorizados, recuperarse de fallos y entregar una respuesta comprobable. StoneBot CLI servirá para medir los cambios con Nemotron y Qwen. Desktop y CLI seguirán usando el mismo `ChatSession`, `Worker` y `ToolLoop`.
@@ -103,6 +103,8 @@ El [informe del paso 5.4](10-validacion-recuperacion.md) documenta los controles
 - Limitar inicialmente las reparaciones consecutivas de una solicitud a dos y cortar tras tres rondas sin evidencia, cambio relevante o acción autorizada nueva. Ajustar los umbrales con datos y mantener activa la detección de falta de progreso en todas las configuraciones. Probar presupuestos pequeños inyectables, valores inválidos y el cierre sin repetir efectos aun con presupuestos altos.
 - Si baja el presupuesto, dejar de abrir trabajo nuevo y usar lo reservado para sintetizar con la evidencia disponible. Si no queda tiempo o el proveedor falla, presentar el estado comprobado desde el núcleo. Conservar la cancelación y la pausa, y suspender las tareas guardadas con pendientes claros. Emitir un motivo estable de cierre, como objetivo completado, falta de información, denegación, falta de progreso, presupuesto agotado, error del proveedor o interrupción. El resultado distingue el motivo de cierre de la suficiencia de evidencia.
 
+El [informe del paso 5.6](11-presupuesto-cierre.md) documenta los límites iniciales, la configuración y las pruebas de cierre con el descubrimiento MCP activo.
+
 ### 2.6 Evidencia y respuesta
 
 Priorizar resultados difíciles de malinterpretar: cobertura completa/parcial explícita, truncamiento y siguiente cursor visibles, búsqueda por nombre con recursión por defecto dentro del alcance autorizado (con límites y opción no recursiva explícita), código de salida y estado del proceso en la primera línea. Probar los contratos con entradas variadas. Diferir el sistema general de identificadores de procedencia y citas hasta que exista evidencia de su necesidad; conservar referencias de diario, privacidad y verificación de efectos actuales.
@@ -160,7 +162,7 @@ En Desktop, repetir con perfil temporal una consulta directa, un encargo con her
 - [x] 5.2.1 Instrumentación y evaluación
 - [x] 5.3A Visibilidad y descubrimiento MCP
 - [x] 5.4 Validación y recuperación
-- [ ] 5.6 Presupuesto y cierre
+- [x] 5.6 Presupuesto y cierre
 - [ ] 5.5 Interfaz de procesos
 - [ ] 5.7 Evidencia y respuesta
 - [ ] 5.3B Registro y alias (condicional)

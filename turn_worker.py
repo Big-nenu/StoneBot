@@ -1,6 +1,7 @@
 """Ejecución de un turno del chat y coordinación de sus herramientas."""
 import asyncio
 from collections import Counter
+from dataclasses import replace
 import hashlib
 import inspect
 import json
@@ -8,6 +9,7 @@ import os
 import re
 import sqlite3
 import sys
+import httpx
 from contextlib import AsyncExitStack, suppress
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -69,6 +71,7 @@ from tasks import (
     step_caption, task_context, upgrade_task,
 )
 from tool_loop import EndTurn, ToolLoop, ToolResult, TurnTools
+from turn_budget import BudgetLimits, ProviderUnavailable, REPAIRS, TurnBudget, TurnLimit
 from turn_events import NullEvents, TurnEvents, TurnOutcome
 
 
@@ -78,7 +81,8 @@ TASK_COMMANDS = {"/tarea", "/reanudar", "/cancelar"}
 
 EXPERIENCES_TOOL = Tool.model_validate({
     "type": "function", "function": {"name": "query_experiences", "description": query_experiences.__doc__,
-    "parameters": {"type": "object", "properties": {"busqueda": {"type": "string"}}, "required": ["busqueda"]}},
+    "parameters": {"type": "object", "properties": {"busqueda": {"type": "string", "description": ""}},
+                   "required": ["busqueda"]}},
 })
 LOCAL_MARKDOWN = Tool.model_validate({
     "type": "function",
@@ -153,12 +157,17 @@ class ResumeChatWork(Exception):
 class Worker:
     def __init__(self, messages, pool=None, *, identity_enabled=False, memory=None, task=None, save_task=None,
                  completed_task=None, project=None, save_continuity=None, project_document_path=None, think=None,
-                 capture_memory=False, ai=None, execution=None, events: TurnEvents | None = None, trace=None):
+                 capture_memory=False, ai=None, execution=None, events: TurnEvents | None = None, trace=None,
+                 budget_limits=None):
         self.events = events if events is not None else NullEvents()
         self.trace = trace
         self.trace_reason = "respuesta"
         self.trace_request = 0
         self.trace_tools = set()
+        self.last_outcome = None
+        configured, self.invalid_limits = (BudgetLimits.configured(task is not None) if budget_limits is None
+                                           else (budget_limits, []))
+        self.budget = TurnBudget(configured)
         self.messages = messages
         self.pool = pool
         self.permission = None
@@ -193,9 +202,70 @@ class Worker:
 
     def run(self) -> TurnOutcome:
         outcome = self._run()
+        if outcome.kind == "finished" and self.trace_reason == "respuesta":
+            if self.operation_denied:
+                self.trace_reason = "denegacion"
+            elif self.task is not None:
+                self.trace_reason = {"completed": "objetivo_completado", "waiting": "informacion_faltante",
+                                     "paused": "bloqueo"}.get(self.task["status"], "respuesta")
+        evidence = self.evidence_state()
         if self.trace:
-            self.trace("fin", estado=outcome.kind, motivo=self.trace_reason)
-        return outcome
+            self.trace("presupuesto_turno", **self.budget.snapshot())
+            self.trace("fin", estado=outcome.kind, motivo=self.trace_reason, evidencia=evidence)
+        self.last_outcome = replace(outcome, reason=self.trace_reason, evidence=evidence)
+        return self.last_outcome
+
+    def evidence_state(self):
+        if self.execution and self.execution.unconfirmed():
+            return "sin_confirmar"
+        if self.budget.partial or any(step.get("partial") for step in (self.task or {}).get("steps", [])):
+            return "parcial"
+        if self.budget.observed or any(step.get("status") == "response" for step in (self.task or {}).get("steps", [])):
+            return "observada"
+        if self.operation_denied:
+            return "denegada"
+        return "sin_evidencia"
+
+    def limited_answer(self, reason, summary=""):
+        self.trace_reason = reason
+        self.budget.close_for(reason)
+        label = {"proveedor": "Falló el proveedor antes de completar el turno.",
+                 "sin_progreso": "Detuve el turno porque las últimas rondas no aportaron evidencia nueva."}.get(
+                     reason, "Se agotó el presupuesto de ejecución del turno.")
+        steps = (self.execution.state["steps"] if self.execution else []) or (self.task or {}).get("steps", [])
+        observations = []
+        for step in steps[-5:]:
+            detail = f"{step['tool']} · {step['status']}"
+            if step.get("run_id"):
+                detail += f" · ejecución {step['run_id']}"
+            if not step.get("effect") and step["status"] in {"response", "respuesta recibida", "registro comprobado"}:
+                text = step.get("result", "")[:350].strip()
+                if text:
+                    detail += " · " + text
+            observations.append(detail)
+        if not observations:
+            observations = [f"{name} · {status} · {text}" for name, status, text in self.budget.observed]
+        if observations:
+            label += "\n\nÚltimas observaciones registradas\n" + "\n".join(f"- {line}" for line in observations)
+        if self.task is not None:
+            for step in self.task["steps"]:
+                if step["status"] == "running":
+                    step.update(status="exception", result="El turno terminó durante la espera. Resultado sin confirmar.")
+            pending = self.task.get("pending")
+            if pending:
+                label += f"\n\nPendiente registrado: {pending}"
+            if summary:
+                label += "\n\nResumen provisional\n" + summary
+            answer = self.task_reply("paused", label + "\n\nUsa /reanudar para continuar con los resultados guardados.")
+            if pending:
+                self.task["pending"] = pending
+            if self.save_task:
+                with suppress(TaskPaused):
+                    self.persist_task()
+            return answer
+        if summary:
+            label += "\n\nResumen provisional del modelo\n" + summary
+        return self.private_answer(label)
 
     def _run(self) -> TurnOutcome:
         try:
@@ -203,7 +273,8 @@ class Worker:
             if self.stop_requested.is_set():
                 self.trace_reason = "detenido"
                 return TurnOutcome("cancelled", partial_text=self.private_answer(self.partial_text.strip()))
-            if self.capture_memory and self.memory is not None and self.messages:
+            if (self.capture_memory and self.memory is not None and self.messages and not self.operation_denied
+                    and self.trace_reason == "respuesta" and not self.budget.stop_work()):
                 self.capture_user_memories()
             return TurnOutcome("finished", answer)
         except asyncio.CancelledError:
@@ -215,12 +286,22 @@ class Worker:
                 return TurnOutcome("finished", self.task_reply("paused", "Tarea pausada. Usa /reanudar para continuar con los resultados guardados."))
             else:
                 return TurnOutcome("cancelled", partial_text=self.private_answer(self.partial_text.strip()))
+        except TurnLimit as exc:
+            return TurnOutcome("finished", self.limited_answer(exc.reason))
+        except ProviderUnavailable as exc:
+            self.trace_reason = "proveedor"
+            if self.execution and self.execution.version or self.budget.observed or self.task is not None:
+                return TurnOutcome("finished", self.limited_answer("proveedor"))
+            return TurnOutcome("error", str(exc) or "No se pudo completar la petición al proveedor.")
         except TaskPaused as exc:
             self.trace_reason = "pausa"
             return TurnOutcome("finished", self.task_reply("paused", str(exc)))
         except (TurnError, ResponseError) as exc:
             if self.trace_reason == "respuesta":
                 self.trace_reason = "proveedor" if isinstance(exc, ResponseError) else "error_de_turno"
+            if isinstance(exc, ResponseError) and (self.task is not None or self.budget.observed
+                                                  or self.execution and self.execution.version):
+                return TurnOutcome("finished", self.limited_answer("proveedor"))
             self.observe_ranking("mcp", "fallido")
             return TurnOutcome("error", str(exc))
         except Exception as exc:
@@ -230,16 +311,39 @@ class Worker:
             return TurnOutcome("error", f"No se pudo completar el turno. Revisa {PROVIDERS[self.ai.provider]} y consulta el diagnóstico.")
 
     async def run_chat(self):
+        self.start_budget()
         self.turn_loop = asyncio.get_running_loop()
         self.turn_task = asyncio.current_task()
+        self.budget.timer_clock = self.turn_loop.time
+        if self.invalid_limits and self.trace:
+            self.trace("configuracion_presupuesto", invalidas=self.invalid_limits)
         try:
             if self.stop_requested.is_set():
                 raise asyncio.CancelledError
-            async with AsyncExitStack() as clients:
-                self.turn_clients = clients
-                return await self.chat()
+            timer = asyncio.timeout(self.budget.remaining(closing=True))
+            try:
+                async with timer, AsyncExitStack() as clients:
+                    self.budget.timer = timer
+                    self.turn_clients = clients
+                    return await self.chat()
+            except TimeoutError:
+                if not timer.expired():
+                    raise
+                self.check_pause()
+                raise TurnLimit(self.budget.reason or "presupuesto_agotado") from None
         finally:
+            self.budget.timer = None
+            self.budget.finish()
             self.turn_loop = self.turn_task = self.turn_clients = None
+
+    def start_budget(self):
+        if self.budget.finished is not None:
+            self.budget = TurnBudget(self.budget.limits)
+            self.trace_reason = "respuesta"
+            self.trace_request = 0
+            self.trace_tools.clear()
+            self.operation_denied = False
+        self.budget.start()
 
     def stop(self):
         if self.task is None:
@@ -249,9 +353,13 @@ class Worker:
             with suppress(RuntimeError):
                 loop.call_soon_threadsafe(task.cancel)
 
-    async def model_request(self, client, method, *args, internal=False, trace_mcp=None, **kwargs):
+    async def model_request(self, client, method, *args, internal=False, trace_mcp=None, closing=False, **kwargs):
+        self.budget.request(closing=closing)
         if not self.trace or method != "chat":
-            return await self._model_request(client, method, *args, internal=internal, **kwargs)
+            response = await self.bounded_model_request(client, method, args, internal, closing, kwargs)
+            if method == "chat":
+                self.admit_proposals(response.message, closing)
+            return response
         names = [tool.__name__ if callable(tool) else tool.function.name for tool in kwargs.get("tools", ())]
         self.trace_request += 1
         self.trace_tools.update(names)
@@ -260,7 +368,7 @@ class Worker:
                    contexto_maximo=context.maximum if context else None,
                    contexto_configurado=context.configured if context else None,
                    contexto_solicitado=positive_int((kwargs.get("options") or {}).get("num_ctx")),
-                   presupuesto_historial_chars=context.history_chars if context else HISTORY_CHARS)
+                   presupuesto_historial_chars=context.history_chars if context else HISTORY_CHARS, cierre=closing)
         if trace_mcp:
             for server, aliases in trace_mcp.items():
                 offered = [name for name in names if name in aliases]
@@ -268,7 +376,7 @@ class Worker:
                            excluidas_catalogo=len(aliases.difference(offered)),
                            localizable=bool(aliases) and DISCOVER_MCP.function.name in names,
                            motivo="ofrecido" if offered else "limite_catalogo")
-        response = await self._model_request(client, method, *args, internal=internal, **kwargs)
+        response = await self.bounded_model_request(client, method, args, internal, closing, kwargs)
         if not self.ai.cloud:
             counts = [getattr(response, field, None) for field in ("prompt_eval_count", "eval_count")]
             self.trace("tokens_modelo", peticion=self.trace_request,
@@ -281,7 +389,30 @@ class Worker:
             self.trace("llamada_propuesta", peticion=self.trace_request,
                        herramienta=name if name in self.trace_tools else "(desconocida)",
                        argumentos=call.function.arguments)
+        self.admit_proposals(response.message, closing)
         return response
+
+    async def bounded_model_request(self, client, method, args, internal, closing, kwargs):
+        timer = asyncio.timeout(self.budget.remaining(closing=closing))
+        try:
+            async with timer:
+                return await self._model_request(client, method, *args, internal=internal, **kwargs)
+        except TimeoutError as exc:
+            if timer.expired():
+                raise TurnLimit(self.budget.reason or "presupuesto_agotado") from exc
+            raise ProviderUnavailable from exc
+        except (ConnectionError, httpx.HTTPError) as exc:
+            raise ProviderUnavailable from exc
+
+    def admit_proposals(self, reply, closing):
+        calls = getattr(reply, "tool_calls", None) or ()
+        admitted = self.budget.proposals_for(len(calls), closing=closing)
+        if admitted < len(calls):
+            reply.tool_calls = calls[:admitted]
+            if closing:
+                reply.content = None
+            if self.trace:
+                self.trace("lote_limitado", peticion=self.trace_request, propuestas=len(calls), admitidas=admitted)
 
     async def _model_request(self, client, method, *args, internal=False, **kwargs):
         handler = getattr(client, f"{method}_async", None) if self.turn_loop is not None else None
@@ -323,7 +454,7 @@ class Worker:
             if part.done:
                 reply = part.message.model_copy(update={"content": content, "thinking": thinking, "tool_calls": calls})
                 return part.model_copy(update={"message": reply})
-        raise TurnError("Ollama interrumpió la respuesta.")
+        raise ProviderUnavailable("Ollama interrumpió la respuesta.")
 
     def task_reply(self, status, text):
         answer = self.private_answer(text)
@@ -342,6 +473,8 @@ class Worker:
     async def call_memory(self, name, **arguments):
         if self.memory is None:
             raise MemoryUnavailable("La memoria de StoneWave no está disponible.")
+        if not self.budget.dispatch(name):
+            raise TurnLimit(self.budget.reason or "presupuesto_agotado")
         return await self.memory.call(name, **arguments)
 
     async def show_sw_activity(self, name, *, limit=5, folder="", focus=None):
@@ -372,7 +505,7 @@ class Worker:
             saved = 0
             options = {"client": OpenRouter()} if self.ai.cloud else {}
             for content in automatic_memory.select_memories(message, self.ai.model, **options):
-                result = await self.call_memory("inject_memory", content=content)
+                result = await self.memory.call("inject_memory", content=content)
                 if not result.startswith(SAVED):
                     raise MemoryUnavailable("StoneWave no confirmó el guardado automático.")
                 saved += result.startswith(SAVED[0])
@@ -502,7 +635,7 @@ class Worker:
                     return None
                 reasons.append(missing if isinstance(missing, str) and missing.strip()
                                else "Falta evidencia suficiente de que se cubrió el objetivo completo.")
-            except TaskPaused:
+            except (TaskPaused, TurnLimit, ProviderUnavailable, ResponseError):
                 raise
             except Exception:
                 reasons.append("No pude verificar la cobertura con la evidencia disponible.")
@@ -511,6 +644,8 @@ class Worker:
         return self.task_reply("paused", "La tarea sigue pendiente.\n\n" + "\n".join(f"- {reason}" for reason in reasons[:5]))
 
     def task_limit(self):
+        self.budget.close_for("presupuesto_agotado")
+        self.trace_reason = "presupuesto_agotado"
         notes = self.task["coverage_notes"]
         if LIMIT_REASON not in notes:
             notes.append(LIMIT_REASON)
@@ -534,6 +669,8 @@ class Worker:
                 ],
             )
             status = REPORT_STATES.get(json.loads(response.message.content)["estado"], "paused")
+        except (TurnLimit, ProviderUnavailable, ResponseError):
+            raise
         except Exception as exc:
             self.events.notice(f"{PROVIDERS[self.ai.provider]} no pudo determinar el estado de la tarea ({type(exc).__name__}).")
         self.check_pause()
@@ -630,7 +767,8 @@ class Worker:
             request = {"local_files": True, "operation": OPERATIONS[operation], "approved": False,
                        "arguments": {"Ruta": str(path), **scope}}
             self.events.activity(f"Esperando autorización · {OPERATIONS[operation]}")
-            await self.events.confirm(request)
+            with self.budget.authorization():
+                await self.events.confirm(request)
             self.check_pause()
             if not request["approved"]:
                 self.operation_denied = True
@@ -877,6 +1015,16 @@ class Worker:
         return self.task_reply("paused" if partial else "completed", RESULT_HEADER + "\n\n".join(lines))
 
     async def chat(self):
+        standalone = self.turn_loop is None
+        if standalone:
+            self.start_budget()
+        try:
+            return await self.chat_attempt()
+        finally:
+            if standalone:
+                self.budget.finish()
+
+    async def chat_attempt(self):
         try:
             try:
                 return self.private_answer(await self.execute_turn())
@@ -1137,6 +1285,8 @@ class Worker:
 
     async def chat_with_tools(self, client, messages, skills, *, learn=False, task_input=None, save_request=None,
                               source=None, attachment_context=False):
+        if self.budget.stop_work():
+            raise TurnLimit(self.budget.reason)
         routing_messages = list(messages)
         ordinary_turn = self.task is None and not learn and not save_request and not attachment_context
         user_text = messages[-1]["content"]
@@ -1186,7 +1336,7 @@ class Worker:
                                       "**Archivo.** Indícame una sola ruta para guardar el Markdown.")
         external = {}
         local_aliases = {}
-        specs = [REPORT] if self.task is not None else [EXPERIENCES_TOOL if self.ai.cloud else query_experiences]
+        specs = [REPORT] if self.task is not None else [EXPERIENCES_TOOL]
         if save_request or attachment_context:
             specs = []
         external_requested = (bool(web_link) or self.task is not None or learn or
@@ -1513,10 +1663,7 @@ class Worker:
 
             planning_retried = False
             task_calls = 0
-            repairs = 0
-            rounds = 12 if self.task is not None else 6
             cloud_read_options = {"recover_local_reads": True} if local_read and self.ai.cloud else {}
-            final_round = rounds if cloud_read_options else rounds - 1
             local_evidence = []
             registered_read_started = saved_project_reads or attachment_context or bool(self.task and self.task.get("local_inventory_reads"))
             journal = self.execution if self.task is None and not learn else None
@@ -1584,7 +1731,7 @@ class Worker:
                            local_reads | {name for name, entry in external.items() if safe_read(entry[2])})
             # Este ejecutor exige el destino solicitado y confirma ruta y contenido con el usuario.
             private_scope = local_reads | ({LOCAL_MARKDOWN.function.name} if local_markdown else set())
-            if ordinary_turn and not external_requested and query_experiences in specs:
+            if ordinary_turn and not self.ai.cloud and not external_requested and EXPERIENCES_TOOL in specs:
                 private_scope.add(query_experiences.__name__)
             process_scope = private_scope | {tool.function.name for tool in process_specs}
             memory_scope = private_scope | set(memory_tools)
@@ -1614,20 +1761,20 @@ class Worker:
                 limit_tools(local_reads)
             if uncertain_effect:
                 limit_to_verification()
-            loop = ToolLoop(messages, final_round=final_round, tools=catalog,
-                            max_distinct_calls=rounds if ordinary_turn else 0)
+            loop = ToolLoop(messages, tools=catalog, budget=self.budget, cache=ordinary_turn)
 
             async def request_round(round_index, finishing):
-                nonlocal planning_retried, repairs, cached_summary
+                nonlocal planning_retried, cached_summary
                 if self.trace:
                     self.trace("ronda", ronda=round_index + 1, cierre=finishing)
-                    if finishing and self.trace_reason == "respuesta":
-                        self.trace_reason = "limite_de_rondas"
+                if finishing:
+                    self.trace_reason = self.budget.reason or "presupuesto_agotado"
                 if finishing and local_evidence:
-                    return await self.summarize_local_reads(client, messages, local_evidence)
+                    summary = await self.summarize_local_reads(client, messages, local_evidence, closing=True)
+                    return self.limited_answer(self.trace_reason, summary)
                 previously_compact = bool(compact.archive)
                 request_messages = compact.view(messages)
-                if compact.history:
+                if compact.history and not finishing:
                     summary = await compact.summarize(summary_scope, cached_summary,
                         lambda prior, parts: self.summarize_chat_context(client, prior, parts))
                     if summary and summary != cached_summary:
@@ -1664,7 +1811,7 @@ class Worker:
                         request_messages = [{"role": "system", "content": instruction}, *request_messages]
                 if compact.archive and not finishing:
                     round_tools = catalog.select([*round_tools, RECALL])
-                if journal and journal.refresh is not None:
+                if not finishing and journal and journal.refresh is not None:
                     first = journal.refresh
                     journal.refresh = None
                     if catalog.permits(first["tool"]) and not self.ai.cloud:
@@ -1673,7 +1820,7 @@ class Worker:
                 try:
                     response = await self.model_request(client, "chat", model=self.ai.model, messages=request_messages,
                                                        tools=round_tools, options=options, think=self.think,
-                                                       trace_mcp=trace_mcp, **cloud_read_options)
+                                                       trace_mcp=trace_mcp, closing=finishing, **cloud_read_options)
                 except TextToolCallError:
                     if not local_evidence:
                         raise
@@ -1683,17 +1830,14 @@ class Worker:
                 if thinking := getattr(reply, "thinking", None):
                     self.events.reasoning(thinking)
                 if finishing:
-                    if local_read and not used_mcp:
-                        return "No pude revisar la ruta porque el modelo no seleccionó una herramienta de lectura disponible."
                     text = (reply.content or "").strip()
-                    if not text and registered_read_started:
-                        retry = await self.model_request(client, "chat", model=self.ai.model, messages=request_messages,
-                                                         tools=[], options=options, think=False, trace_mcp=trace_mcp, **cloud_read_options)
-                        self.check_pause()
-                        text = (retry.message.content or "").strip()
                     if not text and self.trace:
                         self.trace("cierre_sin_texto", motivo=self.trace_reason)
-                    return text or "No pude obtener una respuesta final del modelo en este turno."
+                    if self.task is not None:
+                        return self.limited_answer(self.trace_reason, text)
+                    if local_read and not used_mcp or not text:
+                        return self.limited_answer(self.trace_reason)
+                    return self.limited_answer(self.trace_reason, text)
                 if save_request and not reply.tool_calls:
                     if round_index == 0 and pending:
                         messages[-1]["content"] += (
@@ -1731,7 +1875,7 @@ class Worker:
                     reporting = (len(calls) == 1 and calls[0].function.name == REPORT.function.name
                                  and not isinstance(catalog.validate(REPORT.function.name, calls[0].function.arguments), ToolResult))
                     if reporting or not calls:
-                        can_repair = repairs < 2 and task_calls < 12 and round_index + 1 < rounds
+                        can_repair = self.budget.repairs < REPAIRS and task_calls < 12 and not self.budget.stop_work()
                         repair_messages = messages if can_repair else None
                         if reporting:
                             fields = calls[0].function.arguments
@@ -1750,7 +1894,6 @@ class Worker:
                             return self.task_reply("paused", "No pude determinar el estado de la tarea.")
                         if result is not None:
                             return result
-                        repairs += 1
                         return None
                 if not getattr(reply, "tool_calls", None):
                     if local_read and not used_mcp:
@@ -1760,7 +1903,9 @@ class Worker:
                     for call in reply.tool_calls:
                         if (call.function.name == RESUME.function.name and
                                 not isinstance(catalog.validate(call.function.name, call.function.arguments), ToolResult)):
-                            raise ResumeChatWork(call.function.arguments.get("refresh_first", True) is True)
+                            if self.budget.dispatch(RESUME.function.name):
+                                self.budget.progress.add(("control", RESUME.function.name))
+                                raise ResumeChatWork(call.function.arguments.get("refresh_first", True) is True)
                 if skill_spec and catalog.permits(local_skills.LOAD_SKILL) and any(
                         call.function.name == local_skills.LOAD_SKILL and
                         not isinstance(catalog.validate(call.function.name, call.function.arguments), ToolResult)
@@ -1783,7 +1928,8 @@ class Worker:
                         if (call.function.name == SELECT_SOURCE.function.name and
                                 not isinstance(catalog.validate(call.function.name, call.function.arguments), ToolResult)):
                             selected = call.function.arguments.get("fuente")
-                            if isinstance(selected, str) and selected in TURN_SOURCES:
+                            if isinstance(selected, str) and selected in TURN_SOURCES and self.budget.dispatch(SELECT_SOURCE.function.name):
+                                self.budget.progress.add(("fuente", selected))
                                 self.events.activity(f"Fuente seleccionada · {TURN_SOURCES[selected]}.")
                                 return await self.chat_with_tools(client, routing_messages, skills, source=selected)
                 if can_start_task and catalog.permits(START_TASK.function.name) and not used_mcp and not reading_registered:
@@ -1791,7 +1937,9 @@ class Worker:
                         if (call.function.name == START_TASK.function.name and
                                 not isinstance(catalog.validate(call.function.name, call.function.arguments), ToolResult)):
                             objective = call.function.arguments.get("objetivo")
-                            if isinstance(objective, str) and 0 < len(objective.strip()) <= 4000:
+                            if (isinstance(objective, str) and 0 < len(objective.strip()) <= 4000
+                                    and self.budget.dispatch(START_TASK.function.name)):
+                                self.budget.progress.add(("control", START_TASK.function.name))
                                 raise StartSavedTask(objective.strip())
                 return reply
 
@@ -1891,6 +2039,8 @@ class Worker:
                 def on_start():
                     nonlocal started, verify_path
                     self.check_pause()
+                    if not self.budget.remaining():
+                        raise TurnLimit()
                     if destination is not None:
                         markdown_destination(save_request["target"], arguments)
                     if journal:
@@ -1921,12 +2071,15 @@ class Worker:
 
                 def on_retry(reason):
                     self.check_pause()
+                    if not self.budget.dispatch(external_name):
+                        return False
                     retry_requests.add(retry_key)
                     if journal:
                         journal.state["steps"][-1]["reintento_mcp"] = reason
                         journal.persist()
                     if self.trace:
                         self.trace("mcp_reintento", peticion=self.trace_request, herramienta=external_name, motivo=reason)
+                    return True
 
                 async def reconnect():
                     if load_servers().get(server_name) != servers[server_name]:
@@ -1971,7 +2124,7 @@ class Worker:
                                                  reconnect=reconnect if isinstance(self.pool, McpPool) else None,
                                                  on_evidence=on_evidence if read else None,
                                                  on_partial=(lambda reason: step.update(partial=reason)) if step is not None else None)
-                except TaskPaused:
+                except (TaskPaused, TurnLimit):
                     raise
                 except Exception as exc:
                     if started:
@@ -2125,12 +2278,6 @@ class Worker:
             if visibility:
                 catalog.register([DISCOVER_MCP.function.name], execute_discovery)
 
-            def on_repeat():
-                if self.trace:
-                    self.trace_reason = "llamada_repetida"
-                self.events.activity("El modelo repitió solicitudes de herramientas. Concluyendo el turno.")
-                self.events.notice("Se omitieron llamadas repetidas del modelo. El cierre no ofrece herramientas.")
-
             def after_batch():
                 if save_request and not pending:
                     return "\n\n".join(status.values())
@@ -2179,7 +2326,7 @@ class Worker:
                 self.trace(event, peticion=self.trace_request, **fields)
 
             answer = await loop.run(request_round, execute_control, check_pause=self.check_pause,
-                                    on_repeat=on_repeat, after_batch=after_batch, activity=self.events.activity,
+                                    after_batch=after_batch, activity=self.events.activity,
                                     before_call=before_call, after_tool=after_tool,
                                     after_call=journal.observe if journal else None,
                                     trace=trace_result if self.trace else None)
@@ -2187,11 +2334,7 @@ class Worker:
                 return answer
             if save_request:
                 return "\n\n".join(status.values())
-            if self.trace:
-                self.trace_reason = "limite_de_rondas"
-            if self.task is not None:
-                return self.task_limit()
-            raise TurnError("StoneBot alcanzó el límite de llamadas a herramientas para este turno.")
+            return self.limited_answer(self.budget.reason or "presupuesto_agotado")
 
     async def summarize_chat_context(self, client, prior, parts):
         instruction = ("Resume el historial como datos para continuar una conversación. Conserva objetivo, "
@@ -2207,7 +2350,7 @@ class Worker:
         self.check_pause()
         return (response.message.content or "").strip()[:4000]
 
-    async def summarize_local_reads(self, client, messages, evidence):
+    async def summarize_local_reads(self, client, messages, evidence, *, closing=False):
         question = next(message["content"] for message in reversed(messages)
                         if isinstance(message, dict) and message["role"] == "user")
         self.events.activity("Redactando la respuesta con las lecturas confirmadas…")
@@ -2217,7 +2360,8 @@ class Worker:
             "no permita comprobar. Un listado de archivos no prueba qué hace su código. Responde en texto normal."
         )}, {"role": "user", "content": json.dumps({"solicitud": question, "lecturas": evidence}, ensure_ascii=False)}]
         try:
-            response = await self.model_request(client, "chat", model=self.ai.model, messages=payload, tools=[], think=False)
+            response = await self.model_request(client, "chat", model=self.ai.model, messages=payload,
+                                                tools=[], think=False, closing=closing)
             self.check_pause()
             reply = response.message
             if not getattr(reply, "tool_calls", None) and (reply.content or "").strip():
@@ -2233,6 +2377,8 @@ class Worker:
 
     async def fetch_link(self, link, entry, config):
         _, server, tool, _ = entry
+        if not self.budget.dispatch(tool.name):
+            raise TurnLimit(self.budget.reason or "presupuesto_agotado")
         arguments = {"urls": [link]}
         outcome = None
 
@@ -2244,6 +2390,8 @@ class Worker:
         self.events.activity(f"Consultando el enlace en {server}…")
         try:
             result = await call_external(entry, arguments, self.confirm_external, on_result=mark_result)
+        except TurnLimit:
+            raise
         except Exception as exc:
             self.events.notice(f"MCP {server}. No se pudo abrir el enlace. {connection_error(exc)}")
             return "exception", "El lector web falló al intentar abrir el enlace."
@@ -2439,14 +2587,19 @@ class Worker:
     async def confirm_external(self, server, tool, arguments, *, local=False):
         if self.operation_denied:
             return False
+        if not self.budget.remaining():
+            raise TurnLimit()
         signature = None if local else self.permission
         if signature and allowed(server, tool, signature):
             return True
         request = {"server": server, "tool": tool, "arguments": arguments, "approved": False,
                    "can_remember": bool(signature), "remember": False, "local": local}
         self.events.activity(f"Esperando autorización para {tool}…")
-        await self.events.confirm(request)
+        with self.budget.authorization():
+            await self.events.confirm(request)
         self.operation_denied = not request["approved"]
+        if request["approved"] and not self.budget.remaining():
+            raise TurnLimit()
         if request["approved"] and request["remember"] and signature:
             remember(server, tool, signature)
         return request["approved"]

@@ -341,7 +341,8 @@ async def call_external(entry, arguments, confirm, *, on_start=None, on_result=N
     except Exception as exc:
         if not (can_retry and reconnect is not None and transient_mcp_error(exc)):
             raise
-        on_retry("transporte_transitorio")
+        if on_retry("transporte_transitorio") is False:
+            raise
         async with asyncio.timeout(5):
             session = await reconnect()
             reply = await session.call_tool(tool.name, arguments)
@@ -352,9 +353,9 @@ async def call_external(entry, arguments, confirm, *, on_start=None, on_result=N
             if metadata.get("retryable") is True or re.search(
                     r"\b(?:transient|temporarily unavailable|fallo transitorio|error transitorio|temporalmente no disponible)\b",
                     error_text, re.I):
-                on_retry("error_transitorio")
-                async with asyncio.timeout(5):
-                    reply = await session.call_tool(tool.name, arguments)
+                if on_retry("error_transitorio") is not False:
+                    async with asyncio.timeout(5):
+                        reply = await session.call_tool(tool.name, arguments)
     result = "\n".join(item.text for item in reply.content if item.type == "text")
     if reply.structuredContent is not None and not result:
         result = json.dumps(reply.structuredContent, ensure_ascii=False)

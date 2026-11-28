@@ -1697,7 +1697,8 @@ class StoneBot(QMainWindow):
 
     def respuesta(self, texto):
         self.clear_partial_reply()
-        self.show_turn_result(self.session.complete_turn(TurnOutcome("finished", texto), self.worker))
+        outcome = getattr(self.worker, "last_outcome", None) or TurnOutcome("finished", texto)
+        self.show_turn_result(self.session.complete_turn(outcome, self.worker))
 
     def error(self, detalle):
         self.show_turn_result(self.session.fail_turn(detalle, self.worker))

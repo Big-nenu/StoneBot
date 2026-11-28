@@ -67,16 +67,16 @@ def test_e3_unknown_tool(root):
 def test_e4_repeat_closes_without_tools(root):
     worker = project_worker(root)
     name = "read_project_file"
-    model = FakeModel(call(name, path="README.md"), call(name, path="README.md"), reply("Fin."))
+    request = call(name, path="README.md")
+    model = FakeModel(request, request, request, request, reply("Fin."))
     with patch.object(worker, "read_project_file", wraps=worker.read_project_file) as read:
         events = run_turn(worker, model, root / "perfil", approve=True)
         read.assert_awaited_once_with({"path": "README.md"})
-    assert len(model.requests) == 3
-    assert name in model.requests[1]["tools"]
-    assert model.requests[2]["tools"] == ()
-    [(notice, detail), (outcome, answer)] = events.select("mcp_notice", "finished", "error")
-    assert notice == "mcp_notice" and "repetid" in detail
-    assert outcome == "finished" and "Fin." in answer
+    assert len(model.requests) == 5
+    assert all(name in request["tools"] for request in model.requests[1:4])
+    assert model.requests[-1]["tools"] == ()
+    [(state, answer)] = events.outcome()
+    assert state == "finished" and "no aportaron evidencia" in answer and "Fin." in answer
 
 
 def test_e5_process_denied(root):
@@ -126,13 +126,13 @@ def test_e7_provider_error(root):
 def test_e8_tool_round_budget(root):
     model = FakeModel(*(call(f"solicitud_{index}") for index in range(7)))
     events = run_turn(worker_for(), model, root / "perfil")
-    assert len(model.requests) == 6
-    assert all(request["tools"] for request in model.requests[:5])
-    assert model.requests[5]["tools"] == ()
-    assert len([row for row in model.requests[5]["messages"]
-                if isinstance(row, dict) and row["role"] == "tool"]) == 5
+    assert len(model.requests) == 4
+    assert all(request["tools"] for request in model.requests[:3])
+    assert model.requests[3]["tools"] == ()
+    assert len([row for row in model.requests[3]["messages"]
+                if isinstance(row, dict) and row["role"] == "tool"]) == 3
     [(channel, answer)] = events.outcome()
-    assert channel == "finished" and "respuesta final" in answer, events.events
+    assert channel == "finished" and "no aportaron evidencia" in answer, events.events
 
 
 def test_e9_pause_task(root):
@@ -153,13 +153,15 @@ def test_cli_trace_redacts_and_reports_repeat(root):
     events = []
     worker.trace = lambda event, **fields: events.append(trace_payload(event, fields))
     request = call("read_project_file", path="README.md")
-    model = FakeModel(request, request, reply("Fin."))
+    model = FakeModel(request, request, request, request, reply("Fin."))
     result = run_turn(worker, model, root / "perfil", approve=True)
     assert result.outcome()[0][0] == "finished"
     assert [event["herramientas"] for event in events if event["evento"] == "peticion_modelo"][-1] == []
-    assert events[-1]["motivo"] == "llamada_repetida"
+    assert events[-1]["motivo"] == "sin_progreso" and events[-1]["evidencia"] == "observada"
+    [budget] = [event for event in events if event["evento"] == "presupuesto_turno"]
+    assert budget["peticiones"] == 5 and budget["despachadas"] == 1 and budget["rondas_sin_progreso"] == 3
     tool_results = [event for event in events if event["evento"] == "resultado"]
-    assert [event["estado"] for event in tool_results] == ["ejecutada", "reutilizada"]
+    assert [event["estado"] for event in tool_results] == ["ejecutada"] + ["reutilizada"] * 3
     assert all(event["resultado"]["campos"]["estado"] == "ok" for event in tool_results)
     assert "README.md" not in json.dumps(events) and "Los informes" not in json.dumps(events)
     hidden = trace_payload("resultado", {"resultado": secret, "argumentos": {"text": secret, secret: "otro"}})

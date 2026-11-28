@@ -8,6 +8,8 @@ class TurnOutcome:
     kind: Literal["finished", "cancelled", "error"]
     text: str = ""
     partial_text: str = ""
+    reason: str = "respuesta"
+    evidence: str = "sin_evidencia"
 
 
 class TurnEvents(Protocol):

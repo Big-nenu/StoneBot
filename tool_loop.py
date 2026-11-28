@@ -2,9 +2,8 @@
 import json
 from dataclasses import dataclass
 
-from ollama._utils import convert_function_to_tool
-
 from tool_validation import InvalidToolArguments, validate_arguments
+from turn_budget import INVALID_CODES, TurnLimit
 
 @dataclass(frozen=True)
 class ToolResult:
@@ -61,11 +60,10 @@ class TurnTools:
         selected = []
         self.available = set()
         for spec in specs:
-            name = spec.__name__ if callable(spec) else spec.function.name
+            name = spec.function.name
             if name not in self.blocked and (self.boundary is None or name in self.boundary):
                 self.available.add(name)
-                definition = convert_function_to_tool(spec) if callable(spec) else spec
-                parameters = definition.function.parameters
+                parameters = spec.function.parameters
                 self.schemas[name] = parameters.model_dump(by_alias=True, exclude_none=True) if parameters else {}
                 selected.append(spec)
         return selected
@@ -90,13 +88,13 @@ class TurnTools:
 
 
 class ToolLoop:
-    def __init__(self, messages, *, final_round, tools, max_distinct_calls):
+    def __init__(self, messages, *, tools, budget, cache=True):
         self.messages = messages
-        self.final_round = final_round
         self.tools = tools
-        self.max_distinct_calls = max_distinct_calls
+        self.budget = budget
+        self.cache = cache
 
-    async def run(self, request_round, execute_tool, *, check_pause, on_repeat, after_batch, activity,
+    async def run(self, request_round, execute_tool, *, check_pause, after_batch, activity,
                   before_call=None, after_call=None, after_tool=None, trace=None):
         """Ejecuta rondas hasta obtener una respuesta o alcanzar el límite.
 
@@ -105,12 +103,23 @@ class ToolLoop:
         devolver la respuesta si la última operación ya completó la solicitud.
         """
         results = {}
-        finish_without_tools = False
-        for index in range(self.final_round + 1):
+        budget = self.budget
+        rounds = budget.limits.requests + budget.limits.dispatches
+        for index in range(rounds):
             check_pause()
-            finishing = bool(self.max_distinct_calls) and (finish_without_tools or index == self.final_round)
-            reply = await request_round(index, finishing)
+            finishing = budget.stop_work()
+            previous = len(budget.progress)
+            try:
+                reply = await request_round(index, finishing)
+            except TurnLimit as exc:
+                if finishing:
+                    raise
+                budget.close_for(exc.reason)
+                continue
             if reply is None:
+                if finishing:
+                    return None
+                budget.round(previous, repair=True)
                 continue
             if isinstance(reply, str):
                 activity("Respuesta preparada con los resultados disponibles." if results else "Respuesta preparada.")
@@ -122,15 +131,14 @@ class ToolLoop:
                 arguments = self.tools.validate(name, call.function.arguments)
                 resolved = self.tools.aliases.get(name, name)
                 key = ((resolved, json.dumps(arguments, sort_keys=True))
-                       if self.max_distinct_calls and not isinstance(arguments, ToolResult) else None)
+                       if self.cache and not isinstance(arguments, ToolResult) else None)
                 calls.append((name, arguments, resolved, key))
-            if self.max_distinct_calls and all(key in results for _, _, _, key in calls):
-                on_repeat()
+            if calls and all(key in results for _, _, _, key in calls):
                 if trace:
                     trace("lote_omitido", ronda=index + 1, estado="repetido")
-                finish_without_tools = True
 
             self.messages.append(reply)
+            repairing = False
             for position, (name, arguments, resolved, key) in enumerate(calls):
                 check_pause()
                 disposition = "ejecutada"
@@ -143,10 +151,10 @@ class ToolLoop:
                 elif key in results:
                     disposition = "reutilizada"
                     result = results[key]
-                elif self.max_distinct_calls and len(results) >= self.max_distinct_calls:
+                elif not budget.dispatch(resolved):
                     disposition = "limite_de_llamadas"
-                    result = ToolResult("StoneBot terminó la fase de herramientas de este turno.", reuse=False)
-                    finish_without_tools = True
+                    result = ToolResult("No queda margen para ejecutar esta herramienta en el turno.",
+                                        reuse=False, status="sin ejecutar", code="LIMITE_HERRAMIENTA")
                 else:
                     handler = self.tools.handlers.get(resolved, execute_tool)
                     activity(f"El modelo solicitó {resolved}.")
@@ -159,12 +167,24 @@ class ToolLoop:
                         disposition = "omitida"
                         result = step
                     else:
-                        result = await handler(resolved, arguments)
+                        try:
+                            result = await handler(resolved, arguments)
+                        except TurnLimit as exc:
+                            budget.close_for(exc.reason)
+                            sent = step is not None and step.get("effect") and step.get("status") == "sin confirmar"
+                            result = ToolResult("Se agotó el presupuesto antes de completar la llamada.",
+                                                reuse=False, status="sin confirmar" if sent else "sin ejecutar",
+                                                code="PRESUPUESTO_AGOTADO")
                         if step is not None:
                             after_call(step, result.answer if isinstance(result, EndTurn) else result.content,
                                        result.status if isinstance(result, ToolResult) else "respuesta recibida")
                         if after_tool:
                             after_tool(resolved, result)
+                    if isinstance(result, ToolResult):
+                        if disposition == "omitida" or result.status == "sin ejecutar":
+                            budget.refund_dispatch(resolved)
+                        else:
+                            budget.observe(resolved, result, arguments)
                 if trace:
                     if isinstance(result, ToolResult) and result.status == "sin ejecutar" and disposition == "ejecutada":
                         disposition = "sin_ejecutar"
@@ -177,9 +197,15 @@ class ToolLoop:
                     return result.answer
                 if key is not None and result.reuse:
                     results[key] = result
+                repairing |= result.code in INVALID_CODES
                 self.messages.append({"role": "tool", "tool_name": name,
                                       "content": result.model_text(reused=disposition == "reutilizada")})
             answer = after_batch()
             if answer is not None:
                 return answer
+            if finishing:
+                return None
+            budget.round(previous, repair=repairing)
+            if self.tools.available and all(budget.per_tool[name] >= budget.limits.per_tool for name in self.tools.available):
+                budget.close_for("presupuesto_agotado")
         return None

@@ -211,7 +211,8 @@ class ChatSession:
             names = ", ".join(dict.fromkeys(step["tool"] for step in unresolved))
             text += f"\n\nStoneBot dejó pendiente comprobar el efecto de {names}. Al reanudar conservará el registro para evitar repetir la acción."
         finish = None
-        if execution and execution.version and not (unresolved or interrupted or self.turn_failed):
+        incomplete = outcome.reason in {"presupuesto_agotado", "sin_progreso", "proveedor"}
+        if execution and execution.version and not (unresolved or interrupted or self.turn_failed or incomplete):
             finish = (execution.message_id, execution.version)
         saved = self.save_message("assistant", text, created, task=task, finish_execution=finish)
         if task is not None and not self.history_write_ok:

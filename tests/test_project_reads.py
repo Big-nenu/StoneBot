@@ -76,7 +76,7 @@ async def check_project_read(folder, *, select_source=False, mention_stonewave=F
             assert "elegir_fuente" not in tools
             assert not any(n.startswith("mcp_") for n in tools)
             if not select_source and not mention_stonewave:
-                assert turn_worker.query_experiences in kwargs["tools"]
+                assert turn_worker.EXPERIENCES_TOOL in kwargs["tools"]
         index = -2 if rounds == 2 else -1
         last = json.loads(kwargs["messages"][index]["content"])
         if rounds == 2:

@@ -43,8 +43,8 @@ def demo(root, stage, *, live=False):
             last = call["messages"][-1]
             if stage == "registrar":
                 if isinstance(last, dict) and last["role"] == "user":
-                    echo, = [tool.function.name for tool in call["tools"] if not callable(tool)
-                             and " / echo." in tool.function.description]
+                    echo, = [tool.function.name for tool in call["tools"]
+                             if tool.function.name.startswith("mcp_demo_echo_")]
                     return request(echo, {} if "inválida" in last["content"] else {"text": payload})
                 if "esquema" in last["content"]:
                     answer = "El esquema rechazó los argumentos."
@@ -56,7 +56,7 @@ def demo(root, stage, *, live=False):
             else:
                 if last["role"] == "user":
                     assert len(call["messages"]) == 2
-                    assert query_experiences in call["tools"]
+                    assert turn_worker.EXPERIENCES_TOOL in call["tools"]
                     return request("query_experiences", {"busqueda": "demo echo"})
                 row, = json.loads(last["content"])
                 assert row["evidencia_actual"]["tipo"] == "hecho observado"

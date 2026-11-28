@@ -183,6 +183,8 @@ Para habilitar el descubrimiento MCP del paso 5.3A, ejecuta `$env:STONEBOT_DISCO
 
 El núcleo valida cada llamada contra el catálogo de la ronda y el esquema de la herramienta antes de solicitar permisos. Las lecturas MCP verificadas admiten un reintento acotado ante fallos transitorios. `--verbose` registra el motivo del reintento y distingue validación, denegación, reutilización e incertidumbre. [Validación y recuperación](docs/10-validacion-recuperacion.md)
 
+Desktop y CLI usan el mismo presupuesto por turno. Puedes configurar peticiones, tiempo activo y llamadas mediante `STONEBOT_TURN_CHAT_*` y `STONEBOT_TURN_TASK_*`. El tiempo de autorización se registra aparte y `--verbose` muestra los contadores, el motivo de cierre y el estado de la evidencia. [Presupuesto y cierre](docs/11-presupuesto-cierre.md)
+
 ### Modelo y proveedor
 
 En el engrane de **Configuración**, abre **Modelo y proveedor de IA**. Usa **Ollama** para conversar en el equipo local o **OpenRouter** para usar un modelo en la nube. Pulsa **Cargar modelos** y busca por nombre o identificador. En OpenRouter, **Solo gratuitos** muestra las variantes `:free` y el selector gratuito si están disponibles en el catálogo de modelos compatibles con herramientas. Selecciona un resultado para rellenar el identificador. StoneBot recuerda el último modelo de cada proveedor en este equipo. El indicador de la parte inferior izquierda también abre esta configuración.

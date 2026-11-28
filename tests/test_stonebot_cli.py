@@ -107,7 +107,7 @@ def test_permissions_and_trace(root):
         events = [json.loads(line) for line in stderr.splitlines() if line.startswith('{"evento":')]
         assert {"ronda", "peticion_modelo", "llamada_propuesta", "resultado", "fin"} <= {event["evento"] for event in events}
         assert SECRET not in stderr and SECRET not in output
-        assert events[-1]["motivo"] == "respuesta", events
+        assert events[-1]["motivo"] == ("respuesta" if approved else "denegacion"), events
 
 
 def test_http_uses_only_environment(root):

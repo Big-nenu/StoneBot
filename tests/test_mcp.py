@@ -152,8 +152,9 @@ def test_cloud_chat_keeps_mcp_out_of_conversation_and_stops_repeated_calls():
         client.return_value.chat.side_effect = repeating
         research = worker("Busca en internet sobre PySide6.")
         research.confirm_external = AsyncMock(return_value=True)
-        assert asyncio.run(research.chat()) == "Aquí está la fuente."
-        assert len(requests) == 3
+        answer = asyncio.run(research.chat())
+        assert "no aportaron evidencia" in answer and "Aquí está la fuente." in answer
+        assert len(requests) == 5
         research.confirm_external.assert_awaited_once()
         session.call_tool.assert_awaited_once_with("web_search_exa", {"query": "PySide6", "max": 1})
 
@@ -332,7 +333,8 @@ def test_switch_from_memory_to_local_project():
             return {"choices": [{"message": {"content": content}}]}
 
         request.side_effect = read_several
-        assert asyncio.run(worker.chat()) == "Terminé las seis consultas."
+        summary = asyncio.run(worker.chat())
+        assert "Resumen provisional del modelo" in summary and "Terminé las seis consultas." in summary
         assert session.call_tool.await_count == 6
         fail_summary = True
         session.call_tool.reset_mock()
@@ -505,16 +507,14 @@ def test_stdio_chat_and_permissions():
                 nonlocal rounds
                 rounds += 1
                 tools = {tool.function.name: tool.function.description for tool in kwargs["tools"]
-                         if not callable(tool)}
+                         if tool.function.name.startswith("mcp_")}
                 assert len(tools) == 2, tools
                 echo, = [alias for alias, desc in tools.items() if " / echo." in desc]
                 mark, = [alias for alias, desc in tools.items() if " / mark." in desc]
                 aliases["mark"] = mark
                 transcript = kwargs["messages"]
                 if rounds == 1:
-                    assert {tool.__name__ for tool in kwargs["tools"] if callable(tool)} == {
-                        "query_experiences",
-                    }
+                    assert turn_worker.EXPERIENCES_TOOL in kwargs["tools"]
                     requests = [(echo, {}), (echo, {"text": str(personal)}),
                                 (echo, {"text": "hola"}), (mark, {"text": "rechazado"})]
                 elif rounds == 2:
@@ -548,7 +548,8 @@ def test_stdio_chat_and_permissions():
             mcp_client.save_servers(servers)
 
             def stale_call(**kwargs):
-                exposed = [tool.function.description for tool in kwargs["tools"] if not callable(tool)]
+                exposed = [tool.function.description for tool in kwargs["tools"]
+                           if tool.function.name.startswith("mcp_")]
                 assert len(exposed) == 1 and " / echo." in exposed[0]
                 if len(kwargs["messages"]) == 2:
                     call = Message.ToolCall(function=Message.ToolCall.Function(
