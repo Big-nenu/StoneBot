@@ -261,6 +261,13 @@ def run_case(model, case, attempt, timeout, mcp_discovery=None):
             "traza": events,
         }, root)
         result["sondeo_mcp"] = probe_mcp(profile, root, model, case, env)
+        if case in {"D06", "D07"}:
+            launches = [step for record in journal for step in record["pasos"]
+                        if step["tool"] == "iniciar_proceso" and step.get("run_id")]
+            if launches and launches[0].get("result", "").startswith("{"):
+                initial = json.loads(launches[0]["result"])
+                result["resultado_directo"] = {key: initial[key] for key in ("estado", "codigo", "cursor")}
+                result["resultado_directo"]["contiene_salida"] = bool(initial["salida"])
         if mcp_discovery is not None:
             result["variante"] = "B" if mcp_discovery == "1" else "A"
         result["calificacion"] = grade(result)

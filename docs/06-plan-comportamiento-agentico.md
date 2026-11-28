@@ -1,6 +1,6 @@
 # Plan del paso 5 · Comportamiento agéntico de StoneBot
 
-- **Estado** — Pasos 5.1, 5.2, 5.2.1, 5.3A, 5.4 y 5.6 completados. Siguiente paso planificado 5.5.
+- **Estado** — Pasos 5.1, 5.2, 5.2.1, 5.3A, 5.4, 5.6 y 5.5 completados. Siguiente paso planificado 5.7.
 - **Fecha** — 27 de noviembre de 2026.
 - **Base** — `refactor/stonebot-core` en `307b40a`, con los pasos 0 a 4 completados.
 - **Objetivo** — Que un turno normal pueda descubrir recursos, ejecutar pasos autorizados, recuperarse de fallos y entregar una respuesta comprobable. StoneBot CLI servirá para medir los cambios con Nemotron y Qwen. Desktop y CLI seguirán usando el mismo `ChatSession`, `Worker` y `ToolLoop`.
@@ -80,6 +80,8 @@ La [evaluación de 5.3A](09-visibilidad-mcp.md) documenta las 60 ejecuciones def
 - Conservar inicialmente el requisito de ruta absoluta. Diferir la resolución por nombre de ejecutable mediante ubicaciones confiables hasta demostrar que es necesaria; si se implementa, será determinista y no ampliará permisos. Un nombre ambiguo o ausente devuelve un error corregible. Usar el directorio vinculado al proyecto solo si existe y está autorizado para esa operación. En los demás casos se exige un directorio explícito. Confirmar el ejecutable resuelto, los argumentos exactos y el directorio antes de lanzar. No interpretar cadenas como comandos de shell ni convertir automáticamente listas, redirecciones o tuberías en comandos. Mantener los controles de autorización y las restricciones actuales de procesos y archivos.
 - Después del lanzamiento autorizado, esperar durante una ventana corta, limitada por el tiempo restante del turno. Si el supervisor confirma que el comando terminó en esa ventana, devolver directamente su salida acotada, el estado y el código de terminación en la misma llamada. El diario conserva el ID y contabiliza el cursor de la salida entregada. Si vence la espera, devolver el ID y el estado observado para consultar la ejecución larga por separado. La espera no cancela el proceso ni habilita otro lanzamiento.
 - Cada resultado distingue entre inicio confirmado, ejecución activa, salida parcial o truncada, terminación con código, cancelación solicitada y estado sin confirmar. Consultar por ID también admite una espera breve y acotada. Si el proceso sigue activo al cerrar el turno, informar su ID y el estado conocido. Tras una interrupción, comprobar el ID existente antes de considerar un nuevo lanzamiento. Cancelar sigue siendo una operación con efecto y confirmación.
+
+El [informe de 5.5](12-interfaz-procesos.md) documenta el contrato de procesos y la evaluación de D06, D07 y V03 con ambos modelos y descubrimiento MCP activo.
 
 ### 2.4 Validación y recuperación
 
@@ -163,7 +165,7 @@ En Desktop, repetir con perfil temporal una consulta directa, un encargo con her
 - [x] 5.3A Visibilidad y descubrimiento MCP
 - [x] 5.4 Validación y recuperación
 - [x] 5.6 Presupuesto y cierre
-- [ ] 5.5 Interfaz de procesos
+- [x] 5.5 Interfaz de procesos
 - [ ] 5.7 Evidencia y respuesta
 - [ ] 5.3B Registro y alias (condicional)
 - [ ] 5.8 Prompt y evaluación final

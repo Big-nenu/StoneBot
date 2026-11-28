@@ -83,8 +83,8 @@ def test_e5_process_denied(root):
     execution = ChatExecution(1, None, lambda mid, version, state: version + 1, "prueba", ["local"])
     execution.chat_id = 1
     worker = worker_for("Ejecuta la prueba del proyecto.", execution=execution)
-    name = "iniciar_proceso"
-    model = FakeModel(call(name, argv=[sys.executable], cwd=str(root)), reply("Fin."))
+    name = "ejecutar_proceso"
+    model = FakeModel(call(name, programa=sys.executable, cwd=str(root)), reply("Fin."))
     with (patch.object(managed_process, "WINDOWS_BACKEND", True),
           patch.object(managed_process, "start") as launch):
         events = run_turn(worker, model, root / "perfil")
@@ -96,7 +96,7 @@ def test_e5_process_denied(root):
     assert [channel for channel, _ in events.select("mcp_confirmation", "finished", "error")] == [
         "mcp_confirmation", "finished",
     ]
-    assert events.select("mcp_confirmation") == [("mcp_confirmation", name)]
+    assert events.select("mcp_confirmation") == [("mcp_confirmation", "iniciar_proceso")]
 
 
 def test_e6_cancel_while_waiting(root):

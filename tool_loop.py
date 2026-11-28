@@ -95,7 +95,7 @@ class ToolLoop:
         self.cache = cache
 
     async def run(self, request_round, execute_tool, *, check_pause, after_batch, activity,
-                  before_call=None, after_call=None, after_tool=None, trace=None):
+                  prepare_call=None, before_call=None, after_call=None, after_tool=None, trace=None):
         """Ejecuta rondas hasta obtener una respuesta o alcanzar el límite.
 
         request_round devuelve un mensaje con llamadas, texto final o None para
@@ -130,6 +130,8 @@ class ToolLoop:
                 name = call.function.name
                 arguments = self.tools.validate(name, call.function.arguments)
                 resolved = self.tools.aliases.get(name, name)
+                if prepare_call and not isinstance(arguments, ToolResult):
+                    resolved, arguments = prepare_call(resolved, arguments)
                 key = ((resolved, json.dumps(arguments, sort_keys=True))
                        if self.cache and not isinstance(arguments, ToolResult) else None)
                 calls.append((name, arguments, resolved, key))

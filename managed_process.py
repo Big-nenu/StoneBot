@@ -64,7 +64,7 @@ def start(folder, run_id, arguments):
     except OSError as exc:
         with connection(path) as db:
             db.execute("UPDATE job SET state='fallido', error=?", (str(exc),))
-        raise
+        return {**inspect_run(folder, run_id), "inicio_confirmado": False}
     return inspect_run(folder, run_id)
 
 
@@ -77,23 +77,53 @@ def description(folder, run_id):
     return {"id": run_id, "argv": json.loads(command), "cwd": cwd}
 
 
-def inspect_run(folder, run_id, cursor=0, *, cancel=False):
+def active_command(folder, run_ids, arguments):
+    """Busca la misma invocación entre los ID ya registrados en este ámbito."""
+    for run_id in run_ids:
+        path = location(folder, run_id)
+        if not path.is_file():
+            continue
+        with closing(sqlite3.connect(path, timeout=0.05)) as db:
+            entry = db.execute("SELECT command,cwd FROM job WHERE state IN (?,?)", ACTIVE).fetchone()
+        if entry:
+            argv = json.loads(entry[0])
+            if (os.path.normcase(os.path.realpath(entry[1])) == os.path.normcase(arguments["cwd"])
+                    and os.path.normcase(os.path.realpath(argv[0])) == os.path.normcase(arguments["argv"][0])
+                    and argv[1:] == arguments["argv"][1:]):
+                return run_id
+    return None
+
+
+def inspect_run(folder, run_id, cursor=0, *, cancel=False, lock_timeout=5):
     path = location(folder, run_id)
     if not path.is_file() or type(cursor) is not int or not 0 <= cursor <= 2**63 - 1:
         raise ValueError("Ejecución o cursor desconocido en este chat.")
-    with connection(path) as db:
+    with closing(sqlite3.connect(path, timeout=lock_timeout)) as db, db:
         if cancel:
             db.execute("UPDATE job SET cancel=1 WHERE state IN (?,?)", ACTIVE)
         if not cancel:
             db.execute("BEGIN")
         state, code, requested, heartbeat, error, truncated = db.execute(
             "SELECT state,code,cancel,heartbeat,error,truncated FROM job").fetchone()
-        rows = db.execute("SELECT seq,text FROM output WHERE seq>? ORDER BY seq LIMIT 2", (cursor,)).fetchall()
+        chunks = []
+        size = 0
+        more = False
+        for seq, text in db.execute("SELECT seq,text FROM output WHERE seq>? ORDER BY seq", (cursor,)):
+            if chunks and size + len(text) > PAGE:
+                more = True
+                break
+            chunks.append(text)
+            size += len(text)
+            cursor = seq
+    confirmed = state in {"ejecutando", "terminado"} or code is not None or bool(chunks)
+    if not confirmed and state == "fallido":
+        confirmed = None
     if state in ACTIVE and time.time() - heartbeat > 15:
         state = "sin confirmar"
-    return dict(id=run_id, estado=state, codigo=code, cancelacion_solicitada=bool(requested),
-                salida=rows[0][1] if rows else "", cursor=rows[0][0] if rows else cursor,
-                hay_mas=len(rows) > 1, truncada=bool(truncated), error=error)
+    return dict(id=run_id, estado=state, codigo=code, inicio_confirmado=confirmed,
+                cancelacion_solicitada=bool(requested), salida="".join(chunks), cursor=cursor,
+                hay_mas=more, truncada=bool(truncated),
+                parcial=bool(more or truncated or state in (*ACTIVE, "sin confirmar")), error=error)
 
 
 def capture(stream, path, errors):

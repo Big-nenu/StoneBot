@@ -66,11 +66,11 @@ async def check_project_read(folder, *, select_source=False, mention_stonewave=F
         rounds += 1
         if rounds == 1:
             memory.call.assert_not_awaited()
-            assert "iniciar_proceso" in tools
+            assert "ejecutar_proceso" in tools
             batch = reply("read_project_file", path="README.md")
-            batch.message.tool_calls.extend(reply("iniciar_proceso", argv=[sys.executable], cwd=str(folder)).message.tool_calls)
+            batch.message.tool_calls.extend(reply("ejecutar_proceso", programa=sys.executable, cwd=str(folder)).message.tool_calls)
             return batch
-        assert "iniciar_proceso" not in tools
+        assert "ejecutar_proceso" not in tools
         if rounds == 2:
             assert "no disponible" in kwargs["messages"][-1]["content"]
             assert "elegir_fuente" not in tools

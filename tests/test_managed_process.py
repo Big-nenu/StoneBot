@@ -1,6 +1,7 @@
 """Prueba del supervisor y del recorrido desde el chat con un modelo simulado."""
 import asyncio
 from contextlib import ExitStack
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,7 @@ from uuid import uuid4
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import managed_process as jobs
 import mcp_client
+import process_tools
 import turn_worker
 from chat_execution import ChatExecution
 from ollama import Message
@@ -61,6 +63,84 @@ def lifecycle(root):
     jobs.location(root, run_id).rename(root / "cerrado.sqlite3")
 
 
+def paginated_observation(root):
+    run_id = uuid4().hex
+    path = jobs.location(root, run_id)
+    with jobs.connection(path) as db:
+        db.executescript(jobs.SCHEMA)
+        db.execute("INSERT INTO job(command,cwd,state,code,heartbeat,truncated) VALUES ('[]','', 'terminado',7,?,1)",
+                   (time.time(),))
+        db.executemany("INSERT INTO output(text) VALUES(?)", [("A" * (jobs.PAGE - 1),), ("B",), ("C",)])
+    first = jobs.inspect_run(root, run_id)
+    assert len(first["salida"]) == jobs.PAGE and first["salida"].endswith("B")
+    assert first["cursor"] == 2 and first["hay_mas"] and first["parcial"] and first["codigo"] == 7
+    second = jobs.inspect_run(root, run_id, first["cursor"])
+    assert second["salida"] == "C" and second["cursor"] == 3 and not second["hay_mas"] and second["truncada"]
+    assert jobs.inspect_run(root, run_id, second["cursor"])["salida"] == ""
+
+
+async def window_bound(root):
+    first = {"estado": "ejecutando"}
+    with patch.object(jobs, "inspect_run") as inspect:
+        assert await process_tools.observe_until(root, "simulado", 0, first, 1000, lambda: 0, lambda: None) == first
+        assert await process_tools.observe_until(root, "simulado", 0, first, 0, lambda: 10, lambda: None) == first
+        inspect.assert_not_called()
+    action, command, wait = process_tools.translate(process_tools.EXECUTE, {"programa": sys.executable},
+                                                    {"folder": str(root)})
+    assert action == "iniciar_proceso" and command["cwd"] == str(root) and wait == process_tools.WAIT_MS
+    try:
+        process_tools.translate(process_tools.EXECUTE, {"programa": "python.exe", "cwd": str(root)}, None)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Un nombre relativo nunca debe resolver un ejecutable.")
+
+
+async def verify_and_block_duplicate(root):
+    scope = ["local"]
+    run_id = uuid4().hex
+    command = process_tools.resolved_command({"argv": [sys.executable], "cwd": str(root)})
+    saved = {}
+
+    def save(message_id, version, snapshot):
+        saved[message_id] = snapshot
+        return version + 1
+
+    previous = ChatExecution(1, None, save, "Primer turno", scope)
+    step = previous.start("iniciar_proceso", command, True, [])
+    step["run_id"] = run_id
+    previous.dispatched()
+    historical = json.dumps({"id": run_id, "estado": "preparando", "salida": "", "cursor": 0})
+    previous.observe(step, historical, "sin confirmar")
+    execution = ChatExecution(2, (1, previous.version, previous.state), save, "Segundo turno", scope)
+    execution.chat_id = 1
+    execution.saved_process_positions = lambda *_: {run_id: 0}
+    folder = root / "perfil" / "procesos" / "1" / hashlib.sha256(json.dumps(scope).encode()).hexdigest()
+    folder.mkdir(parents=True)
+    path = jobs.location(folder, run_id)
+    with jobs.connection(path) as db:
+        db.executescript(jobs.SCHEMA)
+        db.execute("INSERT INTO job(command,cwd,state,heartbeat) VALUES (?,?, 'ejecutando',?)",
+                   (json.dumps(command["argv"]), command["cwd"], time.time()))
+
+    confirm = AsyncMock()
+    execute = lambda name, args: process_tools.execute(name, args, execution, confirm, lambda: None,
+                                                       wait_ms=0, remaining=lambda: 5)
+    with patch.object(mcp_client, "default_root", return_value=root / "perfil"):
+        step = execution.start("iniciar_proceso", command, True, [])
+        duplicate = await execute("iniciar_proceso", command)
+        assert duplicate.status == "sin ejecutar" and run_id in duplicate.content
+        assert step.get("run_id") is None and list(folder.glob("*.sqlite3")) == [path]
+
+        execution.start("consultar_proceso", {"id": run_id}, False, [])
+        result = await execute("consultar_proceso", {"id": run_id})
+        assert json.loads(result.content)["estado"] == "ejecutando"
+        assert saved[1]["steps"][0]["status"] == "registro comprobado"
+        assert saved[1]["steps"][0]["result"] == historical
+        assert saved[1]["steps"][0]["process_state"] == "ejecutando"
+    confirm.assert_not_awaited()
+
+
 async def chat(root, approved, retry=False, allow_retry=True):
     execution = ChatExecution(1, None, lambda mid, version, state: version + 1, "prueba", ["local"])
     execution.chat_id = 1
@@ -76,8 +156,9 @@ async def chat(root, approved, retry=False, allow_retry=True):
     async def model(**request):
         row = request["messages"][-1]
         if row["role"] != "tool":
-            assert any(getattr(t, "function", None) and t.function.name == "iniciar_proceso" for t in request["tools"])
-            return call("iniciar_proceso", argv=command, cwd=str(root))
+            offered = {tool.function.name for tool in request["tools"]}
+            assert {"ejecutar_proceso", "gestionar_proceso"} <= offered and "cancelar_proceso" not in offered
+            return call("ejecutar_proceso", programa=command[0], argumentos=command[1:], cwd=str(root))
         if not approved:
             assert "denegada" in row["content"]
             answer = "Denegada"
@@ -86,13 +167,11 @@ async def chat(root, approved, retry=False, allow_retry=True):
                 return SimpleNamespace(message=Message(role="assistant", content="Corrección denegada"))
             data = json.loads(row["content"])
             output.append(data["salida"])
-            assert data["estado"] != "fallido", data
-            if data["estado"] != "terminado":
-                await asyncio.sleep(.5)
-                return call("consultar_proceso", id=data["id"])
+            assert data["estado"] == "terminado" and data["inicio_confirmado"], data
             if retry and data["codigo"] == 7:
-                assert any(getattr(t, "function", None) and t.function.name == "iniciar_proceso" for t in request["tools"])
-                return call("iniciar_proceso", argv=[sys.executable, "-c", "print('corregido')"], cwd=str(root))
+                assert any(t.function.name == "ejecutar_proceso" for t in request["tools"])
+                return call("ejecutar_proceso", programa=sys.executable, argumentos=["-c", "print('corregido')"],
+                            cwd=str(root))
             assert root.name in "".join(output) and data["codigo"] == (0 if retry else 7)
             answer = f"El programa terminó con código {data['codigo']}."
         return SimpleNamespace(message=Message(role="assistant", content=answer))
@@ -111,9 +190,11 @@ async def chat(root, approved, retry=False, allow_retry=True):
         expected = ("código 0" if allow_retry else "denegada") if retry else "código 7"
         assert expected in answer and first["run_id"] in execution.context()
         assert execution.repeated_effect("iniciar_proceso", first["arguments"]) is first
+        assert first["page"]["cursor"] == execution.process_positions()[first["run_id"]]
+        assert not jobs.inspect_run(launches[0].parent, first["run_id"], first["page"]["cursor"])["salida"]
     else:
         assert "Denegada" in answer and first["status"] == "sin ejecutar", (answer, first)
-        assert not list(root.rglob("*.sqlite3"))
+        assert not launches
 
 
 def desktop(root, stage, live):
@@ -160,18 +241,21 @@ def desktop(root, stage, live):
                 return SimpleNamespace(message=Message(role="assistant", tool_calls=[
                     {"function": {"name": name, "arguments": args}}]))
             if row["role"] != "tool":
-                return call("iniciar_proceso", argv=command, cwd=str(root)) if stage in ("start", "deny") else call("consultar_proceso")
+                if stage in ("start", "deny"):
+                    return call("ejecutar_proceso", programa=command[0], argumentos=command[1:], cwd=str(root))
+                return call("gestionar_proceso", accion="listar")
             if stage == "deny":
                 assert "denegada" in row["content"]
                 return SimpleNamespace(message=Message(role="assistant", content="Denegada"))
             data = json.loads(row["content"])
             if "ejecuciones_recientes" in data:
-                return call("cancelar_proceso" if stage == "cancel" else "consultar_proceso", id=data["ejecuciones_recientes"][0])
+                return call("gestionar_proceso", accion="cancelar" if stage == "cancel" else "consultar",
+                            id=data["ejecuciones_recientes"][0])
             if stage == "cancel" and data["estado"] == "cancelado":
                 return SimpleNamespace(message=Message(role="assistant", content="Cancelado"))
             if not data["salida"]:
                 await asyncio.sleep(.3)
-                return call("consultar_proceso", id=data["id"])
+                return call("gestionar_proceso", accion="consultar", id=data["id"])
             return SimpleNamespace(message=Message(role="assistant", content=f"{data['salida']} {data['codigo']}"))
         if not live:
             stack.enter_context(patch.object(turn_worker, "Client", return_value=SimpleNamespace(chat=model)))
@@ -209,6 +293,11 @@ if __name__ == "__main__":
         sys.exit(0)
     with TemporaryDirectory() as directory:
         root = Path(directory).resolve()
+        paginated_observation(root)
+        asyncio.run(window_bound(root))
+        isolated = root / "duplicado"
+        isolated.mkdir()
+        asyncio.run(verify_and_block_duplicate(isolated))
         asyncio.run(chat(root, False))
         asyncio.run(chat(root, True))
         for allow_retry in (True, False):

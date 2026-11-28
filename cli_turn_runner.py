@@ -15,10 +15,12 @@ OPERATIVE_KEYS = frozenset("""
 operation path target cwd argv offset cursor limit recursive name_contains id estado estado_final codigo
 cancelacion_solicitada parcial desplazamiento_siguiente count total source fuente arguments content text
 query output salida entradas archivo mensaje run_id shell truncado estado_archivo
+programa argumentos accion espera_ms inicio_confirmado hay_mas truncada
 """.split())
-NUMERIC_KEYS = {"offset", "cursor", "limit", "count", "total", "codigo", "desplazamiento_siguiente"}
-FLAG_KEYS = {"recursive", "cancelacion_solicitada", "parcial", "truncado"}
-STATUS_VALUES = {"ok", "error", "terminado", "cancelado", "fallido", "en ejecución", "sin confirmar", "sin ejecutar"}
+NUMERIC_KEYS = {"offset", "cursor", "limit", "count", "total", "codigo", "desplazamiento_siguiente", "espera_ms"}
+FLAG_KEYS = {"recursive", "cancelacion_solicitada", "parcial", "truncado", "inicio_confirmado", "hay_mas", "truncada"}
+STATUS_VALUES = {"ok", "error", "terminado", "cancelado", "fallido", "en ejecución", "preparando", "ejecutando",
+                 "sin confirmar", "sin ejecutar"}
 SECRET_KEY = re.compile(r"token|secret|pass(?:word|wd)?|clave|contras|authorization|cookie|api.?key|credential", re.I)
 SECRET_TEXT = re.compile(r"(?i)bearer\s+[^\s]+|(?:token|secret|password|api[_-]?key)\s*[=:]\s*[^\s]+|sk-[A-Za-z0-9_-]+")
 SECRET_ARG = re.compile(r"(?i)^-{1,2}(?:token|secret|password|api[_-]?key|authorization|cookie|credential|clave)$")
@@ -35,6 +37,8 @@ def trace_value(value, key=None, depth=0):
     if key in NUMERIC_KEYS and type(value) is int:
         return value
     if key == "estado" and isinstance(value, str) and value in STATUS_VALUES:
+        return value
+    if key == "accion" and isinstance(value, str) and value in {"listar", "consultar", "cancelar"}:
         return value
     if value is None:
         return None

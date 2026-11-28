@@ -202,6 +202,18 @@ class Worker:
 
     def run(self) -> TurnOutcome:
         outcome = self._run()
+        if outcome.kind in {"finished", "cancelled"} and self.execution:
+            text = outcome.partial_text if outcome.kind == "cancelled" else outcome.text
+            pending = [f"{run_id} · {state}" + (" · inicio aún sin confirmar" if state == "preparando" else "")
+                       + (" · cancelación solicitada" if cancel else "")
+                       for run_id, (state, cancel) in process_tools.latest_runs(self.execution.state["steps"]).items()
+                       if state not in process_tools.TERMINAL and
+                       (state in {"preparando", "sin confirmar"} or not (run_id in text and state in text))]
+            if pending:
+                text = self.private_answer((text + "\n\nEstado registrado del supervisor\n" +
+                                            "\n".join(f"- {line}" for line in pending)).strip())
+                outcome = (replace(outcome, partial_text=text) if outcome.kind == "cancelled"
+                           else replace(outcome, text=text))
         if outcome.kind == "finished" and self.trace_reason == "respuesta":
             if self.operation_denied:
                 self.trace_reason = "denegacion"
@@ -1674,9 +1686,11 @@ class Worker:
                     and not web_tools_only and await self.verify_local_ollama()):
                 process_specs = PROCESS_TOOLS
                 specs.extend(process_specs)
-                directive = ("Para ejecutar un programa autorizado en Windows utiliza iniciar_proceso. "
-                             "Consulta su salida y estado con consultar_proceso. Un trabajo que sigue activo "
-                             "se puede volver a consultar por ID en este chat sin iniciarlo otra vez.")
+                directive = ("Usa ejecutar_proceso con la ruta absoluta del programa y sus argumentos separados. "
+                             "Si devuelve terminación y salida completa, usa esos datos directamente. "
+                             "Si sigue activo o queda salida, usa gestionar_proceso con su ID. "
+                             "Indica el ID y el estado si el programa sigue activo al responder. "
+                             "Al continuar un encargo, consulta primero la ejecución existente.")
                 if messages[0]["role"] == "system":
                     messages[0] = {**messages[0], "content": messages[0]["content"] + "\n" + directive}
                 else:
@@ -1709,7 +1723,7 @@ class Worker:
                 messages[-1] = {**current, "content": latest + "\n\nEstado guardado de la tarea (datos):\n"
                                 + task_context(self.task) + memory_context}
             restricted_specs = [tool.spec for tool in registered_reads.values()]
-            restricted_specs.extend(tool for tool in process_specs if tool.function.name == "consultar_proceso")
+            restricted_specs.extend(tool for tool in process_specs if tool.function.name == process_tools.MANAGE)
             if RESUME in specs:
                 restricted_specs.append(RESUME)
             restricted_specs.extend(activity_tools.values())
@@ -1723,7 +1737,7 @@ class Worker:
                 if entry:
                     tool = entry[2]
                     return tool.inputSchema, ("cursor",) if name in external and safe_read(tool) else ()
-                return None, ("cursor",) if name == "consultar_proceso" else ()
+                return None, ("cursor",) if name == process_tools.MANAGE else ()
 
             catalog = TurnTools(specs, local_aliases, contract)
             local_reads = {item.function.name for item in restricted_specs} | {RECALL.function.name}
@@ -1738,6 +1752,8 @@ class Worker:
             retry_requests = set()
             stalled_pages = set()
             uncertain_effect = bool(journal and journal.resumed and journal.unconfirmed())
+            pending_runs = ({run_id for run_id, (state, _) in process_tools.latest_runs(journal.state["steps"]).items()
+                             if state not in process_tools.TERMINAL} if journal and journal.resumed else set())
             if save_request:
                 memory_scope.update(external)  # Escritura del Markdown solicitado, con permiso y destino validados.
 
@@ -2255,7 +2271,13 @@ class Worker:
                 nonlocal registered_read_started
                 self.private_read = True
                 self.used_external_source = True
-                result = await process_tools.execute(name, arguments, journal, self.confirm_external, self.check_pause)
+                fields = {key: value for key, value in arguments.items() if key != "espera_ms"}
+                result = await process_tools.execute(name, fields, journal, self.confirm_external, self.check_pause,
+                                                     wait_ms=arguments["espera_ms"], remaining=self.budget.remaining)
+                if name == process_tools.QUERY and result.status == "registro comprobado":
+                    data = json.loads(result.content)
+                    if data.get("estado") not in (None, "sin confirmar", "preparando"):
+                        pending_runs.discard(data["id"])
                 registered_read_started = True
                 return result
 
@@ -2267,7 +2289,8 @@ class Worker:
                 result = await visibility.find(arguments, boundary)
                 return ToolResult(result, reuse=False)
 
-            catalog.register([tool.function.name for tool in process_specs], execute_process)
+            if process_specs:
+                catalog.register(PROCESS_NAMES, execute_process)
             catalog.register(activity_tools, execute_activity)
             catalog.register([RECALL.function.name], compact.read)
             if skill_spec:
@@ -2283,11 +2306,21 @@ class Worker:
                     return "\n\n".join(status.values())
                 return None
 
+            def prepare_call(name, arguments):
+                if name not in process_tools.INTERFACE:
+                    return name, arguments
+                try:
+                    action, fields, wait = process_tools.translate(name, arguments, self.project)
+                except (OSError, ValueError, RuntimeError) as exc:
+                    detail = str(exc) if type(exc) is ValueError else "El programa o directorio no es accesible."
+                    return name, ToolResult(detail, reuse=False, status="sin ejecutar", code="ARGUMENTOS_INVALIDOS")
+                return action, {**fields, "espera_ms": wait}
+
             def before_call(name, arguments, remaining):
                 nonlocal uncertain_effect
                 if name == RECALL.function.name:
                     return None
-                read = (name in ("consultar_proceso", DISCOVER_MCP.function.name) or name in registered_reads
+                read = (name in (process_tools.QUERY, DISCOVER_MCP.function.name) or name in registered_reads
                         or name in activity_tools or name == local_skills.LOAD_SKILL
                         or name == query_experiences.__name__ or
                         (name in external and safe_read(external[name][2], arguments)) or
@@ -2299,6 +2332,14 @@ class Worker:
                 if not journal:
                     return None
                 if name in PROCESS_NAMES:
+                    if name == process_tools.CANCEL and not catalog.permits(process_tools.EXECUTE):
+                        return ToolResult("Este turno permite consultar ejecuciones. La cancelación no está disponible en este alcance.",
+                                          reuse=False, status="sin ejecutar", code="DESTINO_BLOQUEADO")
+                    if name == process_tools.START and pending_runs:
+                        return ToolResult("Consulta las ejecuciones pendientes por ID antes de iniciar otro proceso: " +
+                                          ", ".join(sorted(pending_runs)), reuse=False, status="sin ejecutar",
+                                          code="EFECTO_YA_REGISTRADO")
+                    arguments = {key: value for key, value in arguments.items() if key != "espera_ms"}
                     limit_tools(process_scope)
                 elif name == local_skills.LOAD_SKILL:
                     limit_tools(skill_scope)
@@ -2306,7 +2347,8 @@ class Worker:
                     if previous["status"] == "sin confirmar":
                         uncertain_effect = True
                         limit_to_verification()
-                    return ToolResult(f"Acción omitida para evitar duplicados. Estado guardado: {previous['status']}.",
+                    prior_id = f" Consulta el ID {previous['run_id']}." if previous.get("run_id") else ""
+                    return ToolResult(f"Acción omitida para evitar duplicados. Estado guardado: {previous['status']}." + prior_id,
                                       reuse=False, status="sin ejecutar", code="EFECTO_YA_REGISTRADO")
                 if (name in registered_reads and registered_reads[name].private) or name in activity_tools or name in PROCESS_NAMES:
                     journal.state["protected"] = True
@@ -2318,7 +2360,7 @@ class Worker:
                 if self.operation_denied:
                     limit_tools(set())
                 if (name in PROCESS_NAMES or name in memory_tools) and isinstance(result, ToolResult):
-                    uncertain_effect |= result.status == "sin confirmar" and name != "consultar_proceso"
+                    uncertain_effect |= result.status == "sin confirmar" and name != process_tools.QUERY
                 if uncertain_effect:
                     limit_to_verification()
 
@@ -2327,7 +2369,7 @@ class Worker:
 
             answer = await loop.run(request_round, execute_control, check_pause=self.check_pause,
                                     after_batch=after_batch, activity=self.events.activity,
-                                    before_call=before_call, after_tool=after_tool,
+                                    prepare_call=prepare_call, before_call=before_call, after_tool=after_tool,
                                     after_call=journal.observe if journal else None,
                                     trace=trace_result if self.trace else None)
             if answer is not None:

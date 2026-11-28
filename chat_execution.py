@@ -193,6 +193,23 @@ class ChatExecution:
     def unconfirmed(self):
         return [s for s in self.state["steps"] if s["effect"] and s["status"] == "sin confirmar"]
 
+    def verify_process(self, run_id, state, *, cancellation_checked):
+        """Reconcilia el efecto sin reemplazar su observación de salida original."""
+        def verified(step):
+            return (step.get("run_id") == run_id and step.get("effect") and step["status"] == "sin confirmar"
+                    and (step["tool"] == "iniciar_proceso"
+                         or step["tool"] == "cancelar_proceso" and cancellation_checked))
+
+        for step in self.state["steps"]:
+            if verified(step):
+                step.update(status="registro comprobado", process_state=state)
+        if self.previous and self.previous[2]["scope"] == self.state["scope"]:
+            message_id, version, previous = self.previous
+            if any(verified(step) for step in previous["steps"]):
+                snapshot = {**previous, "steps": [dict(step, status="registro comprobado", process_state=state)
+                                                   if verified(step) else step for step in previous["steps"]]}
+                self.previous = (message_id, self.save(message_id, version, snapshot), snapshot)
+
     def process_positions(self):
         if self._positions is None:
             self._positions = (self.saved_process_positions(self.chat_id, self.state["scope"])

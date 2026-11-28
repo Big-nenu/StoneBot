@@ -29,6 +29,10 @@ def classify(row, expected=None):
         }.get(row["caso"], ())
         offered = {name for event in row.get("traza", []) if event["evento"] == "peticion_modelo"
                    for name in event.get("herramientas", ())}
+        if "ejecutar_proceso" in offered:
+            offered.add("iniciar_proceso")
+        if "gestionar_proceso" in offered:
+            offered.add("consultar_proceso")
         return "modelo" if tools and offered.issuperset(tools) else "pendiente"
     server, tool = expected
     trace = row.get("traza", [])
@@ -184,7 +188,7 @@ def grade(row):
             if (len(initial) != 1 or initial[0].get("id") != jobs[0].get("id")
                     or initial[0].get("estado") != "ejecutando"):
                 return missing("No consta el mismo proceso activo antes de reabrir.")
-        if case == "V03" and ("iniciar_proceso" in row.get("llamadas", [])
+        if case == "V03" and (set(row.get("llamadas", [])) & {"iniciar_proceso", "ejecutar_proceso"}
                               or "resume_chat_work" not in row.get("llamadas", [])):
             return missing("Falta reanudación por diario o hubo intento de relanzamiento.")
         return verdict("revision_manual", "Supervisor y diario coinciden. Verificar texto, códigos y estado final.")
