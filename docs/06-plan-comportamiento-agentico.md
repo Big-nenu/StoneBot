@@ -1,6 +1,6 @@
 # Plan del paso 5 · Comportamiento agéntico de StoneBot
 
-- **Estado** — Pasos 5.1, 5.2, 5.2.1, 5.3A, 5.4, 5.6, 5.5 y 5.7 implementados. Quedan pendientes 5.3B, condicionado a evidencia, y 5.8.
+- **Estado** — Pasos 5.1, 5.2, 5.2.1, 5.3A, 5.4, 5.6, 5.5 y 5.7 implementados. 5.3B aplazado tras revisar la evidencia. 5.8 preparado para ajustar el prompt y ejecutar la evaluación manual.
 - **Fecha** — 27 de noviembre de 2026.
 - **Base** — `refactor/stonebot-core` en `307b40a`, con los pasos 0 a 4 completados.
 - **Objetivo** — Que un turno normal pueda descubrir recursos, ejecutar pasos autorizados, recuperarse de fallos y entregar una respuesta comprobable. StoneBot CLI servirá para medir los cambios con Nemotron y Qwen. Desktop y CLI seguirán usando el mismo `ChatSession`, `Worker` y `ToolLoop`.
@@ -67,7 +67,7 @@ La [ampliación de la línea base](5.1-ampliacion/README.md) registró siete con
 
 La [evaluación de 5.3A](09-visibilidad-mcp.md) documenta las 60 ejecuciones definitivas, la comparación de visibilidad y los fallos de recuperación observados.
 
-**5.3B (diferido y condicionado a evidencia):** las propuestas de registro canónico, migración de alias y límites persistidos que siguen son un diseño de referencia, no requisitos para 5.3A. Implementar únicamente lo que los datos posteriores justifiquen. No ampliar alcance por una migración.
+**5.3B (aplazado tras la revisión):** las trazas revisadas no acreditan un fallo reproducible de identidad que requiera un registro canónico. Las propuestas que siguen quedan como diseño de referencia para cuando se cumplan las condiciones de reapertura. [Decisión y evidencia](14-decision-5.3B-y-preparacion-5.8.md#53b-queda-aplazado)
 
 - Definir un registro de herramientas con identificador canónico, alias de presentación, familia, descripción, esquema, proveedor o servidor, requisitos de disponibilidad, clase de efecto, política de confirmación y clasificación de entrada y salida. Reutilizar los ejecutores existentes. Mantener una distinción verificable entre herramienta registrada, habilitada, ofrecida y autorizada para la llamada concreta.
 - Ofrecer un conjunto inicial acotado de herramientas nativas y un mecanismo para descubrir herramientas habilitadas por capacidad y fuente, con resultados paginados o limitados. Descubrir servidores bajo demanda con `McpPool` y su caché. Una búsqueda puede sugerir una herramienta y ofrecerla en la ronda siguiente si es compatible. Descubrir, cargar una Skill y elegir una fuente nunca conceden un permiso.
@@ -134,6 +134,8 @@ Usar `307b40a` como referencia reproducible. Registrar las 31 suites existentes 
 | 5.3B Registro y alias (condicional) | 5.7 | Implementar únicamente si la evidencia justifica registro canónico/migración; de lo contrario documentar aplazamiento. |
 | 5.8 Prompt y evaluación final | anteriores | Ajustar prompt al final; evaluar con rúbrica uniforme, condiciones controladas, casos reservados y paridad Desktop. |
 
+La [guía de 5.8](14-decision-5.3B-y-preparacion-5.8.md#58-listo-para-preparar-el-candidato-y-medir-desde-powershell) deja un cambio de prompt propuesto y comandos de PowerShell para las dos revisiones. La matriz con Ollama queda pendiente de ejecución manual.
+
 La CLI conserva el alcance del paso 4, con perfiles separados, entrada de texto y Ollama local. Usar MCP de prueba con datos sintéticos. Mantener las capacidades existentes de Desktop y sus restricciones para proveedores en la nube, memoria y adjuntos. Incluir sus regresiones aunque la evaluación comparativa se ejecute con Ollama local.
 
 ## 4. Pruebas y criterios de aceptación
@@ -169,5 +171,5 @@ En Desktop, repetir con perfil temporal una consulta directa, un encargo con her
 - [x] 5.6 Presupuesto y cierre
 - [x] 5.5 Interfaz de procesos
 - [x] 5.7 Evidencia y respuesta
-- [ ] 5.3B Registro y alias (condicional)
-- [ ] 5.8 Prompt y evaluación final
+- [ ] 5.3B Registro y alias (aplazado, sujeto a evidencia nueva)
+- [ ] 5.8 Prompt y evaluación final (protocolo preparado)

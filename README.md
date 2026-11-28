@@ -181,6 +181,8 @@ Esta versión admite texto con Ollama local. Para probar un servidor MCP, provis
 
 Para habilitar el descubrimiento MCP del paso 5.3A, ejecuta `$env:STONEBOT_DISCOVER_MCP = '1'` antes de iniciar `python -B app.py` o `python -B stonebot_cli.py`. El chat ordinario con Ollama local verificado ofrece un catálogo inicial de fuentes habilitadas y puede buscar otras herramientas con `descubrir_mcp`. Se siguen aplicando los permisos por operación y los límites de fuentes privadas. El valor `0` conserva el enrutamiento anterior para comparar resultados. [Diseño y evaluación A/B](docs/09-visibilidad-mcp.md)
 
+El protocolo de 5.8 incluye un lanzador de PowerShell para comparar revisiones con Nemotron y Qwen, además de una vista previa que muestra qué casos ejecutará cada bloque. [Preparación de la evaluación](docs/14-decision-5.3B-y-preparacion-5.8.md)
+
 El núcleo valida cada llamada contra el catálogo de la ronda y el esquema de la herramienta antes de solicitar permisos. Las lecturas MCP verificadas admiten un reintento acotado ante fallos transitorios. `--verbose` registra el motivo del reintento y distingue validación, denegación, reutilización e incertidumbre. [Validación y recuperación](docs/10-validacion-recuperacion.md)
 
 Desktop y CLI usan el mismo presupuesto por turno. Puedes configurar peticiones, tiempo activo y llamadas mediante `STONEBOT_TURN_CHAT_*` y `STONEBOT_TURN_TASK_*`. El tiempo de autorización se registra aparte y `--verbose` muestra los contadores, el motivo de cierre y el estado de la evidencia. [Presupuesto y cierre](docs/11-presupuesto-cierre.md)
