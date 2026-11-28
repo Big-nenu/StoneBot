@@ -49,7 +49,7 @@ from mcp_client import (
     call_external, connection_error, discover, is_desktop_commander, load_servers, ollama_tool,
     session_for,
 )
-from mcp_permissions import allowed, permission_signature, remember, safe_read
+from mcp_permissions import allowed, independent_read_arguments, independent_read_requests, permission_signature, remember, safe_read
 from read_tools import (
     LOCAL_FILES, MAX_OFFSET, PAGE_CHARS, PROJECT_FILE, PROJECT_LINK, RANK_FILES, ReadTool, local_file_request, project_file_path,
     project_read_tools, project_text_for_model, read_result, resolve_target,
@@ -271,7 +271,7 @@ class Worker:
             return False
         plain = text.removeprefix(RESULT_HEADER).strip()
         clarification = plain.startswith("¿") and plain.endswith("?") and plain.count("¿") == 1
-        if not self.calls.has_verified_effect():
+        if not (self.calls.has_verified_effect() or self.calls.has_confirmed_execution()):
             if effect_claim(text) or (effect_request(self.messages) and not clarification):
                 return True
         external = not has_chat_attachments(self.messages) and requests_external_tools(self.messages)
@@ -513,7 +513,8 @@ class Worker:
         return await handler(*args, **kwargs)
 
     def update_partial(self, text):
-        unsupported_effect = not self.calls.has_verified_effect() and (effect_request(self.messages) or effect_claim(text))
+        execution_confirmed = self.calls.has_verified_effect() or self.calls.has_confirmed_execution()
+        unsupported_effect = not execution_confirmed and (effect_request(self.messages) or effect_claim(text))
         if (self.closing_guard() or self.coverage_unconfirmed() or unsupported_effect
                 or text.lstrip().startswith(("<tool", "<function"))):
             text = ""
@@ -1848,6 +1849,8 @@ class Worker:
             memory_scope = private_scope | set(memory_tools)
             retry_requests = set()
             stalled_pages = set()
+            denied_mcp = []
+            user_text = self.messages[-1]["content"] if self.messages and self.messages[-1]["role"] == "user" else ""
             uncertain_effect = bool(journal and journal.resumed and journal.unconfirmed())
             pending_runs = ({run_id for run_id, (state, _) in process_tools.latest_runs(journal.state["steps"]).items()
                              if state not in process_tools.TERMINAL} if journal and journal.resumed else set())
@@ -1857,7 +1860,20 @@ class Worker:
             def limit_tools(permitted):
                 catalog.limit_to(permitted)
                 if journal:
-                    journal.state["tool_boundary"] = sorted(catalog.boundary)
+                    journal.state["tool_boundary"] = [] if self.operation_denied else sorted(catalog.boundary)
+
+            def independent_mcp(name):
+                _, server, tool, _ = external[name]
+                if (self.private_read or self.read_sw_activity or registered_read_started or skill_loaded
+                        or save_request or uncertain_effect or self.ai.cloud or not safe_read(tool)
+                        or any(server == denied_server for denied_server, _ in denied_mcp)):
+                    return ()
+                return tuple(independent_read_requests(user_text, server, tool.name))
+
+            def limit_after_denial():
+                if visibility:
+                    visibility.selected = None
+                limit_tools({name for name in external if independent_mcp(name)} if denied_mcp else set())
 
             def limit_to_verification():
                 if visibility:
@@ -1921,8 +1937,9 @@ class Worker:
                 self.events.activity(f"Esperando la respuesta de {PROVIDERS[self.ai.provider]}…")
                 round_tools = catalog.offer(finishing=finishing)
                 can_discover = catalog.permits(DISCOVER_MCP.function.name)
-                if visibility and not finishing and (can_discover or uncertain_effect):
-                    await visibility.collect()
+                if visibility and not finishing and (can_discover or uncertain_effect or denied_mcp):
+                    if not denied_mcp:
+                        await visibility.collect()
                     catalog.register(visibility.entries.keys() - catalog.handlers.keys(), execute_external)
                     aliases = [alias for alias in visibility.offered(catalog.boundary) if alias not in catalog.blocked]
                     round_tools = catalog.select([*round_tools, *(visibility.specs[alias] for alias in aliases)])
@@ -2125,6 +2142,16 @@ class Worker:
             async def execute_external(external_name, arguments):
                 nonlocal used_mcp, task_calls, uncertain_effect
                 _, server_name, tool, _ = external[external_name]
+                independent = bool(denied_mcp)
+                if independent:
+                    clauses = independent_mcp(external_name)
+                    properties = tool.inputSchema.get("properties", {})
+                    if not (isinstance(properties, dict) and arguments.keys() <= properties.keys()
+                            and safe_read(tool, arguments)
+                            and any(all(independent_read_arguments(clause, arguments, rejected)
+                                        for _, rejected in denied_mcp) for clause in clauses)):
+                        return ToolResult("La lectura no es independiente de la denegación o sus datos no constan en el pedido.",
+                                          reuse=False, status="sin ejecutar", code="DESTINO_BLOQUEADO")
                 if skill_loaded and not safe_read(tool, arguments):
                     return ToolResult("La Skill solo dispone de lecturas autorizadas.", reuse=False,
                                       status="sin ejecutar", code="DESTINO_BLOQUEADO")
@@ -2199,6 +2226,10 @@ class Worker:
                     nonlocal code, hint
                     code = value
                     if code == "OPERACION_DENEGADA":
+                        self.operation_denied = True
+                        denied_mcp.append((server_name, arguments))
+                        if journal:
+                            journal.state["tool_boundary"] = []
                         hint = "Informa la denegación. No vuelvas a solicitar esa operación ni intentes una alternativa."
                     elif code == "DESTINO_BLOQUEADO":
                         hint = "Usa únicamente un destino compatible con el alcance autorizado."
@@ -2261,7 +2292,12 @@ class Worker:
 
                 try:
                     self.permission = permission_signature(servers[server_name], tool) if read else None
-                    result = await call_external(external[external_name], arguments, self.confirm_external,
+                    async def confirm(server, tool_name, fields):
+                        if independent:
+                            return await self.confirm_external(server, tool_name, fields, independent_read=True)
+                        return await self.confirm_external(server, tool_name, fields)
+
+                    result = await call_external(external[external_name], arguments, confirm,
                                                  on_start=on_start,
                                                  on_result=on_result, on_rejected=on_rejected,
                                                  on_retry=on_retry if read and retry_key not in retry_requests else None,
@@ -2507,7 +2543,7 @@ class Worker:
             def after_tool(name, result):
                 nonlocal uncertain_effect
                 if self.operation_denied:
-                    limit_tools(set())
+                    limit_after_denial()
                 if (name in PROCESS_NAMES or name in memory_tools) and isinstance(result, ToolResult):
                     uncertain_effect |= result.status == "sin confirmar" and name != process_tools.QUERY
                 if uncertain_effect:
@@ -2778,8 +2814,8 @@ class Worker:
         self.events.activity("Markdown guardado y verificado en disco.")
         return ToolResult(f"Guardado y verificado en `{destination}`.", reuse=False, status="verificada en disco"), True
 
-    async def confirm_external(self, server, tool, arguments, *, local=False):
-        if self.operation_denied:
+    async def confirm_external(self, server, tool, arguments, *, local=False, independent_read=False):
+        if self.operation_denied and not independent_read:
             return False
         if not self.budget.remaining():
             raise TurnLimit()
@@ -2791,7 +2827,7 @@ class Worker:
         self.events.activity(f"Esperando autorización para {tool}…")
         with self.budget.authorization():
             await self.events.confirm(request)
-        self.operation_denied = not request["approved"]
+        self.operation_denied |= not request["approved"]
         if request["approved"] and not self.budget.remaining():
             raise TurnLimit()
         if request["approved"] and request["remember"] and signature:

@@ -527,6 +527,14 @@ def test_stdio_chat_and_permissions():
                 rounds += 1
                 tools = {tool.function.name: tool.function.description for tool in kwargs["tools"]
                          if tool.function.name.startswith("mcp_")}
+                if rounds == 2:
+                    assert not tools and not marker.exists()
+                    transcript = kwargs["messages"]
+                    assert "esquema" in transcript[-4]["content"]
+                    assert "bloqueada" in transcript[-3]["content"]
+                    assert "Eco MCP: hola" in transcript[-2]["content"]
+                    assert "no autorizó" in transcript[-1]["content"]
+                    return SimpleNamespace(message=Message(role="assistant", content="Denegada."))
                 assert len(tools) == 2, tools
                 echo, = [alias for alias, desc in tools.items() if " / echo." in desc]
                 mark, = [alias for alias, desc in tools.items() if " / mark." in desc]
@@ -536,12 +544,7 @@ def test_stdio_chat_and_permissions():
                     assert turn_worker.EXPERIENCES_TOOL in kwargs["tools"]
                     requests = [(echo, {}), (echo, {"text": str(personal)}),
                                 (echo, {"text": "hola"}), (mark, {"text": "rechazado"})]
-                elif rounds == 2:
-                    assert "esquema" in transcript[-4]["content"]
-                    assert "bloqueada" in transcript[-3]["content"]
-                    assert "Eco MCP: hola" in transcript[-2]["content"]
-                    assert "no autorizó" in transcript[-1]["content"]
-                    assert not marker.exists()
+                elif rounds == 3:
                     requests = [(mark, {"text": "aprobado"})]
                 else:
                     assert "Marca escrita" in transcript[-1]["content"]
@@ -557,8 +560,10 @@ def test_stdio_chat_and_permissions():
                   patch("stonebot_engine.safety.protected_paths", return_value=[protected]),
                   patch.object(worker, "confirm_external", confirm)):
                 outputs.append(finished_text(worker))
-            assert "permiso denegado" in outputs[0] and "pendiente de comprobación" in outputs[0]
-            assert "Terminado" not in outputs[0]
+                assert not marker.exists() and confirm.await_count == 1
+                outputs.append(finished_text(worker))
+            assert "permiso denegado" in outputs[0] and "Eco MCP: hola" in outputs[0]
+            assert "pendiente de comprobación" in outputs[1] and "Terminado" not in outputs[1]
             assert confirm.await_count == 2
             assert personal.read_text(encoding="utf-8") == "datos de prueba"
             assert marker.read_text(encoding="utf-8") == "aprobado"

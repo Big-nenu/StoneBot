@@ -25,9 +25,9 @@ CLAIM = "La operación se completó y el cambio quedó verificado."
 SPEC = read_tool("operacion", "Operación sintética", {"value": {"type": "integer"}}, ["value"])
 
 
-def run(responses, handler, *, before_call=None, limits=None, user="Realiza la operación.", record=False):
+def run(responses, handler, *, before_call=None, limits=None, user="Realiza la operación.", record=False, spec=SPEC):
     model = FakeModel(*responses)
-    catalog = TurnTools([SPEC], {})
+    catalog = TurnTools([spec], {})
     events = []
     worker = Worker([{"role": "system", "content": "Simulación"}, {"role": "user", "content": user}],
                     trace=lambda event, **fields: events.append((event, fields)))
@@ -295,9 +295,10 @@ def test_process_recovery_requires_the_same_supervisor_id():
         query = ledger.new("consultar_proceso")
         terminal = ToolResult("Estado verificado", evidence={"procedencia": "supervisor de Windows",
                                                               "estado": "terminado", "codigo": 0, "id": run_id,
-                                                              "cobertura": "completa"})
+                                                              "inicio_confirmado": True, "cobertura": "completa"})
         ledger.finish(query, query.tool, {"id": run_id}, terminal, "ejecutada", None)
         assert bool(start.recovered_by) == (run_id == "A")
+        assert ledger.has_confirmed_execution() == (run_id == "A")
         assert ledger.blocked() == (run_id == "B")
     assert ledger.has_verified_effect()
 
@@ -315,6 +316,25 @@ def test_a_denial_and_a_partial_retry_remain_unresolved():
                                       reply(CLAIM)], handle)
         assert receipts[0]["recuperada_por"] is None and CLAIM not in outcome.text
 
+
+def test_confirmed_process_exit_is_distinct_from_success():
+    spec = read_tool("iniciar_proceso", "Prueba", {"value": {"type": "integer"}}, ["value"])
+
+    for code, state in ((0, "verificada"), (7, "salida_no_cero"), (None, "terminada_sin_codigo")):
+        async def handle(*_):
+            data = {"estado": "terminado", "codigo": code, "id": "REF-7", "inicio_confirmado": True,
+                    "salida": "SALIDA REAL", "cursor": 1}
+            return ToolResult(json.dumps(data), status="registro comprobado")
+
+        outcome, receipts, _, _ = run([call("iniciar_proceso", value=1), reply(CLAIM)], handle,
+                                      user="Ejecuta el script.", spec=spec, record=True)
+        receipt, = receipts
+        assert receipt["estado"] == state and receipt["inicio_confirmado"] is True
+        assert receipt["estado_proceso"] == "terminado" and receipt["codigo_terminacion"] == code
+        assert "SALIDA REAL" in outcome.text and f"**{code if code is not None else 'sin registrar'}**" in outcome.text
+        assert "no acredita la ejecución" not in outcome.text and CLAIM not in outcome.text
+
+
 if __name__ == "__main__":
     test_non_dispatch()
     test_dispatch_states()
@@ -329,5 +349,6 @@ if __name__ == "__main__":
     test_partial_and_mixed_evidence()
     test_unconfirmed_dispatch_is_not_automatically_repeated()
     test_process_recovery_requires_the_same_supervisor_id()
+    test_confirmed_process_exit_is_distinct_from_success()
     test_a_denial_and_a_partial_retry_remain_unresolved()
     print("PASS: estados de propuesta, síntesis insegura, presupuesto y reutilización")

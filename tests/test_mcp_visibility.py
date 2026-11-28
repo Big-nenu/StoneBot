@@ -14,6 +14,7 @@ from mcp.types import Tool, ToolAnnotations
 from ollama import Message
 
 from ai_provider import AISettings
+from mcp_permissions import independent_read_requests
 from mcp_pool import McpPool
 from mcp_visibility import DISCOVER, McpVisibility
 from turn_events import NullEvents
@@ -178,8 +179,80 @@ async def test_hidden_tool_is_offered_next_round():
         pool.close()
 
 
+
+async def test_independent_read_after_denial():
+    assert not list(independent_read_requests("No uses el eco del MCP catalogo.", "catalogo", "eco"))
+    assert not list(independent_read_requests("Consulta el origen con eco y excluye catalogo.", "catalogo", "eco"))
+    schema = {"type": "object", "properties": {"text": {"type": "string"}},
+              "required": ["text"], "additionalProperties": False}
+    def definition(name, read=False):
+        return Tool(name=name, inputSchema=schema, annotations=ToolAnnotations(readOnlyHint=read))
+
+    for in_same_batch in (True, False):
+        events = Approvals()
+        answer = SimpleNamespace(content=[SimpleNamespace(type="text", text="Dato comprobado")],
+                                 structuredContent=None, isError=False)
+        definitions = {"origen": [definition("publicar"), definition("buscar", True)],
+                       "catalogo": [definition("autorizar", True), definition("insertar")]}
+        sessions = {name: SimpleNamespace(list_tools=AsyncMock(return_value=SimpleNamespace(tools=tools, nextCursor=None)),
+                                          call_tool=AsyncMock(return_value=answer)) for name, tools in definitions.items()}
+
+        @asynccontextmanager
+        async def open_session(name, *_args, **_kwargs):
+            yield sessions[name]
+
+        pool = McpPool(open_session=open_session)
+        messages = [MESSAGES[0], {"role": "user", "content":
+                    "Usa publicar del MCP origen con PRIVADO-127. Independientemente, usa autorizar del "
+                    "MCP catalogo con PUBLICO-483. No uses las herramientas insertar y buscar."}]
+        aliases = {}
+        rounds = 0
+
+        def independent_calls():
+            return ((aliases["publicar"], {"text": "PRIVADO-127"}),
+                    (aliases["insertar"], {"text": "PRIVADO-127"}),
+                    (aliases["autorizar"], {"text": "PRIVADO-127"}),
+                    (aliases["autorizar"], {"text": "PUBLICO-483"}))
+
+        async def chat(**request):
+            nonlocal rounds
+            names = [spec.function.name for spec in request["tools"] if not callable(spec)]
+            rounds += 1
+            if rounds == 1:
+                aliases.update({name.split("_")[2]: name for name in names if name.startswith("mcp_")})
+                denial = (aliases["publicar"], {"text": "PRIVADO-127"})
+                if in_same_batch:
+                    return response(denial, *independent_calls()[1:])
+                return response(denial)
+            assert names == [aliases["autorizar"]]
+            if rounds == 2 and not in_same_batch:
+                return response(*independent_calls())
+            return response(final="Revisé el catálogo.")
+
+        try:
+            sources = {name: {**SERVER, "read_tools": ["autorizar"] if in_same_batch and name == "catalogo" else []}
+                       for name in sessions}
+            with (patch.dict("os.environ", {"STONEBOT_DISCOVER_MCP": "1"}),
+                  patch("turn_worker.load_servers", return_value=sources),
+                  patch("turn_worker.requests_external_tools", return_value=False)):
+                worker = Worker(messages, pool=pool, events=events)
+                worker.local_ollama = True
+                assert await worker.chat_with_tools(SimpleNamespace(chat=chat), list(messages), {}) == "Revisé el catálogo."
+            assert worker.operation_denied
+            sessions["origen"].call_tool.assert_not_awaited()
+            sessions["catalogo"].call_tool.assert_awaited_once_with("autorizar", {"text": "PUBLICO-483"})
+            expected = [("origen", "publicar", {"text": "PRIVADO-127"})]
+            if not in_same_batch:
+                expected.append(("catalogo", "autorizar", {"text": "PUBLICO-483"}))
+            assert events.confirmations == expected
+            assert any(entry.code == "DESTINO_BLOQUEADO" for entry in worker.calls.entries)
+        finally:
+            pool.close()
+
+
 if __name__ == "__main__":
     asyncio.run(test_shared_worker())
+    asyncio.run(test_independent_read_after_denial())
     asyncio.run(test_bounded_catalog())
     asyncio.run(test_hidden_tool_is_offered_next_round())
     print("PASS: manifiesto, catálogo acotado, permisos y privacidad de MCP")

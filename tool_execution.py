@@ -25,6 +25,7 @@ LABELS = {
     UNCONFIRMED: "operación pendiente de comprobación",
     "fallida": "herramienta o proceso con error registrado",
     "salida_no_cero": "proceso terminado con código distinto de cero",
+    "terminada_sin_codigo": "proceso terminado sin código registrado",
     "cancelada": "proceso cancelado",
     "en_curso": "proceso activo, sin terminación observada",
     OBSERVED: "respuesta observada",
@@ -60,12 +61,17 @@ class Receipt:
     excerpt: str = ""
     key: bytes | None = None
     run_id: str | None = None
+    process_state: str | None = None
+    start_confirmed: bool = False
+    exit_code: int | None = None
 
     def metadata(self):
         code = self.code or ("SIN_DESPACHO" if self.kind == "descarte" else self.state.upper())
         return {"llamada": self.number, "herramienta": self.tool, "estado": self.state,
                 "codigo": code, "motivo": REASONS.get(code, self.label()), "clase": self.kind,
-                "reutiliza": self.reused_from, "recuperada_por": self.recovered_by, "cobertura": self.coverage}
+                "reutiliza": self.reused_from, "recuperada_por": self.recovered_by, "cobertura": self.coverage,
+                **({"inicio_confirmado": self.start_confirmed, "estado_proceso": self.process_state,
+                    "codigo_terminacion": self.exit_code} if self.run_id else {})}
 
     def label(self):
         if self.state == VERIFIED and self.kind != "efecto":
@@ -128,6 +134,9 @@ class CallLedger:
                        or result.status in {"verificada en disco", "confirmada por StoneWave"}) else "operacion")
         if evidence.get("procedencia") == "supervisor de Windows":
             entry.run_id = evidence.get("id")
+            entry.process_state = evidence.get("estado")
+            entry.start_confirmed = evidence.get("inicio_confirmado") is True
+            entry.exit_code = evidence.get("codigo")
         elif disposition == "ejecutada" and (entry.state in {OBSERVED, VERIFIED, UNCONFIRMED}
                                               or entry.state == FAILED and entry.coverage == "parcial"):
             entry.excerpt = (result.model_content if result.model_content is not None else result.content)[:1200]
@@ -137,7 +146,7 @@ class CallLedger:
         confirmed_effect = witness.state == VERIFIED and witness.kind == "efecto"
         complete_observation = witness.state in {OBSERVED, VERIFIED} and witness.coverage == "completa"
         terminal_run = (witness.tool == "consultar_proceso" and witness.run_id and
-                        witness.state in {VERIFIED, "salida_no_cero", "cancelada"})
+                        witness.state in {VERIFIED, "salida_no_cero", "terminada_sin_codigo", "cancelada"})
         if not (confirmed_effect or complete_observation or terminal_run):
             return
         for earlier in self.entries[:witness.number - 1]:
@@ -164,7 +173,7 @@ class CallLedger:
 
     def has_evidence(self):
         return any(entry.kind in {"operacion", "efecto"} and
-                   (entry.state in {OBSERVED, VERIFIED, "salida_no_cero", "cancelada", "en_curso"}
+                   (entry.state in {OBSERVED, VERIFIED, "salida_no_cero", "terminada_sin_codigo", "cancelada", "en_curso"}
                     or entry.excerpt or entry.run_id) for entry in self.entries)
 
     def has_complete_observation(self):
@@ -174,6 +183,14 @@ class CallLedger:
         return any(entry.kind == "efecto" and
                    (entry.state == VERIFIED or entry.recovered_by and self.entries[entry.recovered_by - 1].state == VERIFIED)
                    for entry in self.entries)
+
+    def has_confirmed_execution(self):
+        for entry in self.entries:
+            if entry.tool != "iniciar_proceso" or not entry.run_id:
+                continue
+            if entry.start_confirmed or (entry.recovered_by and self.entries[entry.recovered_by - 1].start_confirmed):
+                return True
+        return False
 
     def rendered(self, *, pending_effects=False, missing_evidence=False):
         lines = ["Estado de las operaciones según StoneBot"]
@@ -225,14 +242,15 @@ def execution_state(name, result, disposition, step):
             return OMITTED
         if state == "fallido":
             return "fallida"
-        if state == "terminado" and evidence.get("codigo") != 0:
-            return "salida_no_cero"
+        if state == "terminado":
+            exit_code = evidence.get("codigo")
+            if type(exit_code) is not int:
+                return "terminada_sin_codigo"
+            return VERIFIED if exit_code == 0 else "salida_no_cero"
         if state == "ejecutando":
             return "en_curso"
         if state in {"preparando", "sin confirmar"}:
             return UNCONFIRMED
-        if state == "terminado":
-            return VERIFIED
     if status == "sin confirmar" or evidence.get("efecto") in {"sin confirmar", "sin confirmación independiente"}:
         return UNCONFIRMED
     if status in {"error de lectura", "error de herramienta"} or code == "ERROR_HERRAMIENTA":

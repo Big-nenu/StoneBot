@@ -51,6 +51,43 @@ def safe_read(tool, arguments=None):
     return safe_schema(tool.inputSchema) and safe_values(arguments)
 
 
+def independent_read_arguments(user_text, arguments, denied_arguments):
+    """Acepta solo valores literales del pedido, ajenos a la operación rechazada."""
+    def denied_values(value):
+        if isinstance(value, dict):
+            for item in value.values():
+                yield from denied_values(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from denied_values(item)
+        elif value is not None:
+            yield str(value).casefold()
+
+    denied = tuple(value for value in denied_values(denied_arguments) if value)
+    for value in arguments.values():
+        if type(value) not in (str, int, float):
+            return False
+        literal = str(value)
+        folded = literal.casefold()
+        if (not literal.strip() or any(folded in value or value in folded for value in denied)
+                or not re.search(r"(?<![\w.-])" + re.escape(literal) + r"(?![\w-]|\.[\w])", user_text)):
+            return False
+    return True
+
+
+def independent_read_requests(user_text, server, tool):
+    """Ubica cláusulas que piden directamente una lectura en una fuente concreta."""
+    clauses = re.split(r"[,;!?\n]|\.(?=\s|$)", user_text)
+    source = re.escape(server)
+    name = re.escape(tool)
+    connector = r"(?:(?:del|de|el|in|on|from|the|mcp|servidor|server|conector)\s+)*"
+    target = rf"(?:{name}\s+{connector}{source}|{source}\s+(?:con|with)\s+{name})(?![\w-])"
+    request = rf"\s*(?:usa|utiliza|consulta|llama|lee|use|call|read|query)\s+(?:a\s+)?(?:la herramienta\s+)?{target}"
+    for clause in clauses:
+        if re.match(request, clause, re.I) and not re.search(r"\b(?:no|nunca|not|never|excluye|exclude)\b", clause, re.I):
+            yield clause
+
+
 def permission_signature(server, tool):
     fields = ("transport", "url", "token_env", "command", "args")
     payload = [dict((key, server.get(key)) for key in fields), tool.model_dump(mode="json")]
